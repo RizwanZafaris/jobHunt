@@ -1,0 +1,21 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "python main.py --api"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+[[services]]
+name = "api"
+[services.variables]
+START_MODE = "api"
+
+# To add a second service for the scheduler daemon:
+# [[services]]
+# name = "scheduler"
+# [services.variables]
+# START_MODE = "scheduler"

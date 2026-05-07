@@ -1,0 +1,212 @@
+candidate:
+  full_name: "Rizwan Zafar"
+  email: "rizwanzaffar.pk@gmail.com"
+  phone: "+971-58-9683970"
+  location: "Dubai, UAE"
+  linkedin: "linkedin.com/in/rizwanzafar"
+  timezone: "Asia/Dubai"
+  nationality: "Pakistani"
+  visa_status: "UAE Resident — own visa"
+
+target_roles:
+  primary:
+    - "Head of Product"
+    - "Chief Product Officer"
+    - "Senior Product Manager"
+    - "Technical Programme Manager"
+    - "PMO Specialist"
+    - "Programme Manager"
+  secondary:
+    - "VP Product"
+    - "Director of Product"
+    - "Product Lead"
+    - "Digital Transformation Lead"
+  archetypes:
+    - name: "Head of Product / CPO"
+      level: "Senior Executive"
+      fit: "primary"
+    - name: "Senior / Principal PM"
+      level: "Senior"
+      fit: "primary"
+    - name: "Technical Programme Manager"
+      level: "Senior"
+      fit: "primary"
+    - name: "PMO Specialist / Programme Manager"
+      level: "Senior"
+      fit: "primary"
+    - name: "Digital Banking Product Lead"
+      level: "Senior Executive"
+      fit: "primary"
+
+target_locations:
+  - "UAE"
+  - "KSA"
+  - "Qatar"
+  - "UK"
+  - "Remote"
+
+domains:
+  primary:
+    - "Fintech"
+    - "Digital Banking"
+    - "Payments"
+    - "Payment Processing"
+    - "Card Acquiring"
+    - "Cross-Border Payments"
+    - "Mobile Wallets"
+    - "BNPL"
+  secondary:
+    - "E-commerce"
+    - "Super Apps"
+    - "Remittances"
+    - "Banking-as-a-Service"
+    - "Embedded Finance"
+    - "Open Banking"
+    - "Digital Transformation"
+    - "Payment Infrastructure"
+
+company_tiers:
+  tier1_processors:
+    description: "Global payment processors and gateways"
+    examples: [Stripe, Adyen, Checkout.com, PayPal, Worldpay, Square]
+    strategy: "Lead with $1B TPV, TikTok/Uber integrations, card scheme expertise"
+  tier1_networks:
+    description: "Card networks — target London/Amsterdam/Singapore only"
+    examples: [Visa, Mastercard, Amex]
+    strategy: "Target senior/director level in London only. Skip Dubai junior posts."
+  tier1_cross_border:
+    description: "Cross-border and remittance infrastructure"
+    examples: [Wise, Airwallex, Nium, Rapyd, Thunes, TerraPay]
+    strategy: "Lead with MoneyGram integration and Pakistan remittance corridor expertise"
+  tier2_neobanks:
+    description: "Digital banks with strong product culture"
+    examples: [Revolut, Wio Bank, Monzo, Starling, Nubank]
+    strategy: "Lead with 0→$1B builder narrative. Local CEO framing for Revolut."
+  tier2_bnpl:
+    description: "BNPL companies — direct match for 0→100K BNPL launch"
+    examples: [Tabby, Tamara, Postpay]
+    strategy: "HIGHEST probability. Lead with BNPL product launch immediately."
+  tier2_mena:
+    description: "MENA-focused fintech — regional advantage"
+    examples: [Network International, Magnati, STC Pay, Lean, Geidea]
+    strategy: "Regional context advantage. Programme governance + product hybrid roles."
+
+positioning_anchors:
+  globally_recognised_names:
+    - "TikTok"
+    - "Uber"
+    - "MoneyGram"
+    - "PUBG"
+    - "Alibaba / Daraz"
+  headline_metrics:
+    - "$1B+ TPV scaled in 4 years"
+    - "40+ engineers, 12 squads"
+    - "Payment failure rate: 8% → 1.2%"
+    - "Fraud reduction: 65%"
+    - "BNPL: 0 → 100K users in 8 months"
+    - "Checkout abandonment reduced 22% at Daraz"
+  simpaisa_framing:
+    - "Pakistan's largest digital payments super-app (Paytm / GCash scale)"
+    - "Similar scale to Paytm early stage"
+  regulatory_translations:
+    sбp_compliant: "FATF-equivalent AML/KYC framework"
+    local_3ds: "3DS2 card authentication across Visa/MC rails"
+    fraud_system: "CNP fraud prevention, chargeback management below Visa/MC thresholds"
+
+narrative:
+  headline: "Technical Programme Lead & CPO | 14+ years digital banking & payments"
+  exit_story: >
+    Built SimPaisa from 0→$1B+ TPV as Technical Programme Lead & CPO, leading
+    Fortune 500 integrations (TikTok, Uber, MoneyGram, PUBG). Previously scaled
+    Daraz (Alibaba-owned) to #1 e-commerce in Pakistan. PMP, PMI-ACP, CSPO, CSM
+    certified. Now targeting Head of Product / CPO roles in UAE, KSA, and UK.
+  superpowers:
+    - "0→1 digital payments product development ($1B+ TPV)"
+    - "Fortune 500 enterprise integrations (TikTok, Uber, MoneyGram)"
+    - "PMP/PMI-ACP/CSPO/CSM — programme + product dual expertise"
+    - "Cross-border payments & regulatory compliance (SBP, SAMA, UAE CB)"
+    - "Engineering team leadership (40+ engineers across 12 squads)"
+    - "Agile transformation & PMO governance at scale"
+  proof_points:
+    - name: "SimPaisa $1B+ TPV"
+      hero_metric: "Scaled from 0 to $1B+ total payment volume"
+      context: "Technical Programme Lead + CPO, 5 years"
+    - name: "Fortune 500 Integrations"
+      hero_metric: "TikTok, Uber, MoneyGram, PUBG enterprise integrations delivered"
+      context: "Full API integration lifecycle, SLA negotiations"
+    - name: "Daraz #1 E-commerce"
+      hero_metric: "Led product for Pakistan's #1 e-commerce platform (Alibaba-owned)"
+      context: "Sr. Product Manager, scaled to 100M+ monthly sessions"
+    - name: "PMO Governance at Scale"
+      hero_metric: "RAID log management across 50+ dependencies, 40-engineer org"
+      context: "SteerCo ownership, programme governance, cross-functional delivery"
+
+experience:
+  total_years: 14
+  current_title: "Technical Programme Lead / Chief Product Officer"
+  current_company: "SimPaisa"
+  current_since: "2020-08"
+  previous:
+    - title: "Senior Product Manager"
+      company: "Daraz (Alibaba Group)"
+      years: "2018-2020"
+    - title: "Programme Manager"
+      company: "TapmadTV"
+      years: "2016-2018"
+    - title: "PMO Consultant"
+      company: "Various (Dubizzle, Bank Alfalah, Zong)"
+      years: "2010-2016"
+
+education:
+  - degree: "M.S. Applied Physics"
+    institution: "University of Karachi"
+  - degree: "B.S. Physics, Statistics, Mathematics"
+    institution: "University of Karachi"
+
+certifications:
+  - "PMP (Project Management Professional)"
+  - "PMI-ACP (Agile Certified Practitioner)"
+  - "CSPO (Certified Scrum Product Owner)"
+  - "CSM (Certified Scrum Master)"
+  - "COBIT 5"
+  - "ITIL v3"
+
+key_skills:
+  product:
+    - "Product Strategy & Roadmapping"
+    - "OKR Frameworks"
+    - "Product Discovery"
+    - "User Research"
+    - "A/B Testing"
+    - "Feature Prioritization (RICE, MoSCoW)"
+  programme:
+    - "Programme Governance"
+    - "RAID Log Management"
+    - "SteerCo Ownership"
+    - "Stakeholder Management"
+    - "Risk & Issue Management"
+    - "MS Project / PowerPoint / Excel"
+    - "Think-cell"
+  technical:
+    - "REST API Design"
+    - "Payment Gateway Integration"
+    - "3DS / PCI-DSS"
+    - "Mobile App Product (iOS/Android)"
+    - "Data Analytics (SQL, Mixpanel, Amplitude)"
+    - "Agile / Scrum / SAFe"
+  domain:
+    - "Digital Banking"
+    - "Mobile Wallets"
+    - "Payment Processing"
+    - "BNPL"
+    - "Remittances"
+    - "KYC/AML Compliance"
+    - "Open Banking / APIs"
+
+compensation:
+  target_range: "AED 40,000 - 60,000/month"
+  currency: "AED"
+  minimum: "AED 35,000/month"
+  flexibility: "Open to equity + bonus for CPO roles"
+
+fit_threshold: 40   # Only process jobs with fit score >= 40

@@ -1,0 +1,943 @@
+# portals.yml — Target company ATS portals for Rizwan's job hunt
+# Full list: Card Networks, Processors, Cross-Border, BaaS, NeoBanks,
+#            Enterprise Banking, Traditional Banks, MENA Fintech
+#
+# ats_type options: greenhouse, ashby, lever, workday, taleo, bamboohr,
+#                   teamtailor, icims, smartrecruiters, custom, careers_page
+#
+# priority: 1=highest fit/probability, 2=strong target, 3=stretch/lower-prob
+#
+# notes: hiring intelligence from gap analysis (May 2026)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 1 — CARD NETWORKS / PAYMENT RAILS
+# Global payment networks. Dubai posts are junior/nationals-preferred.
+# Target: London, Amsterdam, Singapore, or Director-level Dubai only.
+# ═══════════════════════════════════════════════════════════════════════════════
+card_networks:
+
+  - name: Visa
+    website: https://visa.com
+    careers_url: https://corporate.visa.com/en/careers/job-search
+    ats_type: workday
+    priority: 2
+    notes: "Target London/Singapore senior roles only. Dubai posts = junior + UAE Nationals preferred."
+    tags: [card-network, payments, global, uk]
+
+  - name: Mastercard
+    website: https://mastercard.com
+    careers_url: https://careers.mastercard.com/us/en/search-results
+    ats_type: workday
+    priority: 2
+    notes: "Target London/Amsterdam senior roles only. Dubai posts = graduate + UAE Nationals preferred."
+    tags: [card-network, payments, global, uk]
+
+  - name: American Express
+    website: https://americanexpress.com
+    careers_url: https://jobs.americanexpress.com
+    ats_type: workday
+    priority: 2
+    notes: "Strong product culture. London and Singapore have senior PM roles. Dubai office growing."
+    tags: [card-network, payments, premium, global, uk]
+
+  - name: Discover / Discover Financial Services
+    website: https://discover.com
+    careers_url: https://jobs.discover.com
+    ats_type: workday
+    priority: 3
+    notes: "Primarily US. Some global remote roles."
+    tags: [card-network, payments, us]
+
+  - name: UnionPay International
+    website: https://unionpayintl.com
+    careers_url: https://unionpayintl.com/en/aboutUs/joinUs/
+    ats_type: custom
+    careers_page_url: https://unionpayintl.com/en/aboutUs/joinUs/
+    priority: 3
+    notes: "China-headquartered. Dubai/MENA business development roles exist."
+    tags: [card-network, payments, china, mena]
+
+  - name: JCB International
+    website: https://jcbcorporate.com
+    careers_url: https://jcbcorporate.com/english/career/
+    ats_type: custom
+    careers_page_url: https://jcbcorporate.com/english/career/
+    priority: 3
+    tags: [card-network, payments, japan]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 1 — PAYMENT PROCESSORS / GATEWAYS
+# Closest to Rizwan's core background. High-fit zone.
+# ═══════════════════════════════════════════════════════════════════════════════
+payment_processors:
+
+  - name: Stripe
+    website: https://stripe.com
+    careers_url: https://stripe.com/jobs
+    ats_type: greenhouse
+    ats_slug: stripe
+    priority: 1
+    notes: "Highest bar in the industry. Interview tests idempotency, fraud, API design depth. Target London or remote roles. Lead with TikTok/Uber integrations."
+    tags: [payments, developer-platform, api-first, global]
+
+  - name: Adyen
+    website: https://adyen.com
+    careers_url: https://careers.adyen.com/vacancies
+    ats_type: greenhouse
+    ats_slug: adyen
+    priority: 1
+    notes: "Requires card acquiring/scheme expertise. Amsterdam HQ; Dubai office growing. 5+ yrs payments PM experience required. Lead with $1B TPV + 8%→1.2% failure rate story."
+    tags: [payments, enterprise, acquiring, global, uae]
+
+  - name: Checkout.com
+    website: https://checkout.com
+    careers_url: https://checkout.com/careers
+    ats_type: greenhouse
+    ats_slug: checkoutcom
+    priority: 1
+    notes: "Strong Dubai presence. Product roles do open. Direct competitor to SimPaisa's stack."
+    tags: [payments, enterprise, uae, uk]
+
+  - name: PayPal
+    website: https://paypal.com
+    careers_url: https://careers.pypl.com
+    ats_type: workday
+    priority: 2
+    notes: "Large product org. Senior PM roles in London and Singapore. Strong enterprise integrations angle."
+    tags: [payments, consumer, global]
+
+  - name: Braintree (PayPal subsidiary)
+    website: https://braintreepayments.com
+    careers_url: https://careers.pypl.com
+    ats_type: workday
+    priority: 2
+    notes: "Hired via PayPal careers. Developer payments focus — strong fit for API-first experience."
+    tags: [payments, developer-platform, global]
+
+  - name: Worldpay (FIS)
+    website: https://worldpay.com
+    careers_url: https://worldpay.com/en/about-worldpay/careers
+    ats_type: workday
+    priority: 2
+    notes: "Enterprise payment processing giant. London + Dubai presence. Good fit for programme/product hybrid roles."
+    tags: [payments, enterprise, acquiring, uk, global]
+
+  - name: Fiserv
+    website: https://fiserv.com
+    careers_url: https://fiserv.wd5.myworkdayjobs.com/en-US/External
+    ats_type: workday
+    priority: 2
+    notes: "Large financial infrastructure company. Product roles in payments and banking."
+    tags: [payments, banking-infra, enterprise, global]
+
+  - name: FIS Global
+    website: https://fisglobal.com
+    careers_url: https://fisglobal.com/en/about/careers
+    ats_type: workday
+    priority: 2
+    notes: "One of largest financial tech companies globally. Product org is large. Good for programme-to-product profiles."
+    tags: [payments, banking-infra, enterprise, global]
+
+  - name: Square (Block)
+    website: https://squareup.com
+    careers_url: https://careers.block.xyz
+    ats_type: greenhouse
+    ats_slug: block
+    priority: 2
+    notes: "Strong product culture. Merchant payments + Cash App. International expansion relevant. US-centric but London office exists."
+    tags: [payments, merchant, consumer, global]
+
+  - name: GoCardless
+    website: https://gocardless.com
+    careers_url: https://gocardless.com/careers
+    ats_type: greenhouse
+    ats_slug: gocardless
+    priority: 2
+    notes: "Open banking / direct debit infrastructure. London HQ. Strong product org. MENA expansion."
+    tags: [payments, open-banking, bank-debit, uk]
+
+  - name: Worldline
+    website: https://worldline.com
+    careers_url: https://worldline.com/en/home/careers.html
+    ats_type: smartrecruiters
+    priority: 2
+    notes: "European payment infrastructure giant. Paris HQ but global roles. Enterprise B2B."
+    tags: [payments, enterprise, europe, global]
+
+  - name: Razorpay
+    website: https://razorpay.com
+    careers_url: https://razorpay.com/jobs
+    ats_type: lever
+    ats_slug: razorpay
+    priority: 2
+    notes: "India/South Asia focus — very relevant to Rizwan's background. Expanding to ME/MENA."
+    tags: [payments, south-asia, api, fintech]
+
+  - name: PayU (Prosus)
+    website: https://corporate.payu.com
+    careers_url: https://corporate.payu.com/careers
+    ats_type: greenhouse
+    ats_slug: payu
+    priority: 2
+    notes: "Emerging markets payments. Strong South Asia / MENA relevance. PM roles exist."
+    tags: [payments, emerging-markets, fintech, global]
+
+  - name: Verifone
+    website: https://verifone.com
+    careers_url: https://verifone.com/en/us/careers
+    ats_type: workday
+    priority: 3
+    notes: "POS / hardware payments. Product roles exist but hardware-focused."
+    tags: [payments, pos, hardware, global]
+
+  - name: Network International
+    website: https://www.networkinternational.ae
+    careers_url: https://www.networkinternational.ae/careers/current-vacancies
+    ats_type: custom
+    careers_page_url: https://www.networkinternational.ae/careers/current-vacancies
+    priority: 1
+    notes: "UAE-based acquiring/processing giant. Perfect domain fit. Senior PM roles exist."
+    tags: [payments, acquiring, uae, mena]
+
+  - name: Magnati (FAB spin-out)
+    website: https://magnati.com
+    careers_url: https://magnati.com/careers
+    ats_type: smartrecruiters
+    priority: 1
+    notes: "UAE digital payments, FAB-backed. Senior product roles. Strong MENA presence."
+    tags: [payments, fintech, uae, fab]
+
+  - name: Nuvei
+    website: https://nuvei.com
+    careers_url: https://nuvei.com/careers
+    ats_type: greenhouse
+    ats_slug: nuvei
+    priority: 2
+    notes: "Global payments scale-up. MENA expansion. Senior PM roles in London/Montreal."
+    tags: [payments, fintech, global]
+
+  - name: Geidea
+    website: https://geidea.net
+    careers_url: https://geidea.net/careers
+    ats_type: greenhouse
+    ats_slug: geidea
+    priority: 1
+    notes: "Saudi POS + payments processing leader. Active product hiring."
+    tags: [payments, pos, ksa, uae]
+
+  - name: PayTabs
+    website: https://paytabs.com
+    careers_url: https://paytabs.com/en/careers/
+    ats_type: greenhouse
+    ats_slug: paytabs
+    priority: 2
+    tags: [payments, fintech, ksa, uae]
+
+  - name: HyperPay
+    website: https://hyperpay.com
+    careers_url: https://hyperpay.com/careers
+    ats_type: custom
+    careers_page_url: https://hyperpay.com/careers
+    priority: 2
+    tags: [payments, fintech, ksa, uae]
+
+  - name: Saudi Payments (NAPS)
+    website: https://saudipayments.com
+    careers_url: https://saudipayments.com/careers
+    ats_type: custom
+    careers_page_url: https://saudipayments.com/careers
+    priority: 2
+    notes: "National payment infrastructure body in KSA. Senior roles for experienced payments professionals."
+    tags: [payments, infrastructure, ksa]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 1 — CROSS-BORDER & REMITTANCE INFRASTRUCTURE
+# Strong fit: SimPaisa's MoneyGram integration is a direct credential here.
+# ═══════════════════════════════════════════════════════════════════════════════
+cross_border_remittance:
+
+  - name: Wise (TransferWise)
+    website: https://wise.com
+    careers_url: https://wise.com/gb/jobs
+    ats_type: greenhouse
+    ats_slug: wise
+    priority: 1
+    notes: "Values mission-aligned PMs. Fintech experience NOT required — fast learners welcomed. MoneyGram integration on CV is a strong hook. Target London or Singapore."
+    tags: [remittance, fintech, cross-border, uk]
+
+  - name: Airwallex
+    website: https://airwallex.com
+    careers_url: https://airwallex.com/careers
+    ats_type: greenhouse
+    ats_slug: airwallex
+    priority: 1
+    notes: "Cross-border B2B payments. Dubai office active. Strong $1B TPV fit. Very high hiring probability."
+    tags: [cross-border, payments, b2b, global, uae]
+
+  - name: Nium
+    website: https://nium.com
+    careers_url: https://nium.com/careers
+    ats_type: greenhouse
+    ats_slug: nium
+    priority: 1
+    notes: "Singapore-based cross-border infra. Dubai presence. B2B payments platform — very relevant to Rizwan."
+    tags: [cross-border, payments, b2b, singapore, uae]
+
+  - name: Rapyd
+    website: https://rapyd.net
+    careers_url: https://rapyd.net/careers
+    ats_type: greenhouse
+    ats_slug: rapyd
+    priority: 1
+    notes: "Fintech-as-a-service. MEA expansion. Senior PM roles in London and Tel Aviv."
+    tags: [payments, fintech-infra, cross-border, uk, global]
+
+  - name: Payoneer
+    website: https://payoneer.com
+    careers_url: https://payoneer.com/careers
+    ats_type: greenhouse
+    ats_slug: payoneer
+    priority: 2
+    notes: "Cross-border payouts, freelancer economy. Global roles. MENA office in Dubai."
+    tags: [cross-border, payments, freelance, global, uae]
+
+  - name: Remitly
+    website: https://remitly.com
+    careers_url: https://remitly.com/us/en/careers
+    ats_type: greenhouse
+    ats_slug: remitly
+    priority: 2
+    notes: "Remittance-first consumer product. Strong South Asia / Pakistan corridor relevance."
+    tags: [remittance, consumer, cross-border, global]
+
+  - name: Western Union
+    website: https://westernunion.com
+    careers_url: https://careers.westernunion.com
+    ats_type: workday
+    priority: 2
+    notes: "Legacy remittance giant transforming digitally. PM roles in digital transformation track."
+    tags: [remittance, cross-border, enterprise, global]
+
+  - name: MoneyGram
+    website: https://moneygram.com
+    careers_url: https://moneygram.com/mgo/us/en/careers
+    ats_type: workday
+    priority: 2
+    notes: "Rizwan delivered MoneyGram enterprise integration at SimPaisa — direct credibility. Digital transformation hiring."
+    tags: [remittance, cross-border, enterprise, global]
+
+  - name: Currencycloud (Visa subsidiary)
+    website: https://currencycloud.com
+    careers_url: https://currencycloud.com/company/careers
+    ats_type: greenhouse
+    ats_slug: currencycloud
+    priority: 2
+    notes: "B2B FX and cross-border infra, now part of Visa. London-based. Strong fit."
+    tags: [fx, cross-border, b2b, uk]
+
+  - name: Thunes
+    website: https://thunes.com
+    careers_url: https://thunes.com/careers
+    ats_type: greenhouse
+    ats_slug: thunes
+    priority: 2
+    notes: "Cross-border payment network, MENA and emerging markets. Singapore HQ."
+    tags: [cross-border, remittance, emerging-markets, mena]
+
+  - name: TerraPay
+    website: https://terrapay.com
+    careers_url: https://terrapay.com/careers
+    ats_type: lever
+    ats_slug: terrapay
+    priority: 2
+    notes: "Cross-border infra, Dubai office, South Asia / MENA corridors. Very relevant."
+    tags: [cross-border, remittance, mena, uae]
+
+  - name: dLocal
+    website: https://dlocal.com
+    careers_url: https://dlocal.com/careers
+    ats_type: greenhouse
+    ats_slug: dlocal
+    priority: 2
+    notes: "Emerging markets payments. Remote-friendly. Senior PM roles."
+    tags: [payments, emerging-markets, latam, global]
+
+  - name: Pyypl
+    website: https://pyypl.com
+    careers_url: https://pyypl.com/careers
+    ats_type: custom
+    careers_page_url: https://pyypl.com/careers
+    priority: 2
+    notes: "UAE-based digital wallet for migrant workers. Cross-border remittance focus. High mission alignment."
+    tags: [digital-wallet, remittance, uae, mena]
+
+  - name: Now Money
+    website: https://nowmoney.me
+    careers_url: https://nowmoney.me/careers
+    ats_type: custom
+    careers_page_url: https://nowmoney.me/careers
+    priority: 2
+    notes: "UAE migrant worker payments. Rizwan's Pakistan/SBP compliance background is a differentiated fit."
+    tags: [payments, inclusion, remittance, uae]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 2 — BANKING-AS-A-SERVICE (BaaS) / EMBEDDED FINANCE
+# Infrastructure layer for fintech apps. Strong product org, technical PM needed.
+# ═══════════════════════════════════════════════════════════════════════════════
+baas_embedded_finance:
+
+  - name: Marqeta
+    website: https://marqeta.com
+    careers_url: https://marqeta.com/company/careers
+    ats_type: greenhouse
+    ats_slug: marqeta
+    priority: 2
+    notes: "Card issuing infrastructure. Senior PM roles in Oakland/London. Strong API-first, card issuance angle."
+    tags: [card-issuing, baas, api-first, global]
+
+  - name: Plaid
+    website: https://plaid.com
+    careers_url: https://plaid.com/careers
+    ats_type: greenhouse
+    ats_slug: plaid
+    priority: 2
+    notes: "Open banking / account linking infra. US-centric but international expansion. Strong technical PM culture."
+    tags: [open-banking, data, baas, us]
+
+  - name: Solaris (SolarisGroup)
+    website: https://solarisgroup.com
+    careers_url: https://solarisgroup.com/careers
+    ats_type: greenhouse
+    ats_slug: solarisgroup
+    priority: 2
+    notes: "European BaaS leader. Berlin HQ. Growing MENA interest."
+    tags: [baas, banking, europe]
+
+  - name: Lithic
+    website: https://lithic.com
+    careers_url: https://lithic.com/company/careers
+    ats_type: greenhouse
+    ats_slug: lithic
+    priority: 2
+    notes: "Card issuing API. US-focused but remote options. Technical PM needed."
+    tags: [card-issuing, baas, api-first, us]
+
+  - name: Modern Treasury
+    website: https://moderntreasury.com
+    careers_url: https://moderntreasury.com/company/jobs
+    ats_type: lever
+    ats_slug: moderntreasury
+    priority: 2
+    notes: "Payment operations and reconciliation infra. US-focused. Strong finance/payments overlap."
+    tags: [payments, treasury, baas, us]
+
+  - name: Lean Technologies
+    website: https://leantech.me
+    careers_url: https://leantech.me/careers
+    ats_type: ashby
+    ats_slug: leantech
+    priority: 1
+    notes: "MENA open banking / account-to-account payments. KSA + UAE. High growth."
+    tags: [open-banking, api, ksa, uae]
+
+  - name: Mambu
+    website: https://mambu.com
+    careers_url: https://mambu.com/en/careers
+    ats_type: greenhouse
+    ats_slug: mambu
+    priority: 2
+    notes: "Cloud banking platform — powers Wio Bank. Product roles in London and remote."
+    tags: [core-banking, baas, cloud, global]
+
+  - name: Temenos
+    website: https://temenos.com
+    careers_url: https://temenos.com/careers
+    ats_type: workday
+    priority: 2
+    notes: "Banking software giant. Strong UAE presence. Product/programme hybrid roles."
+    tags: [core-banking, enterprise, global, uae]
+
+  - name: Finastra
+    website: https://finastra.com
+    careers_url: https://finastra.com/careers
+    ats_type: workday
+    priority: 2
+    notes: "Financial software, open banking APIs. London HQ. Dubai office. PM roles exist."
+    tags: [banking-software, open-banking, enterprise, uk, uae]
+
+  - name: Oracle Financial Services
+    website: https://oracle.com/financial-services
+    careers_url: https://careers.oracle.com
+    ats_type: taleo
+    priority: 2
+    notes: "Enterprise banking infra. Dubai office large. Programme manager roles very relevant."
+    tags: [banking-software, enterprise, global, uae]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 1 — DIGITAL BANKS / NEOBANKS
+# Tech-driven banks. "Local CEO" model at Revolut. High fit for Rizwan.
+# ═══════════════════════════════════════════════════════════════════════════════
+digital_banks_neobanks:
+
+  - name: Revolut
+    website: https://revolut.com
+    careers_url: https://revolut.com/careers
+    ats_type: greenhouse
+    ats_slug: revolut
+    priority: 1
+    notes: "Values raw intellect and builders over credentials. 'Local CEO' PM model. Dubai launch 2025. Lead with 0→$1B TPV builder narrative."
+    tags: [neobank, fintech, uk, uae]
+
+  - name: Wio Bank
+    website: https://wio.io
+    careers_url: https://wio.io/careers
+    ats_type: greenhouse
+    ats_slug: wiobank
+    priority: 1
+    notes: "Middle East's best digital bank 2025. Abu Dhabi + Dubai. Rapid hiring. Product + AI + data roles. High probability."
+    tags: [neobank, digital-banking, uae, adib]
+
+  - name: Wise (TransferWise)
+    website: https://wise.com
+    careers_url: https://wise.com/gb/jobs
+    ats_type: greenhouse
+    ats_slug: wise
+    priority: 1
+    notes: "Cross-listed above — see cross_border_remittance section."
+    tags: [remittance, fintech, uk]
+
+  - name: Monzo
+    website: https://monzo.com
+    careers_url: https://monzo.com/careers
+    ats_type: greenhouse
+    ats_slug: monzo-bank
+    priority: 2
+    notes: "UK digital bank. Values ex-startup operators who built at scale. Head of Product roles open."
+    tags: [neobank, fintech, uk]
+
+  - name: Starling Bank
+    website: https://starlingbank.com
+    careers_url: https://starlingbank.com/careers
+    ats_type: greenhouse
+    ats_slug: starlingbank
+    priority: 2
+    notes: "UK challenger bank. Product roles for experienced payments/banking PMs."
+    tags: [neobank, banking, uk]
+
+  - name: N26
+    website: https://n26.com
+    careers_url: https://n26.com/en-eu/careers
+    ats_type: greenhouse
+    ats_slug: n26
+    priority: 2
+    notes: "European digital bank. Berlin HQ. International product roles."
+    tags: [neobank, fintech, europe]
+
+  - name: Chime
+    website: https://chime.com
+    careers_url: https://chime.com/careers
+    ats_type: greenhouse
+    ats_slug: chime
+    priority: 3
+    notes: "US-only neobank. Remote roles possible but US-centric."
+    tags: [neobank, consumer, us]
+
+  - name: Nubank
+    website: https://nubank.com.br
+    careers_url: https://nubank.com.br/en/careers
+    ats_type: greenhouse
+    ats_slug: nubank
+    priority: 2
+    notes: "World's largest neobank. Values operators who scaled to $1B+ TPV. Remote-friendly senior roles."
+    tags: [neobank, fintech, latam, global, remote]
+
+  - name: Mashreq Neo (Mashreq Bank)
+    website: https://mashreq.com
+    careers_url: https://mashreq.com/en/uae/careers
+    ats_type: custom
+    careers_page_url: https://mashreq.com/en/uae/careers
+    priority: 2
+    notes: "UAE digital banking arm of Mashreq. Senior product roles open for experienced fintech PMs."
+    tags: [neobank, digital-banking, uae]
+
+  - name: Liv. by Emirates NBD
+    website: https://liv.me
+    careers_url: https://emiratesnbd.com/en/careers
+    ats_type: workday
+    careers_page_url: https://emiratesnbd.com/en/careers
+    priority: 2
+    tags: [neobank, digital-banking, uae]
+
+  - name: YAP
+    website: https://yap.com
+    careers_url: https://yap.com/careers
+    ats_type: custom
+    careers_page_url: https://yap.com/careers
+    priority: 2
+    notes: "UAE neo-bank / super-wallet. Founder-accessible scale — good for Head of Product."
+    tags: [neobank, digital-wallet, uae]
+
+  - name: Jupiter Money
+    website: https://jupiter.money
+    careers_url: https://jupiter.money/careers
+    ats_type: lever
+    ats_slug: jupiter-money
+    priority: 3
+    notes: "India neobank. Remote roles possible. Rizwan's South Asia background relevant."
+    tags: [neobank, fintech, india]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 2 — BNPL (BUY NOW PAY LATER)
+# Rizwan launched BNPL 0→100K users. This is a top signal for these employers.
+# ═══════════════════════════════════════════════════════════════════════════════
+bnpl:
+
+  - name: Tabby
+    website: https://tabby.ai
+    careers_url: https://tabby.ai/en-ae/careers
+    ats_type: ashby
+    ats_slug: tabby
+    priority: 1
+    notes: "UAE BNPL leader. Rizwan's 0→100K BNPL launch is a DIRECT match. Very high probability. Apply now."
+    tags: [bnpl, fintech, uae, ksa]
+
+  - name: Tamara
+    website: https://tamara.co
+    careers_url: https://tamara.co/careers
+    ats_type: ashby
+    ats_slug: tamara
+    priority: 1
+    notes: "KSA BNPL leader. Same argument as Tabby. Rizwan's BNPL experience is differentiated signal."
+    tags: [bnpl, fintech, ksa, uae]
+
+  - name: Postpay
+    website: https://postpay.io
+    careers_url: https://postpay.io/careers
+    ats_type: lever
+    ats_slug: postpay
+    priority: 2
+    tags: [bnpl, fintech, uae]
+
+  - name: Spotii (acquired by Zip)
+    website: https://spotii.me
+    careers_url: https://spotii.me/careers
+    ats_type: custom
+    careers_page_url: https://spotii.me/careers
+    priority: 3
+    tags: [bnpl, fintech, uae]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 2 — MENA FINTECH (UAE / KSA / QATAR / BAHRAIN)
+# Strong regional fit. Rizwan's MENA fintech background is directly relevant.
+# ═══════════════════════════════════════════════════════════════════════════════
+mena_fintech:
+
+  - name: STC Pay / STC Bank
+    website: https://stcpay.com.sa
+    careers_url: https://careers.stc.com.sa
+    ats_type: workday
+    careers_page_url: https://careers.stc.com.sa
+    priority: 1
+    tags: [telco-fintech, payments, digital-wallet, ksa]
+
+  - name: Rasan (Tameeni / Masarat)
+    website: https://rasan.com
+    careers_url: https://rasan.com/careers
+    ats_type: greenhouse
+    ats_slug: rasan
+    priority: 2
+    tags: [fintech, insurtech, ksa]
+
+  - name: Hala
+    website: https://hala.com
+    careers_url: https://hala.com/careers
+    ats_type: lever
+    ats_slug: hala
+    priority: 2
+    tags: [super-app, fintech, ksa]
+
+  - name: Foodics
+    website: https://foodics.com
+    careers_url: https://foodics.com/careers
+    ats_type: greenhouse
+    ats_slug: foodics
+    priority: 2
+    tags: [pos, payments, saas, ksa, uae]
+
+  - name: QPAY
+    website: https://qpay.gov.qa
+    careers_url: https://qpay.gov.qa/careers
+    ats_type: custom
+    careers_page_url: https://qpay.gov.qa/careers
+    priority: 2
+    tags: [payments, qatar]
+
+  - name: Qatar Islamic Bank — Digital
+    website: https://qib.com.qa
+    careers_url: https://qib.com.qa/en/careers
+    ats_type: custom
+    careers_page_url: https://qib.com.qa/en/careers
+    priority: 2
+    tags: [islamic-banking, digital-banking, qatar]
+
+  - name: Rain
+    website: https://rain.bh
+    careers_url: https://rain.bh/careers
+    ats_type: custom
+    careers_page_url: https://rain.bh/careers
+    priority: 2
+    tags: [crypto, fintech, bahrain, mena]
+
+  - name: Mamo
+    website: https://mamo.io
+    careers_url: https://mamo.io/careers
+    ats_type: lever
+    ats_slug: mamo
+    priority: 2
+    tags: [b2b-payments, fintech, uae]
+
+  - name: Fawry
+    website: https://fawry.com
+    careers_url: https://fawry.com/careers
+    ats_type: custom
+    careers_page_url: https://fawry.com/careers
+    priority: 3
+    tags: [payments, fintech, egypt, mena]
+
+  - name: Ziina
+    website: https://ziina.com
+    careers_url: https://ziina.com/careers
+    ats_type: ashby
+    ats_slug: ziina
+    priority: 2
+    tags: [p2p, fintech, uae]
+
+  - name: Sarwa
+    website: https://sarwa.co
+    careers_url: https://sarwa.co/careers
+    ats_type: lever
+    ats_slug: sarwa
+    priority: 2
+    tags: [wealthtech, fintech, uae]
+
+  - name: Beehive
+    website: https://beehive.ae
+    careers_url: https://beehive.ae/careers
+    ats_type: custom
+    careers_page_url: https://beehive.ae/careers
+    priority: 3
+    tags: [p2p-lending, fintech, uae]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 2 — UAE / MENA TECH (E-COMMERCE, SUPER-APPS)
+# Strong fit via Daraz/Alibaba background.
+# ═══════════════════════════════════════════════════════════════════════════════
+uae_mena_tech:
+
+  - name: Careem (Uber subsidiary)
+    website: https://careem.com
+    careers_url: https://careers.careem.com
+    ats_type: greenhouse
+    ats_slug: careem
+    priority: 1
+    notes: "Uber subsidiary — Rizwan's Uber integration is a direct hook. Super-app including payments."
+    tags: [super-app, ride-hailing, payments, uae]
+
+  - name: Noon / Noon Payments
+    website: https://noon.com
+    careers_url: https://careers.noon.com
+    ats_type: lever
+    ats_slug: noon
+    priority: 2
+    tags: [ecommerce, payments, uae]
+
+  - name: Talabat (Delivery Hero)
+    website: https://talabat.com
+    careers_url: https://careers.talabat.com
+    ats_type: greenhouse
+    ats_slug: talabat
+    priority: 2
+    tags: [delivery, payments, uae, mena]
+
+  - name: Dubizzle / Bayut (OLX Group)
+    website: https://dubizzle.com
+    careers_url: https://careers.dubizzle.com
+    ats_type: greenhouse
+    ats_slug: dubizzle
+    priority: 2
+    notes: "Rizwan worked at Dubizzle UAE — returning with 10+ years more experience. Strong rehire signal."
+    tags: [classifieds, tech, uae]
+
+  - name: Property Finder
+    website: https://propertyfinder.ae
+    careers_url: https://propertyfinder.ae/careers
+    ats_type: greenhouse
+    ats_slug: propertyfinder
+    priority: 2
+    tags: [proptech, tech, uae]
+
+  - name: OKX
+    website: https://okx.com
+    careers_url: https://okx.com/en-us/join-us/openings
+    ats_type: greenhouse
+    ats_slug: okx
+    priority: 2
+    notes: "Dubai-HQ crypto/fintech. Massive product org. 246+ PM jobs. Strong hiring in UAE."
+    tags: [crypto, fintech, uae, global]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 3 — TRADITIONAL BANKS (DIGITAL/FINTECH DIVISIONS)
+# Big banks competing digitally. Programme/product hybrid roles relevant.
+# ═══════════════════════════════════════════════════════════════════════════════
+traditional_banks_digital:
+
+  - name: JPMorgan Chase — Digital & Payments
+    website: https://jpmorgan.com
+    careers_url: https://careers.jpmorgan.com
+    ats_type: smartrecruiters
+    ats_slug: jpmc
+    workday_slug: jpmc
+    priority: 2
+    notes: "JP Morgan Payments is a major growing division. Senior PM and programme roles exist globally."
+    tags: [banking, payments, enterprise, global]
+
+  - name: HSBC — Digital Banking
+    website: https://hsbc.com
+    careers_url: https://hsbc.com/careers
+    ats_type: taleo
+    priority: 2
+    notes: "Large UAE presence. Digital transformation + payments product roles in Dubai and London."
+    tags: [banking, digital-banking, uae, uk, global]
+
+  - name: Standard Chartered — SC Ventures
+    website: https://standardchartered.com
+    careers_url: https://careers.sc.com
+    ats_type: workday
+    ats_slug: standardchartered
+    workday_slug: standardchartered
+    priority: 2
+    notes: "SC Ventures (innovation arm) hires fintech PM profiles. UAE + London + Singapore."
+    tags: [banking, fintech, innovation, uae, uk]
+
+  - name: DBS Bank — Digital
+    website: https://dbs.com
+    careers_url: https://careers.dbs.com
+    ats_type: workday
+    ats_slug: dbs
+    workday_slug: dbs
+    priority: 2
+    notes: "World's best digital bank multiple times. Singapore HQ. Remote-friendly senior roles."
+    tags: [banking, digital-banking, singapore, global]
+
+  - name: Citibank — Digital Assets & Payments
+    website: https://citigroup.com
+    careers_url: https://jobs.citi.com
+    ats_type: workday
+    ats_slug: citi
+    workday_slug: citi
+    priority: 2
+    notes: "Citi Treasury & Trade Solutions is a large product org. Senior PM roles in London and Dubai."
+    tags: [banking, payments, treasury, global, uae]
+
+  - name: Goldman Sachs — Marcus / Transaction Banking
+    website: https://goldmansachs.com
+    careers_url: https://goldmansachs.com/careers
+    ats_type: workday
+    ats_slug: goldmansachs
+    workday_slug: goldmansachs
+    priority: 3
+    notes: "Very prestigious. High bar. Product roles in transaction banking relevant."
+    tags: [banking, fintech, enterprise, global]
+
+  - name: Emirates NBD — Digital
+    website: https://emiratesnbd.com
+    careers_url: https://emiratesnbd.com/en/careers
+    ats_type: workday
+    ats_slug: emiratesnbd
+    workday_slug: emiratesnbd
+    priority: 2
+    notes: "UAE's largest bank. Digital banking division active. Product lead roles exist."
+    tags: [banking, digital-banking, uae]
+
+  - name: FAB — First Abu Dhabi Bank Digital
+    website: https://bankfab.com
+    careers_url: https://bankfab.com/en/careers
+    ats_type: workday
+    ats_slug: firstabuldhabi
+    workday_slug: firstabuldhabi
+    priority: 2
+    notes: "UAE's largest bank by assets. Active digital transformation. Strong product org."
+    tags: [banking, digital-banking, uae]
+
+  - name: ADCB — Digital
+    website: https://adcb.com
+    careers_url: https://adcb.com/en/about-adcb/careers/
+    ats_type: custom
+    careers_page_url: https://adcb.com/en/about-adcb/careers/
+    priority: 2
+    tags: [banking, digital-banking, uae]
+
+  - name: Bank Alfalah — Digital
+    website: https://bankalfalah.com
+    careers_url: https://bankalfalah.com/careers
+    ats_type: custom
+    careers_page_url: https://bankalfalah.com/careers
+    priority: 2
+    notes: "Rizwan did programme management consulting for Bank Alfalah — credible insider angle."
+    tags: [banking, digital-banking, pakistan]
+
+  - name: Mashreq Bank
+    website: https://mashreq.com
+    careers_url: https://mashreq.com/en/uae/careers
+    ats_type: custom
+    careers_page_url: https://mashreq.com/en/uae/careers
+    priority: 2
+    tags: [banking, digital-banking, uae]
+
+  - name: Paysafe
+    website: https://paysafe.com
+    careers_url: https://paysafe.com/careers
+    ats_type: workday
+    priority: 2
+    tags: [payments, igaming, uk, global]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 3 — CRYPTO / WEB3 FINTECH
+# Growing MENA presence. Relevant for payment infrastructure expertise.
+# ═══════════════════════════════════════════════════════════════════════════════
+crypto_web3:
+
+  - name: Bybit
+    website: https://bybit.com
+    careers_url: https://bybit.com/en/careers
+    ats_type: greenhouse
+    ats_slug: bybit
+    priority: 3
+    tags: [crypto, trading, uae]
+
+  - name: Binance
+    website: https://binance.com
+    careers_url: https://binance.com/en/careers
+    ats_type: greenhouse
+    ats_slug: binance
+    priority: 3
+    notes: "Expanding UAE presence. Fiat on/off-ramp is payments-adjacent."
+    tags: [crypto, fintech, uae, global]
+
+  - name: Crypto.com
+    website: https://crypto.com
+    careers_url: https://crypto.com/en/careers
+    ats_type: lever
+    ats_slug: crypto-com
+    priority: 3
+    tags: [crypto, fintech, global]

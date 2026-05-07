@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground-rgb: 229, 231, 235;
+  --background-start-rgb: 3, 7, 18;
+  --background-end-rgb: 9, 9, 11;
+}
+
+body {
+  color: rgb(var(--foreground-rgb));
+  background: linear-gradient(
+    to bottom,
+    rgb(var(--background-start-rgb)),
+    rgb(var(--background-end-rgb))
+  );
+}
+
+.score-badge {
+  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
+}
+
+.score-a { @apply bg-emerald-900 text-emerald-300; }
+.score-b { @apply bg-blue-900 text-blue-300; }
+.score-c { @apply bg-yellow-900 text-yellow-300; }
+.score-d { @apply bg-orange-900 text-orange-300; }
+.score-f { @apply bg-red-900 text-red-300; }
+
+.status-badge {
+  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+}
+.status-new { @apply bg-blue-900/50 text-blue-300 border border-blue-700; }
+.status-evaluated { @apply bg-purple-900/50 text-purple-300 border border-purple-700; }
+.status-applied { @apply bg-cyan-900/50 text-cyan-300 border border-cyan-700; }
+.status-interviewing { @apply bg-amber-900/50 text-amber-300 border border-amber-700; }
+.status-offer { @apply bg-emerald-900/50 text-emerald-300 border border-emerald-700; }
+.status-rejected { @apply bg-red-900/50 text-red-400 border border-red-800; }
+.status-pass { @apply bg-gray-800 text-gray-500 border border-gray-700; }

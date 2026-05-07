@@ -1,0 +1,17 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.git/
+.gitignore
+output/
+data/
+*.log
+node_modules/
+dashboard/.next/
+dashboard/node_modules/
+*.md
+!README.md
+.DS_Store

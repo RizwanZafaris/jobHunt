@@ -1,0 +1,45 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+
+# Outputs (generated files)
+output/
+data/
+
+# Logs
+*.log
+logs/
+
+# Node / Dashboard
+node_modules/
+dashboard/node_modules/
+dashboard/.next/
+dashboard/.env.local
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Railway / Docker
+.railway/
