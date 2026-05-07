@@ -34,9 +34,6 @@ CREATE TABLE IF NOT EXISTS company_knowledge (
     embedding       vector(1536),   -- text-embedding-3-small dimensions
     source_url      TEXT,
     scraped_at      TIMESTAMPTZ DEFAULT NOW(),
-    freshness_ok    BOOLEAN GENERATED ALWAYS AS (
-                        scraped_at > NOW() - INTERVAL '24 hours'
-                    ) STORED,
     metadata        JSONB DEFAULT '{}'::jsonb
 );
 
@@ -259,14 +256,17 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS update_companies_updated_at ON companies;
 CREATE TRIGGER update_companies_updated_at
     BEFORE UPDATE ON companies
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+DROP TRIGGER IF EXISTS update_jobs_updated_at ON jobs;
 CREATE TRIGGER update_jobs_updated_at
     BEFORE UPDATE ON jobs
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+DROP TRIGGER IF EXISTS update_applications_updated_at ON applications;
 CREATE TRIGGER update_applications_updated_at
     BEFORE UPDATE ON applications
     FOR EACH ROW EXECUTE FUNCTION update_updated_at();
