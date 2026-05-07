@@ -1,13 +1,25 @@
+// Server-side fetches (called from React Server Components in page.tsx)
+// use the direct API URL with the secret. Client-side fetches must go
+// through /api/proxy/* so the secret stays server-side.
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const SECRET_KEY = process.env.API_SECRET_KEY || ''
 
-const headers = {
+const serverHeaders = {
   'Content-Type': 'application/json',
   'X-Secret-Key': SECRET_KEY,
 }
 
+const clientHeaders = {
+  'Content-Type': 'application/json',
+}
+
+// In the browser, window is defined → use the proxy. On the server, hit the API directly.
+const isBrowser = typeof window !== 'undefined'
+const baseUrl = isBrowser ? '/api/proxy' : API_URL
+const headers = isBrowser ? clientHeaders : serverHeaders
+
 export async function fetchStats() {
-  const res = await fetch(`${API_URL}/pipeline/stats`, { headers, next: { revalidate: 60 } })
+  const res = await fetch(`${baseUrl}/pipeline/stats`, { headers, next: { revalidate: 60 } })
   if (!res.ok) throw new Error('Failed to fetch stats')
   return res.json()
 }
@@ -22,19 +34,19 @@ export async function fetchJobs(params?: {
   if (params?.min_score !== undefined) query.set('min_score', String(params.min_score))
   if (params?.limit !== undefined) query.set('limit', String(params.limit))
 
-  const res = await fetch(`${API_URL}/jobs?${query}`, { headers, next: { revalidate: 30 } })
+  const res = await fetch(`${baseUrl}/jobs?${query}`, { headers, next: { revalidate: 30 } })
   if (!res.ok) throw new Error('Failed to fetch jobs')
   return res.json()
 }
 
 export async function fetchCompanies() {
-  const res = await fetch(`${API_URL}/companies`, { headers, next: { revalidate: 120 } })
+  const res = await fetch(`${baseUrl}/companies`, { headers, next: { revalidate: 120 } })
   if (!res.ok) throw new Error('Failed to fetch companies')
   return res.json()
 }
 
 export async function fetchDigest() {
-  const res = await fetch(`${API_URL}/digest/latest`, { headers, next: { revalidate: 3600 } })
+  const res = await fetch(`${baseUrl}/digest/latest`, { headers, next: { revalidate: 3600 } })
   if (!res.ok) throw new Error('Failed to fetch digest')
   return res.json()
 }
@@ -44,7 +56,7 @@ export async function triggerPipeline(options?: {
   role?: string
   skip_scout?: boolean
 }) {
-  const res = await fetch(`${API_URL}/pipeline/run`, {
+  const res = await fetch(`${baseUrl}/pipeline/run`, {
     method: 'POST',
     headers,
     body: JSON.stringify(options || {}),
@@ -54,7 +66,7 @@ export async function triggerPipeline(options?: {
 }
 
 export async function triggerBossAudit() {
-  const res = await fetch(`${API_URL}/boss/audit`, {
+  const res = await fetch(`${baseUrl}/boss/audit`, {
     method: 'POST',
     headers,
     body: JSON.stringify({}),
@@ -69,7 +81,7 @@ export async function evaluateJob(data: {
   job_title: string
   job_url?: string
 }) {
-  const res = await fetch(`${API_URL}/pipeline/evaluate`, {
+  const res = await fetch(`${baseUrl}/pipeline/evaluate`, {
     method: 'POST',
     headers,
     body: JSON.stringify(data),
