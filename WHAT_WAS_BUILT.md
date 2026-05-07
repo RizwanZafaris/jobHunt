@@ -291,7 +291,7 @@ All checks passed before deployment:
 
 ```bash
 # 1. Set up Supabase schema (run once)
-python supabase/setup_schema.py
+python db/setup_schema.py
 
 # 2. Configure Railway environment variables
 ANTHROPIC_API_KEY=sk-ant-...

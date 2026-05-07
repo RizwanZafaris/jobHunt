@@ -25,7 +25,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from agents.base_agent import BaseAgent
 from config.settings import get_settings
-from supabase.client import (
+from db.client import (
     upsert_company_knowledge,
     search_company_knowledge,
     upsert_company,

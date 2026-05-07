@@ -19,7 +19,7 @@ from pathlib import Path
 
 from agents.base_agent import BaseAgent
 from config.settings import get_settings
-from supabase.client import (
+from db.client import (
     search_rizwan_profile,
     search_story_bank,
     save_conversation_turn,

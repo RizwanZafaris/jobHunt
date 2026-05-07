@@ -20,7 +20,7 @@ import yaml
 from agents.base_agent import BaseAgent
 from agents.company_agent import CompanyAgent
 from config.settings import get_settings
-from supabase.client import (
+from db.client import (
     get_stale_companies,
     log_boss_audit,
     get_supabase,

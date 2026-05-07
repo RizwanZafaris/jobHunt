@@ -67,7 +67,7 @@ cp .env.example .env
 
 ### 3. Set up Supabase
 ```bash
-python supabase/setup_schema.py   # Creates all tables + pgvector extension
+python db/setup_schema.py   # Creates all tables + pgvector extension
 ```
 
 ### 4. Configure your profile

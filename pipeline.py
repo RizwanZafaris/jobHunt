@@ -27,7 +27,7 @@ from agents.rizwan_agent import RizwanAgent
 from agents.resume_builder_agent import ResumeBuilderAgent
 from agents.interview_agent import InterviewAgent
 from config.settings import get_settings
-from supabase.client import update_job, get_supabase
+from db.client import update_job, get_supabase
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -157,7 +157,7 @@ class JobHuntPipeline:
         await company_agent.build_or_refresh()
 
         # ── Phase 2b: Gap analysis ─────────────────────────────────────────
-        from supabase.client import search_rizwan_profile
+        from db.client import search_rizwan_profile
         profile_sections = await search_rizwan_profile(jd_text, match_count=5)
         rizwan_profile_text = "\n".join([
             f"[{s['section']}]: {s['content']}" for s in profile_sections

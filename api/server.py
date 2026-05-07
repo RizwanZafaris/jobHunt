@@ -127,7 +127,7 @@ async def evaluate_job(
     """
     from agents.company_agent import CompanyAgent
     from agents.rizwan_agent import RizwanAgent
-    from supabase.client import upsert_job
+    from db.client import upsert_job
 
     # Store job in DB
     job_record = upsert_job({
@@ -147,7 +147,7 @@ async def evaluate_job(
     rizwan_agent = RizwanAgent()
     await rizwan_agent.seed_supabase_profile()
 
-    from supabase.client import search_rizwan_profile
+    from db.client import search_rizwan_profile
     profile_sections = await search_rizwan_profile(request.jd_text, match_count=4)
     profile_text = "\n".join([f"[{s['section']}]: {s['content']}" for s in profile_sections])
 
@@ -177,7 +177,7 @@ async def list_jobs(
     _auth=Depends(verify_secret)
 ):
     """List all discovered jobs."""
-    from supabase.client import get_supabase
+    from db.client import get_supabase
     db = get_supabase()
     query = db.table("jobs").select(
         "id, title, company, location, match_score, status, url, discovered_at"
@@ -193,7 +193,7 @@ async def list_jobs(
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: int, _auth=Depends(verify_secret)):
     """Get full job details."""
-    from supabase.client import get_job as _get_job
+    from db.client import get_job as _get_job
     job = _get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -203,7 +203,7 @@ async def get_job(job_id: int, _auth=Depends(verify_secret)):
 @app.get("/companies")
 async def list_companies(_auth=Depends(verify_secret)):
     """List all tracked companies."""
-    from supabase.client import get_supabase
+    from db.client import get_supabase
     db = get_supabase()
     result = db.table("companies").select("*").order("name").execute()
     return {"companies": result.data or []}
@@ -232,7 +232,7 @@ async def generate_interview_prep(
 ):
     """Generate interview prep for a job."""
     from agents.interview_agent import InterviewAgent
-    from supabase.client import get_job as _get_job
+    from db.client import get_job as _get_job
 
     job = _get_job(request.job_id)
     if not job:
@@ -260,7 +260,7 @@ async def generate_interview_prep(
 @app.get("/digest/latest")
 async def get_latest_digest(_auth=Depends(verify_secret)):
     """Get the latest daily digest."""
-    from supabase.client import get_supabase
+    from db.client import get_supabase
     db = get_supabase()
     result = db.table("boss_audit_log") \
         .select("*") \
@@ -401,7 +401,7 @@ async def download_resume(filename: str, _auth=Depends(verify_secret)):
 @app.get("/pipeline/stats")
 async def get_pipeline_stats(_auth=Depends(verify_secret)):
     """Get overall pipeline statistics."""
-    from supabase.client import get_supabase
+    from db.client import get_supabase
     from collections import Counter
     db = get_supabase()
 

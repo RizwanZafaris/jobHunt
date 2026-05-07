@@ -159,7 +159,7 @@ Maximum 3 follow-ups per application.
     def _get_active_applications(self) -> list[dict]:
         """Load active applications from Supabase."""
         try:
-            from supabase.client import get_supabase
+            from db.client import get_supabase
             db = get_supabase()
             result = db.table("applications") \
                 .select("*") \
@@ -254,7 +254,7 @@ Be direct. Green/Yellow/Red status. Key actions only."""
     ) -> dict:
         """Log a new application to Supabase."""
         try:
-            from supabase.client import get_supabase
+            from db.client import get_supabase
             db = get_supabase()
             record = {
                 "company": company,
@@ -285,7 +285,7 @@ Be direct. Green/Yellow/Red status. Key actions only."""
             return False
 
         try:
-            from supabase.client import get_supabase
+            from db.client import get_supabase
             db = get_supabase()
             db.table("applications").update({
                 "status": new_status,
@@ -301,7 +301,7 @@ Be direct. Green/Yellow/Red status. Key actions only."""
     def get_pipeline_report(self) -> dict:
         """Get a formatted pipeline report for the Vercel dashboard."""
         try:
-            from supabase.client import get_supabase
+            from db.client import get_supabase
             from collections import Counter
             db = get_supabase()
             result = db.table("applications").select("*").execute()

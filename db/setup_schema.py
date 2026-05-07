@@ -2,7 +2,7 @@
 setup_schema.py — Initialize Supabase tables.
 
 Run once to set up the database:
-    python supabase/setup_schema.py
+    python db/setup_schema.py
 
 Prerequisites:
     - SUPABASE_URL and SUPABASE_SERVICE_KEY set in .env
@@ -72,11 +72,11 @@ def main():
     print("Option 1 — Supabase Dashboard (easiest):")
     print("  1. Go to https://app.supabase.com/project/<your-project>/sql")
     print("  2. Click 'New Query'")
-    print("  3. Paste the contents of supabase/schema.sql")
+    print("  3. Paste the contents of db/schema.sql")
     print("  4. Click 'Run'\n")
 
     print("Option 2 — psql command line:")
-    print("  psql <your-database-url> < supabase/schema.sql\n")
+    print("  psql <your-database-url> < db/schema.sql\n")
 
     print("Option 3 — Direct Postgres (get URL from Supabase Dashboard):")
     print("  Dashboard → Settings → Database → Connection string (URI)\n")
@@ -91,7 +91,7 @@ def main():
 
     print("=" * 60)
     print("\nAfter running the schema, verify with:")
-    print("  python supabase/setup_schema.py --verify")
+    print("  python db/setup_schema.py --verify")
 
     if "--verify" in sys.argv:
         verify_tables(client)

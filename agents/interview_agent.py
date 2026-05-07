@@ -21,7 +21,7 @@ import httpx
 
 from agents.base_agent import BaseAgent
 from config.settings import get_settings
-from supabase.client import search_company_knowledge, search_story_bank, search_rizwan_profile
+from db.client import search_company_knowledge, search_story_bank, search_rizwan_profile
 
 logger = logging.getLogger(__name__)
 

@@ -27,7 +27,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from agents.base_agent import BaseAgent
 from config.settings import get_settings
-from supabase.client import upsert_job, upsert_company, get_company_by_name, get_supabase
+from db.client import upsert_job, upsert_company, get_company_by_name, get_supabase
 
 logger = logging.getLogger(__name__)
 

@@ -65,7 +65,7 @@ async def run_boss_agent():
 async def run_interview_prep(job_id: int):
     """Generate interview prep for a specific job."""
     from agents.interview_agent import InterviewAgent
-    from supabase.client import get_job
+    from db.client import get_job
     job = get_job(job_id)
     if not job:
         console.print(f"[red]Job ID {job_id} not found.[/red]")
@@ -96,13 +96,13 @@ async def onboard():
 
     console.print("2. Checking Supabase connection...")
     try:
-        from supabase.client import get_supabase
+        from db.client import get_supabase
         db = get_supabase()
         result = db.table("companies").select("id").limit(1).execute()
         console.print("   ✅ Supabase connected\n")
     except Exception as e:
         console.print(f"   [red]❌ Supabase error: {e}[/red]")
-        console.print("   → Run: psql your-supabase-url < supabase/schema.sql\n")
+        console.print("   → Run: psql your-supabase-url < db/schema.sql\n")
 
     console.print("3. Checking API keys...")
     from config.settings import get_settings
