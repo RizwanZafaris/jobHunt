@@ -482,3 +482,126 @@ async def get_profile_sources(_auth=Depends(verify_secret)):
         "total": len(docs),
         "by_class": dict(by_class),
     }
+
+
+# ── Profile edit endpoints (Phase B) ──────────────────────────────────────
+
+class ProfileMasterUpdate(BaseModel):
+    name: Optional[str] = None
+    headline: Optional[str] = None
+    summary: Optional[str] = None
+    location: Optional[str] = None
+    email: Optional[str] = None
+    phones: Optional[list[str]] = None
+    linkedin_url: Optional[str] = None
+    core_competencies: Optional[list[str]] = None
+    technical_knowledge: Optional[list[str]] = None
+    languages: Optional[list[dict]] = None
+    ai_solutions: Optional[list[dict]] = None
+
+
+class ProfileExperienceUpdate(BaseModel):
+    title: Optional[str] = None
+    company: Optional[str] = None
+    location: Optional[str] = None
+    scope: Optional[str] = None
+    dates: Optional[str] = None
+    summary: Optional[str] = None
+    highlights: Optional[list[str]] = None
+    groups: Optional[list[dict]] = None
+
+
+@app.put("/profile")
+async def update_profile_master(
+    payload: ProfileMasterUpdate,
+    _auth=Depends(verify_secret),
+):
+    """Update master profile fields. Only provided fields are written."""
+    from db.client import get_supabase
+    db = get_supabase()
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    result = db.table("profile_master").update(updates).eq("id", 1).execute()
+    return {"updated": True, "row": (result.data or [None])[0]}
+
+
+@app.put("/profile/experience/{exp_id}")
+async def update_profile_experience(
+    exp_id: int,
+    payload: ProfileExperienceUpdate,
+    _auth=Depends(verify_secret),
+):
+    """Update one experience entry."""
+    from db.client import get_supabase
+    db = get_supabase()
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    result = db.table("profile_experience").update(updates).eq("id", exp_id).execute()
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Experience {exp_id} not found")
+    return {"updated": True, "row": rows[0]}
+
+
+# ── Profile recommendations (Phase C) ─────────────────────────────────────
+
+@app.get("/profile/recommendations")
+async def get_profile_recommendations(
+    _auth=Depends(verify_secret),
+    include_dismissed: bool = False,
+):
+    """Return AI-generated profile improvement recommendations."""
+    from db.client import get_supabase
+    from collections import Counter
+    db = get_supabase()
+    q = db.table("profile_recommendation").select("*").order("severity", desc=True).order("created_at", desc=True)
+    if not include_dismissed:
+        q = q.eq("dismissed", False)
+    result = q.execute()
+    recs = result.data or []
+    by_kind = Counter(r["kind"] for r in recs)
+    by_severity = Counter(r["severity"] for r in recs)
+    return {
+        "recommendations": recs,
+        "total": len(recs),
+        "by_kind": dict(by_kind),
+        "by_severity": dict(by_severity),
+    }
+
+
+class RecommendationDismiss(BaseModel):
+    dismissed: bool = True
+
+
+@app.put("/profile/recommendations/{rec_id}")
+async def update_recommendation(
+    rec_id: int,
+    payload: RecommendationDismiss,
+    _auth=Depends(verify_secret),
+):
+    """Dismiss/restore a recommendation."""
+    from db.client import get_supabase
+    db = get_supabase()
+    result = db.table("profile_recommendation").update(
+        {"dismissed": payload.dismissed}
+    ).eq("id", rec_id).execute()
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Recommendation {rec_id} not found")
+    return {"updated": True, "row": rows[0]}
+
+
+@app.post("/profile/recommendations/regenerate")
+async def regenerate_recommendations(
+    background_tasks: BackgroundTasks,
+    _auth=Depends(verify_secret),
+):
+    """Re-run the analyzer to refresh recommendations."""
+    async def _run():
+        from agents.profile_analyzer import ProfileAnalyzer
+        analyzer = ProfileAnalyzer()
+        await analyzer.run()
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "Recommendations refresh running in background"}

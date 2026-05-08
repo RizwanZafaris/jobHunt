@@ -125,3 +125,72 @@ export async function fetchSources(): Promise<SourcesResponse> {
   if (!res.ok) throw new Error(`Failed to fetch sources: ${res.status}`)
   return res.json()
 }
+
+// ── Phase B: edit ──────────────────────────────────────────────────────
+
+export async function updateProfile(updates: Partial<ProfileMaster>) {
+  const res = await fetch(`${baseUrl}/profile`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`Failed to update profile: ${res.status}`)
+  return res.json()
+}
+
+export async function updateExperience(id: number, updates: Partial<ProfileExperience>) {
+  const res = await fetch(`${baseUrl}/profile/experience/${id}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`Failed to update experience: ${res.status}`)
+  return res.json()
+}
+
+// ── Phase C: recommendations ──────────────────────────────────────────
+
+export interface Recommendation {
+  id: number
+  kind: 'missing_keyword' | 'weak_category' | 'conflict' | 'quantify'
+  severity: 'low' | 'medium' | 'high'
+  title: string
+  detail: string
+  related_keyword?: string
+  related_category?: string
+  dismissed: boolean
+  created_at: string
+}
+
+export interface RecommendationsResponse {
+  recommendations: Recommendation[]
+  total: number
+  by_kind: Record<string, number>
+  by_severity: Record<string, number>
+}
+
+export async function fetchRecommendations(): Promise<RecommendationsResponse> {
+  const res = await fetch(`${baseUrl}/profile/recommendations`, { headers, next: { revalidate: 60 } })
+  if (!res.ok) throw new Error(`Failed to fetch recommendations: ${res.status}`)
+  return res.json()
+}
+
+export async function dismissRecommendation(id: number, dismissed = true) {
+  const res = await fetch(`${baseUrl}/profile/recommendations/${id}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ dismissed }),
+  })
+  if (!res.ok) throw new Error(`Failed to dismiss recommendation: ${res.status}`)
+  return res.json()
+}
+
+export async function regenerateRecommendations() {
+  const res = await fetch(`${baseUrl}/profile/recommendations/regenerate`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) throw new Error(`Failed to regenerate: ${res.status}`)
+  return res.json()
+}

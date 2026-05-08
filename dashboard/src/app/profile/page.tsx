@@ -1,7 +1,9 @@
 import { fetchProfile } from '@/lib/profile-api'
 import ProfileNav from '@/components/ProfileNav'
+import EditableProfileMaster from '@/components/EditableProfileMaster'
+import EditableExperience from '@/components/EditableExperience'
 
-export const revalidate = 300
+export const dynamic = 'force-dynamic'
 
 export default async function ProfilePage() {
   let data
@@ -36,43 +38,12 @@ export default async function ProfilePage() {
     <div className="min-h-screen bg-gray-950 text-gray-200">
       <Header />
       <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-        {/* Identity card */}
-        <section className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-800 rounded-2xl p-8">
-          <h1 className="text-3xl font-bold text-white tracking-tight">{m.name}</h1>
-          <p className="text-base text-blue-400 mt-2">{m.headline}</p>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400 mt-4">
-            {m.location && <span>📍 {m.location}</span>}
-            {m.email && <span>✉ {m.email}</span>}
-            {(m.phones || []).map((p) => (
-              <span key={p}>📞 {p}</span>
-            ))}
-            {m.linkedin_url && (
-              <a href={`https://${m.linkedin_url}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
-                🔗 {m.linkedin_url}
-              </a>
-            )}
-          </div>
-          <p className="text-sm text-gray-300 leading-relaxed mt-6">{m.summary}</p>
-          <div className="mt-6 flex gap-3 text-xs">
-            <Stat label="Experience entries" value={data.experience.length} />
-            <Stat label="Core competencies" value={(m.core_competencies || []).length} />
-            <Stat label="Tech items" value={(m.technical_knowledge || []).length} />
-            <Stat label="Tailored resumes" value={m.tailored_resumes_count} />
-          </div>
-        </section>
+        {/* Identity + competencies + tech (editable) */}
+        <EditableProfileMaster initial={m} />
 
-        {/* Core competencies */}
-        {m.core_competencies?.length > 0 && (
-          <Card title="Core Competencies">
-            <div className="flex flex-wrap gap-2">
-              {m.core_competencies.map((c) => (
-                <span key={c} className="text-xs bg-gray-800 border border-gray-700 text-gray-300 px-2.5 py-1 rounded-full">
-                  {c}
-                </span>
-              ))}
-            </div>
-          </Card>
-        )}
+        <div className="text-xs text-gray-500 italic">
+          💡 Hover any field to see "edit" — click to inline-edit. Changes save to Supabase immediately.
+        </div>
 
         {/* AI Solutions */}
         {m.ai_solutions?.length > 0 && (
@@ -88,50 +59,12 @@ export default async function ProfilePage() {
           </Card>
         )}
 
-        {/* Experience */}
+        {/* Experience (editable) */}
         {data.experience.length > 0 && (
           <Card title="Professional Experience">
             <div className="space-y-6">
               {data.experience.map((e) => (
-                <div key={e.id} className="border-l-2 border-gray-700 pl-4">
-                  <div className="flex items-baseline justify-between">
-                    <h3 className="text-base font-semibold text-white">{e.title}</h3>
-                    <span className="text-xs text-gray-500">{e.dates}</span>
-                  </div>
-                  <p className="text-xs text-blue-400 mt-1">
-                    {e.company}
-                    {e.location && <span className="text-gray-500"> · {e.location}</span>}
-                    {e.scope && <span className="text-gray-500"> · {e.scope}</span>}
-                  </p>
-                  {e.summary && <p className="text-xs text-gray-400 mt-2 leading-relaxed">{e.summary}</p>}
-                  {e.highlights?.length > 0 && (
-                    <ul className="text-xs text-gray-300 mt-3 space-y-1.5">
-                      {e.highlights.map((h, i) => (
-                        <li key={i} className="flex gap-2">
-                          <span className="text-gray-600">•</span>
-                          <span className="leading-relaxed">{h}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {e.groups?.length > 0 && (
-                    <div className="mt-3 space-y-3">
-                      {e.groups.map((g, i) => (
-                        <div key={i}>
-                          <h4 className="text-xs font-semibold text-gray-200 mb-1">{g.label}</h4>
-                          <ul className="text-xs text-gray-300 space-y-1.5 ml-2">
-                            {g.bullets.map((b, j) => (
-                              <li key={j} className="flex gap-2">
-                                <span className="text-gray-600">•</span>
-                                <span className="leading-relaxed">{b}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <EditableExperience key={e.id} initial={e} />
               ))}
             </div>
           </Card>
@@ -167,32 +100,17 @@ export default async function ProfilePage() {
           )}
         </div>
 
-        {(m.technical_knowledge?.length > 0 || m.languages?.length > 0) && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {m.technical_knowledge?.length > 0 && (
-              <Card title="Technical Knowledge">
-                <div className="flex flex-wrap gap-1.5">
-                  {m.technical_knowledge.map((t) => (
-                    <span key={t} className="text-xs bg-blue-900/40 border border-blue-800 text-blue-300 px-2 py-0.5 rounded">
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              </Card>
-            )}
-            {m.languages?.length > 0 && (
-              <Card title="Languages">
-                <ul className="space-y-1.5">
-                  {m.languages.map((l) => (
-                    <li key={l.name} className="flex justify-between text-sm">
-                      <span className="font-medium text-white">{l.name}</span>
-                      <span className="text-xs text-gray-400">{l.level}</span>
-                    </li>
-                  ))}
-                </ul>
-              </Card>
-            )}
-          </div>
+        {m.languages?.length > 0 && (
+          <Card title="Languages">
+            <ul className="space-y-1.5">
+              {m.languages.map((l) => (
+                <li key={l.name} className="flex justify-between text-sm">
+                  <span className="font-medium text-white">{l.name}</span>
+                  <span className="text-xs text-gray-400">{l.level}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
         )}
       </main>
     </div>
@@ -218,14 +136,5 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
       <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-4">{title}</h2>
       {children}
     </section>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-3 py-1.5">
-      <div className="text-xs text-gray-400">{label}</div>
-      <div className="text-base font-bold text-white">{value}</div>
-    </div>
   )
 }

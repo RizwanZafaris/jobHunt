@@ -7,6 +7,7 @@ const TABS = [
   { href: '/', label: 'Pipeline' },
   { href: '/profile', label: 'Profile' },
   { href: '/profile/keywords', label: 'Keywords' },
+  { href: '/profile/recommendations', label: 'Recommendations' },
   { href: '/profile/sources', label: 'Sources' },
 ]
 
