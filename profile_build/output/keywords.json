@@ -1,0 +1,3102 @@
+{
+  "scanned_files": 203,
+  "total_keywords_found": 310,
+  "keywords": [
+    {
+      "keyword": "payment",
+      "category": "Payments",
+      "total_occurrences": 2178,
+      "files_count": 192,
+      "coverage_pct": 94.6,
+      "avg_per_file": 11.34,
+      "ats_strength": 96.7
+    },
+    {
+      "keyword": "payments",
+      "category": "Payments",
+      "total_occurrences": 1208,
+      "files_count": 160,
+      "coverage_pct": 78.8,
+      "avg_per_file": 7.55,
+      "ats_strength": 77.5
+    },
+    {
+      "keyword": "compliance",
+      "category": "Compliance",
+      "total_occurrences": 1021,
+      "files_count": 182,
+      "coverage_pct": 89.7,
+      "avg_per_file": 5.61,
+      "ats_strength": 76.2
+    },
+    {
+      "keyword": "regulatory",
+      "category": "Compliance",
+      "total_occurrences": 892,
+      "files_count": 180,
+      "coverage_pct": 88.7,
+      "avg_per_file": 4.96,
+      "ats_strength": 73.0
+    },
+    {
+      "keyword": "settlement",
+      "category": "Payments",
+      "total_occurrences": 900,
+      "files_count": 124,
+      "coverage_pct": 61.1,
+      "avg_per_file": 7.26,
+      "ats_strength": 65.7
+    },
+    {
+      "keyword": "merchant",
+      "category": "Payments",
+      "total_occurrences": 654,
+      "files_count": 160,
+      "coverage_pct": 78.8,
+      "avg_per_file": 4.09,
+      "ats_strength": 63.6
+    },
+    {
+      "keyword": "reconciliation",
+      "category": "Payments",
+      "total_occurrences": 842,
+      "files_count": 101,
+      "coverage_pct": 49.8,
+      "avg_per_file": 8.34,
+      "ats_strength": 63.2
+    },
+    {
+      "keyword": "agile",
+      "category": "Agile",
+      "total_occurrences": 603,
+      "files_count": 160,
+      "coverage_pct": 78.8,
+      "avg_per_file": 3.77,
+      "ats_strength": 62.4
+    },
+    {
+      "keyword": "fintech",
+      "category": "Fintech",
+      "total_occurrences": 550,
+      "files_count": 158,
+      "coverage_pct": 77.8,
+      "avg_per_file": 3.48,
+      "ats_strength": 60.6
+    },
+    {
+      "keyword": "leadership",
+      "category": "Leadership",
+      "total_occurrences": 514,
+      "files_count": 144,
+      "coverage_pct": 70.9,
+      "avg_per_file": 3.57,
+      "ats_strength": 56.8
+    },
+    {
+      "keyword": "scrum",
+      "category": "Agile",
+      "total_occurrences": 483,
+      "files_count": 146,
+      "coverage_pct": 71.9,
+      "avg_per_file": 3.31,
+      "ats_strength": 56.4
+    },
+    {
+      "keyword": "cross-border",
+      "category": "Payments",
+      "total_occurrences": 542,
+      "files_count": 137,
+      "coverage_pct": 67.5,
+      "avg_per_file": 3.96,
+      "ats_strength": 56.3
+    },
+    {
+      "keyword": "card",
+      "category": "Payments",
+      "total_occurrences": 507,
+      "files_count": 142,
+      "coverage_pct": 70.0,
+      "avg_per_file": 3.57,
+      "ats_strength": 56.3
+    },
+    {
+      "keyword": "chief",
+      "category": "Leadership",
+      "total_occurrences": 233,
+      "files_count": 166,
+      "coverage_pct": 81.8,
+      "avg_per_file": 1.4,
+      "ats_strength": 54.7
+    },
+    {
+      "keyword": "head of",
+      "category": "Leadership",
+      "total_occurrences": 215,
+      "files_count": 161,
+      "coverage_pct": 79.3,
+      "avg_per_file": 1.34,
+      "ats_strength": 52.9
+    },
+    {
+      "keyword": "pmo",
+      "category": "PMO",
+      "total_occurrences": 480,
+      "files_count": 124,
+      "coverage_pct": 61.1,
+      "avg_per_file": 3.87,
+      "ats_strength": 52.1
+    },
+    {
+      "keyword": "pmp",
+      "category": "PMO",
+      "total_occurrences": 228,
+      "files_count": 156,
+      "coverage_pct": 76.8,
+      "avg_per_file": 1.46,
+      "ats_strength": 52.0
+    },
+    {
+      "keyword": "acp",
+      "category": "Agile",
+      "total_occurrences": 188,
+      "files_count": 153,
+      "coverage_pct": 75.4,
+      "avg_per_file": 1.23,
+      "ats_strength": 50.1
+    },
+    {
+      "keyword": "analytics",
+      "category": "Analytics",
+      "total_occurrences": 314,
+      "files_count": 130,
+      "coverage_pct": 64.0,
+      "avg_per_file": 2.42,
+      "ats_strength": 48.1
+    },
+    {
+      "keyword": "cspo",
+      "category": "Agile",
+      "total_occurrences": 172,
+      "files_count": 146,
+      "coverage_pct": 71.9,
+      "avg_per_file": 1.18,
+      "ats_strength": 47.9
+    },
+    {
+      "keyword": "csm",
+      "category": "Agile",
+      "total_occurrences": 156,
+      "files_count": 145,
+      "coverage_pct": 71.4,
+      "avg_per_file": 1.08,
+      "ats_strength": 47.2
+    },
+    {
+      "keyword": "mastercard",
+      "category": "Payments",
+      "total_occurrences": 469,
+      "files_count": 77,
+      "coverage_pct": 37.9,
+      "avg_per_file": 6.09,
+      "ats_strength": 47.1
+    },
+    {
+      "keyword": "fx",
+      "category": "Payments",
+      "total_occurrences": 397,
+      "files_count": 72,
+      "coverage_pct": 35.5,
+      "avg_per_file": 5.51,
+      "ats_strength": 43.3
+    },
+    {
+      "keyword": "iso 27001",
+      "category": "Compliance",
+      "total_occurrences": 246,
+      "files_count": 117,
+      "coverage_pct": 57.6,
+      "avg_per_file": 2.1,
+      "ats_strength": 43.0
+    },
+    {
+      "keyword": "audit",
+      "category": "Compliance",
+      "total_occurrences": 329,
+      "files_count": 100,
+      "coverage_pct": 49.3,
+      "avg_per_file": 3.29,
+      "ats_strength": 42.7
+    },
+    {
+      "keyword": "cfo",
+      "category": "Leadership",
+      "total_occurrences": 94,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 10.44,
+      "ats_strength": 42.7
+    },
+    {
+      "keyword": "api",
+      "category": "Technical",
+      "total_occurrences": 302,
+      "files_count": 102,
+      "coverage_pct": 50.2,
+      "avg_per_file": 2.96,
+      "ats_strength": 42.0
+    },
+    {
+      "keyword": "gtv",
+      "category": "Payments",
+      "total_occurrences": 304,
+      "files_count": 89,
+      "coverage_pct": 43.8,
+      "avg_per_file": 3.42,
+      "ats_strength": 40.0
+    },
+    {
+      "keyword": "product strategy",
+      "category": "Product Management",
+      "total_occurrences": 206,
+      "files_count": 106,
+      "coverage_pct": 52.2,
+      "avg_per_file": 1.94,
+      "ats_strength": 39.1
+    },
+    {
+      "keyword": "executive",
+      "category": "Leadership",
+      "total_occurrences": 225,
+      "files_count": 102,
+      "coverage_pct": 50.2,
+      "avg_per_file": 2.21,
+      "ats_strength": 39.0
+    },
+    {
+      "keyword": "remittance",
+      "category": "Payments",
+      "total_occurrences": 201,
+      "files_count": 106,
+      "coverage_pct": 52.2,
+      "avg_per_file": 1.9,
+      "ats_strength": 38.9
+    },
+    {
+      "keyword": "wallet",
+      "category": "Payments",
+      "total_occurrences": 241,
+      "files_count": 96,
+      "coverage_pct": 47.3,
+      "avg_per_file": 2.51,
+      "ats_strength": 38.4
+    },
+    {
+      "keyword": "cpo",
+      "category": "Leadership",
+      "total_occurrences": 211,
+      "files_count": 30,
+      "coverage_pct": 14.8,
+      "avg_per_file": 7.03,
+      "ats_strength": 37.0
+    },
+    {
+      "keyword": "fraud",
+      "category": "Payments",
+      "total_occurrences": 274,
+      "files_count": 76,
+      "coverage_pct": 37.4,
+      "avg_per_file": 3.61,
+      "ats_strength": 36.9
+    },
+    {
+      "keyword": "aml",
+      "category": "Compliance",
+      "total_occurrences": 241,
+      "files_count": 87,
+      "coverage_pct": 42.9,
+      "avg_per_file": 2.77,
+      "ats_strength": 36.8
+    },
+    {
+      "keyword": "product owner",
+      "category": "Product Management",
+      "total_occurrences": 116,
+      "files_count": 109,
+      "coverage_pct": 53.7,
+      "avg_per_file": 1.06,
+      "ats_strength": 36.5
+    },
+    {
+      "keyword": "payment gateway",
+      "category": "Payments",
+      "total_occurrences": 212,
+      "files_count": 91,
+      "coverage_pct": 44.8,
+      "avg_per_file": 2.33,
+      "ats_strength": 36.2
+    },
+    {
+      "keyword": "merchants",
+      "category": "Payments",
+      "total_occurrences": 212,
+      "files_count": 85,
+      "coverage_pct": 41.9,
+      "avg_per_file": 2.49,
+      "ats_strength": 35.1
+    },
+    {
+      "keyword": "leader",
+      "category": "Leadership",
+      "total_occurrences": 199,
+      "files_count": 87,
+      "coverage_pct": 42.9,
+      "avg_per_file": 2.29,
+      "ats_strength": 34.9
+    },
+    {
+      "keyword": "ai",
+      "category": "AI",
+      "total_occurrences": 236,
+      "files_count": 45,
+      "coverage_pct": 22.2,
+      "avg_per_file": 5.24,
+      "ats_strength": 34.3
+    },
+    {
+      "keyword": "mpgs",
+      "category": "Payments",
+      "total_occurrences": 163,
+      "files_count": 90,
+      "coverage_pct": 44.3,
+      "avg_per_file": 1.81,
+      "ats_strength": 33.8
+    },
+    {
+      "keyword": "issuer",
+      "category": "Payments",
+      "total_occurrences": 228,
+      "files_count": 69,
+      "coverage_pct": 34.0,
+      "avg_per_file": 3.3,
+      "ats_strength": 33.6
+    },
+    {
+      "keyword": "jira",
+      "category": "Technical",
+      "total_occurrences": 171,
+      "files_count": 85,
+      "coverage_pct": 41.9,
+      "avg_per_file": 2.01,
+      "ats_strength": 33.2
+    },
+    {
+      "keyword": "credit",
+      "category": "Fintech",
+      "total_occurrences": 217,
+      "files_count": 65,
+      "coverage_pct": 32.0,
+      "avg_per_file": 3.34,
+      "ats_strength": 32.6
+    },
+    {
+      "keyword": "tokenization",
+      "category": "Payments",
+      "total_occurrences": 204,
+      "files_count": 70,
+      "coverage_pct": 34.5,
+      "avg_per_file": 2.91,
+      "ats_strength": 32.3
+    },
+    {
+      "keyword": "cards",
+      "category": "Payments",
+      "total_occurrences": 173,
+      "files_count": 76,
+      "coverage_pct": 37.4,
+      "avg_per_file": 2.28,
+      "ats_strength": 31.6
+    },
+    {
+      "keyword": "product management",
+      "category": "Product Management",
+      "total_occurrences": 174,
+      "files_count": 72,
+      "coverage_pct": 35.5,
+      "avg_per_file": 2.42,
+      "ats_strength": 30.9
+    },
+    {
+      "keyword": "confluence",
+      "category": "Technical",
+      "total_occurrences": 114,
+      "files_count": 83,
+      "coverage_pct": 40.9,
+      "avg_per_file": 1.37,
+      "ats_strength": 30.0
+    },
+    {
+      "keyword": "orchestration",
+      "category": "Payments",
+      "total_occurrences": 166,
+      "files_count": 66,
+      "coverage_pct": 32.5,
+      "avg_per_file": 2.52,
+      "ats_strength": 29.6
+    },
+    {
+      "keyword": "iso 20022",
+      "category": "Payments",
+      "total_occurrences": 134,
+      "files_count": 76,
+      "coverage_pct": 37.4,
+      "avg_per_file": 1.76,
+      "ats_strength": 29.5
+    },
+    {
+      "keyword": "pci dss",
+      "category": "Payments",
+      "total_occurrences": 174,
+      "files_count": 54,
+      "coverage_pct": 26.6,
+      "avg_per_file": 3.22,
+      "ats_strength": 28.8
+    },
+    {
+      "keyword": "r",
+      "category": "Analytics",
+      "total_occurrences": 114,
+      "files_count": 77,
+      "coverage_pct": 37.9,
+      "avg_per_file": 1.48,
+      "ats_strength": 28.7
+    },
+    {
+      "keyword": "visa",
+      "category": "Payments",
+      "total_occurrences": 154,
+      "files_count": 63,
+      "coverage_pct": 31.0,
+      "avg_per_file": 2.44,
+      "ats_strength": 28.4
+    },
+    {
+      "keyword": "cft",
+      "category": "Compliance",
+      "total_occurrences": 154,
+      "files_count": 63,
+      "coverage_pct": 31.0,
+      "avg_per_file": 2.44,
+      "ats_strength": 28.4
+    },
+    {
+      "keyword": "stakeholder management",
+      "category": "Product Management",
+      "total_occurrences": 119,
+      "files_count": 74,
+      "coverage_pct": 36.5,
+      "avg_per_file": 1.61,
+      "ats_strength": 28.3
+    },
+    {
+      "keyword": "go-to-market",
+      "category": "Product Management",
+      "total_occurrences": 125,
+      "files_count": 67,
+      "coverage_pct": 33.0,
+      "avg_per_file": 1.87,
+      "ats_strength": 27.3
+    },
+    {
+      "keyword": "authorization",
+      "category": "Payments",
+      "total_occurrences": 123,
+      "files_count": 68,
+      "coverage_pct": 33.5,
+      "avg_per_file": 1.81,
+      "ats_strength": 27.3
+    },
+    {
+      "keyword": "product roadmap",
+      "category": "Product Management",
+      "total_occurrences": 108,
+      "files_count": 69,
+      "coverage_pct": 34.0,
+      "avg_per_file": 1.57,
+      "ats_strength": 26.7
+    },
+    {
+      "keyword": "transaction volume",
+      "category": "Payments",
+      "total_occurrences": 100,
+      "files_count": 71,
+      "coverage_pct": 35.0,
+      "avg_per_file": 1.41,
+      "ats_strength": 26.6
+    },
+    {
+      "keyword": "kyc",
+      "category": "Compliance",
+      "total_occurrences": 137,
+      "files_count": 57,
+      "coverage_pct": 28.1,
+      "avg_per_file": 2.4,
+      "ats_strength": 26.5
+    },
+    {
+      "keyword": "risk management",
+      "category": "Risk & Security",
+      "total_occurrences": 100,
+      "files_count": 70,
+      "coverage_pct": 34.5,
+      "avg_per_file": 1.43,
+      "ats_strength": 26.4
+    },
+    {
+      "keyword": "mdes",
+      "category": "Payments",
+      "total_occurrences": 134,
+      "files_count": 54,
+      "coverage_pct": 26.6,
+      "avg_per_file": 2.48,
+      "ats_strength": 25.9
+    },
+    {
+      "keyword": "project management office",
+      "category": "PMO",
+      "total_occurrences": 111,
+      "files_count": 64,
+      "coverage_pct": 31.5,
+      "avg_per_file": 1.73,
+      "ats_strength": 25.9
+    },
+    {
+      "keyword": "checkout",
+      "category": "Payments",
+      "total_occurrences": 88,
+      "files_count": 71,
+      "coverage_pct": 35.0,
+      "avg_per_file": 1.24,
+      "ats_strength": 25.9
+    },
+    {
+      "keyword": "kafka",
+      "category": "Technical",
+      "total_occurrences": 55,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 5.5,
+      "ats_strength": 25.0
+    },
+    {
+      "keyword": "financial services",
+      "category": "Fintech",
+      "total_occurrences": 113,
+      "files_count": 58,
+      "coverage_pct": 28.6,
+      "avg_per_file": 1.95,
+      "ats_strength": 24.9
+    },
+    {
+      "keyword": "vp",
+      "category": "Leadership",
+      "total_occurrences": 98,
+      "files_count": 21,
+      "coverage_pct": 10.3,
+      "avg_per_file": 4.67,
+      "ats_strength": 24.9
+    },
+    {
+      "keyword": "central bank",
+      "category": "Compliance",
+      "total_occurrences": 118,
+      "files_count": 52,
+      "coverage_pct": 25.6,
+      "avg_per_file": 2.27,
+      "ats_strength": 24.4
+    },
+    {
+      "keyword": "product lifecycle",
+      "category": "Product Management",
+      "total_occurrences": 92,
+      "files_count": 60,
+      "coverage_pct": 29.6,
+      "avg_per_file": 1.53,
+      "ats_strength": 23.9
+    },
+    {
+      "keyword": "corridor",
+      "category": "Payments",
+      "total_occurrences": 108,
+      "files_count": 52,
+      "coverage_pct": 25.6,
+      "avg_per_file": 2.08,
+      "ats_strength": 23.7
+    },
+    {
+      "keyword": "genai",
+      "category": "AI",
+      "total_occurrences": 68,
+      "files_count": 14,
+      "coverage_pct": 6.9,
+      "avg_per_file": 4.86,
+      "ats_strength": 23.6
+    },
+    {
+      "keyword": "instant payment",
+      "category": "Payments",
+      "total_occurrences": 17,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 5.67,
+      "ats_strength": 23.6
+    },
+    {
+      "keyword": "authentication",
+      "category": "Payments",
+      "total_occurrences": 95,
+      "files_count": 57,
+      "coverage_pct": 28.1,
+      "avg_per_file": 1.67,
+      "ats_strength": 23.5
+    },
+    {
+      "keyword": "sprint",
+      "category": "Agile",
+      "total_occurrences": 105,
+      "files_count": 52,
+      "coverage_pct": 25.6,
+      "avg_per_file": 2.02,
+      "ats_strength": 23.4
+    },
+    {
+      "keyword": "churn",
+      "category": "Analytics",
+      "total_occurrences": 87,
+      "files_count": 58,
+      "coverage_pct": 28.6,
+      "avg_per_file": 1.5,
+      "ats_strength": 23.1
+    },
+    {
+      "keyword": "audit trail",
+      "category": "Compliance",
+      "total_occurrences": 46,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 5.11,
+      "ats_strength": 23.1
+    },
+    {
+      "keyword": "product manager",
+      "category": "Product Management",
+      "total_occurrences": 110,
+      "files_count": 44,
+      "coverage_pct": 21.7,
+      "avg_per_file": 2.5,
+      "ats_strength": 23.0
+    },
+    {
+      "keyword": "pmbok",
+      "category": "PMO",
+      "total_occurrences": 78,
+      "files_count": 60,
+      "coverage_pct": 29.6,
+      "avg_per_file": 1.3,
+      "ats_strength": 22.9
+    },
+    {
+      "keyword": "apis",
+      "category": "Technical",
+      "total_occurrences": 100,
+      "files_count": 50,
+      "coverage_pct": 24.6,
+      "avg_per_file": 2.0,
+      "ats_strength": 22.8
+    },
+    {
+      "keyword": "acquiring",
+      "category": "Payments",
+      "total_occurrences": 107,
+      "files_count": 36,
+      "coverage_pct": 17.7,
+      "avg_per_file": 2.97,
+      "ats_strength": 22.5
+    },
+    {
+      "keyword": "board",
+      "category": "Leadership",
+      "total_occurrences": 84,
+      "files_count": 52,
+      "coverage_pct": 25.6,
+      "avg_per_file": 1.62,
+      "ats_strength": 21.8
+    },
+    {
+      "keyword": "bnpl",
+      "category": "Fintech",
+      "total_occurrences": 95,
+      "files_count": 40,
+      "coverage_pct": 19.7,
+      "avg_per_file": 2.38,
+      "ats_strength": 21.3
+    },
+    {
+      "keyword": "3ds2",
+      "category": "Payments",
+      "total_occurrences": 87,
+      "files_count": 45,
+      "coverage_pct": 22.2,
+      "avg_per_file": 1.93,
+      "ats_strength": 21.0
+    },
+    {
+      "keyword": "hiring",
+      "category": "Leadership",
+      "total_occurrences": 85,
+      "files_count": 25,
+      "coverage_pct": 12.3,
+      "avg_per_file": 3.4,
+      "ats_strength": 21.0
+    },
+    {
+      "keyword": "bi",
+      "category": "Analytics",
+      "total_occurrences": 67,
+      "files_count": 53,
+      "coverage_pct": 26.1,
+      "avg_per_file": 1.26,
+      "ats_strength": 20.7
+    },
+    {
+      "keyword": "agentic",
+      "category": "AI",
+      "total_occurrences": 24,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 4.8,
+      "ats_strength": 20.7
+    },
+    {
+      "keyword": "llm",
+      "category": "AI",
+      "total_occurrences": 36,
+      "files_count": 8,
+      "coverage_pct": 3.9,
+      "avg_per_file": 4.5,
+      "ats_strength": 20.4
+    },
+    {
+      "keyword": "retry logic",
+      "category": "Payments",
+      "total_occurrences": 83,
+      "files_count": 42,
+      "coverage_pct": 20.7,
+      "avg_per_file": 1.98,
+      "ats_strength": 20.3
+    },
+    {
+      "keyword": "ceo",
+      "category": "Leadership",
+      "total_occurrences": 80,
+      "files_count": 25,
+      "coverage_pct": 12.3,
+      "avg_per_file": 3.2,
+      "ats_strength": 20.2
+    },
+    {
+      "keyword": "program management",
+      "category": "PMO",
+      "total_occurrences": 79,
+      "files_count": 39,
+      "coverage_pct": 19.2,
+      "avg_per_file": 2.03,
+      "ats_strength": 19.6
+    },
+    {
+      "keyword": "scheme",
+      "category": "Payments",
+      "total_occurrences": 76,
+      "files_count": 38,
+      "coverage_pct": 18.7,
+      "avg_per_file": 2.0,
+      "ats_strength": 19.2
+    },
+    {
+      "keyword": "digital banking",
+      "category": "Fintech",
+      "total_occurrences": 75,
+      "files_count": 39,
+      "coverage_pct": 19.2,
+      "avg_per_file": 1.92,
+      "ats_strength": 19.2
+    },
+    {
+      "keyword": "data analytics",
+      "category": "Analytics",
+      "total_occurrences": 64,
+      "files_count": 46,
+      "coverage_pct": 22.7,
+      "avg_per_file": 1.39,
+      "ats_strength": 19.2
+    },
+    {
+      "keyword": "cto",
+      "category": "Leadership",
+      "total_occurrences": 58,
+      "files_count": 16,
+      "coverage_pct": 7.9,
+      "avg_per_file": 3.62,
+      "ats_strength": 19.2
+    },
+    {
+      "keyword": "acquirer",
+      "category": "Payments",
+      "total_occurrences": 72,
+      "files_count": 39,
+      "coverage_pct": 19.2,
+      "avg_per_file": 1.85,
+      "ats_strength": 18.9
+    },
+    {
+      "keyword": "velocity",
+      "category": "Agile",
+      "total_occurrences": 61,
+      "files_count": 44,
+      "coverage_pct": 21.7,
+      "avg_per_file": 1.39,
+      "ats_strength": 18.6
+    },
+    {
+      "keyword": "gtm",
+      "category": "Product Management",
+      "total_occurrences": 62,
+      "files_count": 43,
+      "coverage_pct": 21.2,
+      "avg_per_file": 1.44,
+      "ats_strength": 18.5
+    },
+    {
+      "keyword": "tokenized",
+      "category": "Payments",
+      "total_occurrences": 61,
+      "files_count": 42,
+      "coverage_pct": 20.7,
+      "avg_per_file": 1.45,
+      "ats_strength": 18.2
+    },
+    {
+      "keyword": "raid",
+      "category": "PMO",
+      "total_occurrences": 61,
+      "files_count": 20,
+      "coverage_pct": 9.9,
+      "avg_per_file": 3.05,
+      "ats_strength": 18.1
+    },
+    {
+      "keyword": "lean",
+      "category": "Agile",
+      "total_occurrences": 51,
+      "files_count": 45,
+      "coverage_pct": 22.2,
+      "avg_per_file": 1.13,
+      "ats_strength": 17.8
+    },
+    {
+      "keyword": "psp",
+      "category": "Payments",
+      "total_occurrences": 62,
+      "files_count": 36,
+      "coverage_pct": 17.7,
+      "avg_per_file": 1.72,
+      "ats_strength": 17.5
+    },
+    {
+      "keyword": "user stories",
+      "category": "Product Management",
+      "total_occurrences": 61,
+      "files_count": 37,
+      "coverage_pct": 18.2,
+      "avg_per_file": 1.65,
+      "ats_strength": 17.5
+    },
+    {
+      "keyword": "financial infrastructure",
+      "category": "Fintech",
+      "total_occurrences": 55,
+      "files_count": 18,
+      "coverage_pct": 8.9,
+      "avg_per_file": 3.06,
+      "ats_strength": 17.5
+    },
+    {
+      "keyword": "auditor",
+      "category": "Compliance",
+      "total_occurrences": 33,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 3.67,
+      "ats_strength": 17.3
+    },
+    {
+      "keyword": "decline code",
+      "category": "Payments",
+      "total_occurrences": 60,
+      "files_count": 31,
+      "coverage_pct": 15.3,
+      "avg_per_file": 1.94,
+      "ats_strength": 16.9
+    },
+    {
+      "keyword": "openai",
+      "category": "AI",
+      "total_occurrences": 22,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 3.67,
+      "ats_strength": 16.4
+    },
+    {
+      "keyword": "dashboard",
+      "category": "Analytics",
+      "total_occurrences": 52,
+      "files_count": 20,
+      "coverage_pct": 9.9,
+      "avg_per_file": 2.6,
+      "ats_strength": 16.3
+    },
+    {
+      "keyword": "cbuae",
+      "category": "Compliance",
+      "total_occurrences": 4,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 4.0,
+      "ats_strength": 16.3
+    },
+    {
+      "keyword": "system design",
+      "category": "Technical",
+      "total_occurrences": 46,
+      "files_count": 16,
+      "coverage_pct": 7.9,
+      "avg_per_file": 2.88,
+      "ats_strength": 16.2
+    },
+    {
+      "keyword": "competitive analysis",
+      "category": "Product Management",
+      "total_occurrences": 49,
+      "files_count": 36,
+      "coverage_pct": 17.7,
+      "avg_per_file": 1.36,
+      "ats_strength": 16.1
+    },
+    {
+      "keyword": "fraud detection",
+      "category": "Risk & Security",
+      "total_occurrences": 53,
+      "files_count": 31,
+      "coverage_pct": 15.3,
+      "avg_per_file": 1.71,
+      "ats_strength": 16.0
+    },
+    {
+      "keyword": "team leadership",
+      "category": "Leadership",
+      "total_occurrences": 43,
+      "files_count": 39,
+      "coverage_pct": 19.2,
+      "avg_per_file": 1.1,
+      "ats_strength": 15.9
+    },
+    {
+      "keyword": "financial inclusion",
+      "category": "Fintech",
+      "total_occurrences": 46,
+      "files_count": 17,
+      "coverage_pct": 8.4,
+      "avg_per_file": 2.71,
+      "ats_strength": 15.8
+    },
+    {
+      "keyword": "swift",
+      "category": "Payments",
+      "total_occurrences": 32,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 3.2,
+      "ats_strength": 15.8
+    },
+    {
+      "keyword": "card-on-file",
+      "category": "Payments",
+      "total_occurrences": 46,
+      "files_count": 35,
+      "coverage_pct": 17.2,
+      "avg_per_file": 1.31,
+      "ats_strength": 15.6
+    },
+    {
+      "keyword": "operational risk",
+      "category": "Risk & Security",
+      "total_occurrences": 51,
+      "files_count": 25,
+      "coverage_pct": 12.3,
+      "avg_per_file": 2.04,
+      "ats_strength": 15.5
+    },
+    {
+      "keyword": "sprint planning",
+      "category": "Agile",
+      "total_occurrences": 44,
+      "files_count": 35,
+      "coverage_pct": 17.2,
+      "avg_per_file": 1.26,
+      "ats_strength": 15.4
+    },
+    {
+      "keyword": "3ds",
+      "category": "Payments",
+      "total_occurrences": 49,
+      "files_count": 28,
+      "coverage_pct": 13.8,
+      "avg_per_file": 1.75,
+      "ats_strength": 15.3
+    },
+    {
+      "keyword": "issuer acceptance",
+      "category": "Payments",
+      "total_occurrences": 14,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 3.5,
+      "ats_strength": 15.2
+    },
+    {
+      "keyword": "event-driven",
+      "category": "Technical",
+      "total_occurrences": 44,
+      "files_count": 18,
+      "coverage_pct": 8.9,
+      "avg_per_file": 2.44,
+      "ats_strength": 15.1
+    },
+    {
+      "keyword": "ltv",
+      "category": "Analytics",
+      "total_occurrences": 30,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 3.0,
+      "ats_strength": 15.0
+    },
+    {
+      "keyword": "regulatory reporting",
+      "category": "Compliance",
+      "total_occurrences": 45,
+      "files_count": 26,
+      "coverage_pct": 12.8,
+      "avg_per_file": 1.73,
+      "ats_strength": 14.6
+    },
+    {
+      "keyword": "ms project",
+      "category": "PMO",
+      "total_occurrences": 44,
+      "files_count": 23,
+      "coverage_pct": 11.3,
+      "avg_per_file": 1.91,
+      "ats_strength": 14.5
+    },
+    {
+      "keyword": "tableau",
+      "category": "Analytics",
+      "total_occurrences": 44,
+      "files_count": 22,
+      "coverage_pct": 10.8,
+      "avg_per_file": 2.0,
+      "ats_strength": 14.5
+    },
+    {
+      "keyword": "product vision",
+      "category": "Product Management",
+      "total_occurrences": 41,
+      "files_count": 31,
+      "coverage_pct": 15.3,
+      "avg_per_file": 1.32,
+      "ats_strength": 14.5
+    },
+    {
+      "keyword": "user research",
+      "category": "Product Management",
+      "total_occurrences": 41,
+      "files_count": 24,
+      "coverage_pct": 11.8,
+      "avg_per_file": 1.71,
+      "ats_strength": 13.9
+    },
+    {
+      "keyword": "licensing",
+      "category": "Compliance",
+      "total_occurrences": 37,
+      "files_count": 20,
+      "coverage_pct": 9.9,
+      "avg_per_file": 1.85,
+      "ats_strength": 13.3
+    },
+    {
+      "keyword": "director",
+      "category": "Leadership",
+      "total_occurrences": 35,
+      "files_count": 20,
+      "coverage_pct": 9.9,
+      "avg_per_file": 1.75,
+      "ats_strength": 12.9
+    },
+    {
+      "keyword": "risk mitigation",
+      "category": "Risk & Security",
+      "total_occurrences": 35,
+      "files_count": 22,
+      "coverage_pct": 10.8,
+      "avg_per_file": 1.59,
+      "ats_strength": 12.9
+    },
+    {
+      "keyword": "credit risk",
+      "category": "Risk & Security",
+      "total_occurrences": 35,
+      "files_count": 21,
+      "coverage_pct": 10.3,
+      "avg_per_file": 1.67,
+      "ats_strength": 12.9
+    },
+    {
+      "keyword": "mentoring",
+      "category": "Leadership",
+      "total_occurrences": 35,
+      "files_count": 20,
+      "coverage_pct": 9.9,
+      "avg_per_file": 1.75,
+      "ats_strength": 12.9
+    },
+    {
+      "keyword": "milestone",
+      "category": "PMO",
+      "total_occurrences": 31,
+      "files_count": 27,
+      "coverage_pct": 13.3,
+      "avg_per_file": 1.15,
+      "ats_strength": 12.6
+    },
+    {
+      "keyword": "langchain",
+      "category": "AI",
+      "total_occurrences": 6,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 3.0,
+      "ats_strength": 12.6
+    },
+    {
+      "keyword": "feature prioritization",
+      "category": "Product Management",
+      "total_occurrences": 30,
+      "files_count": 27,
+      "coverage_pct": 13.3,
+      "avg_per_file": 1.11,
+      "ats_strength": 12.4
+    },
+    {
+      "keyword": "claude",
+      "category": "AI",
+      "total_occurrences": 18,
+      "files_count": 7,
+      "coverage_pct": 3.4,
+      "avg_per_file": 2.57,
+      "ats_strength": 12.4
+    },
+    {
+      "keyword": "ml",
+      "category": "AI",
+      "total_occurrences": 32,
+      "files_count": 21,
+      "coverage_pct": 10.3,
+      "avg_per_file": 1.52,
+      "ats_strength": 12.3
+    },
+    {
+      "keyword": "lending",
+      "category": "Fintech",
+      "total_occurrences": 25,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 2.27,
+      "ats_strength": 12.3
+    },
+    {
+      "keyword": "swagger",
+      "category": "Technical",
+      "total_occurrences": 3,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 3.0,
+      "ats_strength": 12.3
+    },
+    {
+      "keyword": "openapi",
+      "category": "Technical",
+      "total_occurrences": 3,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 3.0,
+      "ats_strength": 12.3
+    },
+    {
+      "keyword": "sepa",
+      "category": "Payments",
+      "total_occurrences": 3,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 3.0,
+      "ats_strength": 12.3
+    },
+    {
+      "keyword": "okr",
+      "category": "Product Management",
+      "total_occurrences": 30,
+      "files_count": 25,
+      "coverage_pct": 12.3,
+      "avg_per_file": 1.2,
+      "ats_strength": 12.2
+    },
+    {
+      "keyword": "tpv",
+      "category": "Payments",
+      "total_occurrences": 27,
+      "files_count": 13,
+      "coverage_pct": 6.4,
+      "avg_per_file": 2.08,
+      "ats_strength": 12.2
+    },
+    {
+      "keyword": "mvp",
+      "category": "Product Management",
+      "total_occurrences": 23,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 2.3,
+      "ats_strength": 12.2
+    },
+    {
+      "keyword": "approval rate",
+      "category": "Payments",
+      "total_occurrences": 29,
+      "files_count": 26,
+      "coverage_pct": 12.8,
+      "avg_per_file": 1.12,
+      "ats_strength": 12.1
+    },
+    {
+      "keyword": "portfolio management",
+      "category": "PMO",
+      "total_occurrences": 30,
+      "files_count": 21,
+      "coverage_pct": 10.3,
+      "avg_per_file": 1.43,
+      "ats_strength": 11.9
+    },
+    {
+      "keyword": "coaching",
+      "category": "Leadership",
+      "total_occurrences": 28,
+      "files_count": 15,
+      "coverage_pct": 7.4,
+      "avg_per_file": 1.87,
+      "ats_strength": 11.9
+    },
+    {
+      "keyword": "open banking",
+      "category": "Fintech",
+      "total_occurrences": 25,
+      "files_count": 12,
+      "coverage_pct": 5.9,
+      "avg_per_file": 2.08,
+      "ats_strength": 11.9
+    },
+    {
+      "keyword": "smart retry",
+      "category": "Payments",
+      "total_occurrences": 27,
+      "files_count": 25,
+      "coverage_pct": 12.3,
+      "avg_per_file": 1.08,
+      "ats_strength": 11.7
+    },
+    {
+      "keyword": "issuing",
+      "category": "Payments",
+      "total_occurrences": 28,
+      "files_count": 17,
+      "coverage_pct": 8.4,
+      "avg_per_file": 1.65,
+      "ats_strength": 11.6
+    },
+    {
+      "keyword": "card network",
+      "category": "Payments",
+      "total_occurrences": 8,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 2.67,
+      "ats_strength": 11.6
+    },
+    {
+      "keyword": "a/b testing",
+      "category": "Product Management",
+      "total_occurrences": 27,
+      "files_count": 16,
+      "coverage_pct": 7.9,
+      "avg_per_file": 1.69,
+      "ats_strength": 11.5
+    },
+    {
+      "keyword": "experimentation",
+      "category": "Analytics",
+      "total_occurrences": 20,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 2.22,
+      "ats_strength": 11.5
+    },
+    {
+      "keyword": "c-suite",
+      "category": "Leadership",
+      "total_occurrences": 26,
+      "files_count": 18,
+      "coverage_pct": 8.9,
+      "avg_per_file": 1.44,
+      "ats_strength": 11.1
+    },
+    {
+      "keyword": "rag",
+      "category": "AI",
+      "total_occurrences": 19,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 2.11,
+      "ats_strength": 11.1
+    },
+    {
+      "keyword": "distributed systems",
+      "category": "Technical",
+      "total_occurrences": 14,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 2.33,
+      "ats_strength": 11.1
+    },
+    {
+      "keyword": "safe",
+      "category": "Agile",
+      "total_occurrences": 22,
+      "files_count": 12,
+      "coverage_pct": 5.9,
+      "avg_per_file": 1.83,
+      "ats_strength": 10.9
+    },
+    {
+      "keyword": "customer journey",
+      "category": "Product Management",
+      "total_occurrences": 21,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 1.91,
+      "ats_strength": 10.9
+    },
+    {
+      "keyword": "dpan",
+      "category": "Payments",
+      "total_occurrences": 24,
+      "files_count": 19,
+      "coverage_pct": 9.4,
+      "avg_per_file": 1.26,
+      "ats_strength": 10.7
+    },
+    {
+      "keyword": "fpan",
+      "category": "Payments",
+      "total_occurrences": 24,
+      "files_count": 19,
+      "coverage_pct": 9.4,
+      "avg_per_file": 1.26,
+      "ats_strength": 10.7
+    },
+    {
+      "keyword": "fraud prevention",
+      "category": "Risk & Security",
+      "total_occurrences": 23,
+      "files_count": 14,
+      "coverage_pct": 6.9,
+      "avg_per_file": 1.64,
+      "ats_strength": 10.7
+    },
+    {
+      "keyword": "digital wallet",
+      "category": "Payments",
+      "total_occurrences": 19,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 1.9,
+      "ats_strength": 10.6
+    },
+    {
+      "keyword": "issuer enablement",
+      "category": "Payments",
+      "total_occurrences": 19,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 1.9,
+      "ats_strength": 10.6
+    },
+    {
+      "keyword": "dau",
+      "category": "Analytics",
+      "total_occurrences": 5,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 2.5,
+      "ats_strength": 10.6
+    },
+    {
+      "keyword": "ach",
+      "category": "Payments",
+      "total_occurrences": 5,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 2.5,
+      "ats_strength": 10.6
+    },
+    {
+      "keyword": "executive presence",
+      "category": "Leadership",
+      "total_occurrences": 5,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 2.5,
+      "ats_strength": 10.6
+    },
+    {
+      "keyword": "cybersecurity",
+      "category": "Risk & Security",
+      "total_occurrences": 5,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 2.5,
+      "ats_strength": 10.6
+    },
+    {
+      "keyword": "mau",
+      "category": "Analytics",
+      "total_occurrences": 5,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 2.5,
+      "ats_strength": 10.6
+    },
+    {
+      "keyword": "north star",
+      "category": "Analytics",
+      "total_occurrences": 5,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 2.5,
+      "ats_strength": 10.6
+    },
+    {
+      "keyword": "discover",
+      "category": "Payments",
+      "total_occurrences": 13,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 2.17,
+      "ats_strength": 10.4
+    },
+    {
+      "keyword": "product-market fit",
+      "category": "Product Management",
+      "total_occurrences": 11,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 2.2,
+      "ats_strength": 10.3
+    },
+    {
+      "keyword": "vts",
+      "category": "Payments",
+      "total_occurrences": 7,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 2.33,
+      "ats_strength": 10.2
+    },
+    {
+      "keyword": "mobile wallet",
+      "category": "Payments",
+      "total_occurrences": 21,
+      "files_count": 20,
+      "coverage_pct": 9.9,
+      "avg_per_file": 1.05,
+      "ats_strength": 10.1
+    },
+    {
+      "keyword": "kyb",
+      "category": "Compliance",
+      "total_occurrences": 21,
+      "files_count": 20,
+      "coverage_pct": 9.9,
+      "avg_per_file": 1.05,
+      "ats_strength": 10.1
+    },
+    {
+      "keyword": "incident response",
+      "category": "Risk & Security",
+      "total_occurrences": 21,
+      "files_count": 17,
+      "coverage_pct": 8.4,
+      "avg_per_file": 1.24,
+      "ats_strength": 10.0
+    },
+    {
+      "keyword": "webhook",
+      "category": "Technical",
+      "total_occurrences": 15,
+      "files_count": 8,
+      "coverage_pct": 3.9,
+      "avg_per_file": 1.88,
+      "ats_strength": 9.9
+    },
+    {
+      "keyword": "privacy",
+      "category": "Risk & Security",
+      "total_occurrences": 15,
+      "files_count": 8,
+      "coverage_pct": 3.9,
+      "avg_per_file": 1.88,
+      "ats_strength": 9.9
+    },
+    {
+      "keyword": "value proposition",
+      "category": "Product Management",
+      "total_occurrences": 18,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 1.64,
+      "ats_strength": 9.8
+    },
+    {
+      "keyword": "real-time payments",
+      "category": "Payments",
+      "total_occurrences": 19,
+      "files_count": 13,
+      "coverage_pct": 6.4,
+      "avg_per_file": 1.46,
+      "ats_strength": 9.7
+    },
+    {
+      "keyword": "steering committee",
+      "category": "PMO",
+      "total_occurrences": 19,
+      "files_count": 14,
+      "coverage_pct": 6.9,
+      "avg_per_file": 1.36,
+      "ats_strength": 9.6
+    },
+    {
+      "keyword": "rest",
+      "category": "Technical",
+      "total_occurrences": 19,
+      "files_count": 14,
+      "coverage_pct": 6.9,
+      "avg_per_file": 1.36,
+      "ats_strength": 9.6
+    },
+    {
+      "keyword": "team building",
+      "category": "Leadership",
+      "total_occurrences": 19,
+      "files_count": 17,
+      "coverage_pct": 8.4,
+      "avg_per_file": 1.12,
+      "ats_strength": 9.5
+    },
+    {
+      "keyword": "product portfolio",
+      "category": "Product Management",
+      "total_occurrences": 19,
+      "files_count": 15,
+      "coverage_pct": 7.4,
+      "avg_per_file": 1.27,
+      "ats_strength": 9.5
+    },
+    {
+      "keyword": "interchange",
+      "category": "Payments",
+      "total_occurrences": 16,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 1.6,
+      "ats_strength": 9.4
+    },
+    {
+      "keyword": "deliverable",
+      "category": "PMO",
+      "total_occurrences": 14,
+      "files_count": 8,
+      "coverage_pct": 3.9,
+      "avg_per_file": 1.75,
+      "ats_strength": 9.4
+    },
+    {
+      "keyword": "product analytics",
+      "category": "Product Management",
+      "total_occurrences": 18,
+      "files_count": 14,
+      "coverage_pct": 6.9,
+      "avg_per_file": 1.29,
+      "ats_strength": 9.3
+    },
+    {
+      "keyword": "sdk",
+      "category": "Technical",
+      "total_occurrences": 18,
+      "files_count": 14,
+      "coverage_pct": 6.9,
+      "avg_per_file": 1.29,
+      "ats_strength": 9.3
+    },
+    {
+      "keyword": "sql",
+      "category": "Analytics",
+      "total_occurrences": 15,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 1.67,
+      "ats_strength": 9.3
+    },
+    {
+      "keyword": "transaction monitoring",
+      "category": "Risk & Security",
+      "total_occurrences": 18,
+      "files_count": 16,
+      "coverage_pct": 7.9,
+      "avg_per_file": 1.12,
+      "ats_strength": 9.2
+    },
+    {
+      "keyword": "regulatory alignment",
+      "category": "Compliance",
+      "total_occurrences": 17,
+      "files_count": 13,
+      "coverage_pct": 6.4,
+      "avg_per_file": 1.31,
+      "ats_strength": 9.1
+    },
+    {
+      "keyword": "product launch",
+      "category": "Product Management",
+      "total_occurrences": 16,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 1.45,
+      "ats_strength": 9.1
+    },
+    {
+      "keyword": "kanban",
+      "category": "Agile",
+      "total_occurrences": 16,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 1.45,
+      "ats_strength": 9.1
+    },
+    {
+      "keyword": "information security",
+      "category": "Risk & Security",
+      "total_occurrences": 16,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 1.45,
+      "ats_strength": 9.1
+    },
+    {
+      "keyword": "regulation",
+      "category": "Compliance",
+      "total_occurrences": 11,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 1.83,
+      "ats_strength": 9.1
+    },
+    {
+      "keyword": "cohort analysis",
+      "category": "Analytics",
+      "total_occurrences": 17,
+      "files_count": 16,
+      "coverage_pct": 7.9,
+      "avg_per_file": 1.06,
+      "ats_strength": 9.0
+    },
+    {
+      "keyword": "machine learning",
+      "category": "AI",
+      "total_occurrences": 13,
+      "files_count": 8,
+      "coverage_pct": 3.9,
+      "avg_per_file": 1.62,
+      "ats_strength": 8.9
+    },
+    {
+      "keyword": "cac",
+      "category": "Analytics",
+      "total_occurrences": 12,
+      "files_count": 7,
+      "coverage_pct": 3.4,
+      "avg_per_file": 1.71,
+      "ats_strength": 8.9
+    },
+    {
+      "keyword": "prompt engineering",
+      "category": "AI",
+      "total_occurrences": 9,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.8,
+      "ats_strength": 8.7
+    },
+    {
+      "keyword": "iso 8583",
+      "category": "Payments",
+      "total_occurrences": 14,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 1.4,
+      "ats_strength": 8.6
+    },
+    {
+      "keyword": "emv",
+      "category": "Payments",
+      "total_occurrences": 4,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 2.0,
+      "ats_strength": 8.6
+    },
+    {
+      "keyword": "microservices",
+      "category": "Technical",
+      "total_occurrences": 15,
+      "files_count": 14,
+      "coverage_pct": 6.9,
+      "avg_per_file": 1.07,
+      "ats_strength": 8.4
+    },
+    {
+      "keyword": "pos",
+      "category": "Payments",
+      "total_occurrences": 12,
+      "files_count": 8,
+      "coverage_pct": 3.9,
+      "avg_per_file": 1.5,
+      "ats_strength": 8.4
+    },
+    {
+      "keyword": "product backlog",
+      "category": "Product Management",
+      "total_occurrences": 12,
+      "files_count": 8,
+      "coverage_pct": 3.9,
+      "avg_per_file": 1.5,
+      "ats_strength": 8.4
+    },
+    {
+      "keyword": "change control",
+      "category": "PMO",
+      "total_occurrences": 10,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 1.67,
+      "ats_strength": 8.4
+    },
+    {
+      "keyword": "restful",
+      "category": "Technical",
+      "total_occurrences": 10,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 1.67,
+      "ats_strength": 8.4
+    },
+    {
+      "keyword": "product discovery",
+      "category": "Product Management",
+      "total_occurrences": 14,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 1.27,
+      "ats_strength": 8.3
+    },
+    {
+      "keyword": "risk register",
+      "category": "PMO",
+      "total_occurrences": 2,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 2.0,
+      "ats_strength": 8.3
+    },
+    {
+      "keyword": "bacs",
+      "category": "Payments",
+      "total_occurrences": 2,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 2.0,
+      "ats_strength": 8.3
+    },
+    {
+      "keyword": "co-founder",
+      "category": "Leadership",
+      "total_occurrences": 2,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 2.0,
+      "ats_strength": 8.3
+    },
+    {
+      "keyword": "deep learning",
+      "category": "AI",
+      "total_occurrences": 2,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 2.0,
+      "ats_strength": 8.3
+    },
+    {
+      "keyword": "story points",
+      "category": "Agile",
+      "total_occurrences": 2,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 2.0,
+      "ats_strength": 8.3
+    },
+    {
+      "keyword": "ssl",
+      "category": "Technical",
+      "total_occurrences": 2,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 2.0,
+      "ats_strength": 8.3
+    },
+    {
+      "keyword": "buy now pay later",
+      "category": "Fintech",
+      "total_occurrences": 13,
+      "files_count": 10,
+      "coverage_pct": 4.9,
+      "avg_per_file": 1.3,
+      "ats_strength": 8.2
+    },
+    {
+      "keyword": "embedding",
+      "category": "AI",
+      "total_occurrences": 14,
+      "files_count": 14,
+      "coverage_pct": 6.9,
+      "avg_per_file": 1.0,
+      "ats_strength": 8.1
+    },
+    {
+      "keyword": "burndown",
+      "category": "Agile",
+      "total_occurrences": 12,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 1.33,
+      "ats_strength": 8.0
+    },
+    {
+      "keyword": "azure",
+      "category": "Technical",
+      "total_occurrences": 10,
+      "files_count": 7,
+      "coverage_pct": 3.4,
+      "avg_per_file": 1.43,
+      "ats_strength": 7.8
+    },
+    {
+      "keyword": "product requirements",
+      "category": "Product Management",
+      "total_occurrences": 9,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 1.5,
+      "ats_strength": 7.8
+    },
+    {
+      "keyword": "javascript",
+      "category": "Technical",
+      "total_occurrences": 5,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.67,
+      "ats_strength": 7.6
+    },
+    {
+      "keyword": "chargeback",
+      "category": "Payments",
+      "total_occurrences": 5,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.67,
+      "ats_strength": 7.6
+    },
+    {
+      "keyword": "aws",
+      "category": "Technical",
+      "total_occurrences": 10,
+      "files_count": 8,
+      "coverage_pct": 3.9,
+      "avg_per_file": 1.25,
+      "ats_strength": 7.4
+    },
+    {
+      "keyword": "sanctions screening",
+      "category": "Compliance",
+      "total_occurrences": 11,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 1.0,
+      "ats_strength": 7.3
+    },
+    {
+      "keyword": "business intelligence",
+      "category": "Analytics",
+      "total_occurrences": 11,
+      "files_count": 11,
+      "coverage_pct": 5.4,
+      "avg_per_file": 1.0,
+      "ats_strength": 7.3
+    },
+    {
+      "keyword": "react",
+      "category": "Technical",
+      "total_occurrences": 6,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 1.5,
+      "ats_strength": 7.2
+    },
+    {
+      "keyword": "sama",
+      "category": "Compliance",
+      "total_occurrences": 6,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 1.5,
+      "ats_strength": 7.2
+    },
+    {
+      "keyword": "license",
+      "category": "Compliance",
+      "total_occurrences": 10,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 1.11,
+      "ats_strength": 7.1
+    },
+    {
+      "keyword": "agile transformation",
+      "category": "Agile",
+      "total_occurrences": 8,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 1.33,
+      "ats_strength": 7.1
+    },
+    {
+      "keyword": "anthropic",
+      "category": "AI",
+      "total_occurrences": 7,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.4,
+      "ats_strength": 7.1
+    },
+    {
+      "keyword": "prd",
+      "category": "Product Management",
+      "total_occurrences": 7,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.4,
+      "ats_strength": 7.1
+    },
+    {
+      "keyword": "founder",
+      "category": "Leadership",
+      "total_occurrences": 7,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.4,
+      "ats_strength": 7.1
+    },
+    {
+      "keyword": "executive communication",
+      "category": "Leadership",
+      "total_occurrences": 9,
+      "files_count": 9,
+      "coverage_pct": 4.4,
+      "avg_per_file": 1.0,
+      "ats_strength": 6.7
+    },
+    {
+      "keyword": "postman",
+      "category": "Technical",
+      "total_occurrences": 3,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.5,
+      "ats_strength": 6.6
+    },
+    {
+      "keyword": "backlog refinement",
+      "category": "Agile",
+      "total_occurrences": 3,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.5,
+      "ats_strength": 6.6
+    },
+    {
+      "keyword": "kpi tracking",
+      "category": "Analytics",
+      "total_occurrences": 7,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 1.17,
+      "ats_strength": 6.4
+    },
+    {
+      "keyword": "scheme rules",
+      "category": "Payments",
+      "total_occurrences": 6,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.2,
+      "ats_strength": 6.3
+    },
+    {
+      "keyword": "security architecture",
+      "category": "Risk & Security",
+      "total_occurrences": 5,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 1.25,
+      "ats_strength": 6.2
+    },
+    {
+      "keyword": "user journey",
+      "category": "Product Management",
+      "total_occurrences": 4,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.33,
+      "ats_strength": 6.2
+    },
+    {
+      "keyword": "retrospective",
+      "category": "Agile",
+      "total_occurrences": 4,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.33,
+      "ats_strength": 6.2
+    },
+    {
+      "keyword": "user story",
+      "category": "Agile",
+      "total_occurrences": 4,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.33,
+      "ats_strength": 6.2
+    },
+    {
+      "keyword": "stablecoin",
+      "category": "Fintech",
+      "total_occurrences": 4,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.33,
+      "ats_strength": 6.2
+    },
+    {
+      "keyword": "fca",
+      "category": "Compliance",
+      "total_occurrences": 4,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.33,
+      "ats_strength": 6.2
+    },
+    {
+      "keyword": "embeddings",
+      "category": "AI",
+      "total_occurrences": 4,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.33,
+      "ats_strength": 6.2
+    },
+    {
+      "keyword": "ai strategy",
+      "category": "AI",
+      "total_occurrences": 4,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.33,
+      "ats_strength": 6.2
+    },
+    {
+      "keyword": "product positioning",
+      "category": "Product Management",
+      "total_occurrences": 7,
+      "files_count": 7,
+      "coverage_pct": 3.4,
+      "avg_per_file": 1.0,
+      "ats_strength": 6.1
+    },
+    {
+      "keyword": "board reporting",
+      "category": "Leadership",
+      "total_occurrences": 7,
+      "files_count": 7,
+      "coverage_pct": 3.4,
+      "avg_per_file": 1.0,
+      "ats_strength": 6.1
+    },
+    {
+      "keyword": "encryption",
+      "category": "Technical",
+      "total_occurrences": 7,
+      "files_count": 7,
+      "coverage_pct": 3.4,
+      "avg_per_file": 1.0,
+      "ats_strength": 6.1
+    },
+    {
+      "keyword": "mixpanel",
+      "category": "Analytics",
+      "total_occurrences": 6,
+      "files_count": 6,
+      "coverage_pct": 3.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.8
+    },
+    {
+      "keyword": "performance management",
+      "category": "Leadership",
+      "total_occurrences": 5,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.5
+    },
+    {
+      "keyword": "gdpr",
+      "category": "Compliance",
+      "total_occurrences": 5,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.5
+    },
+    {
+      "keyword": "data protection",
+      "category": "Risk & Security",
+      "total_occurrences": 5,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.5
+    },
+    {
+      "keyword": "embedded finance",
+      "category": "Fintech",
+      "total_occurrences": 5,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.5
+    },
+    {
+      "keyword": "vulnerability",
+      "category": "Risk & Security",
+      "total_occurrences": 5,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.5
+    },
+    {
+      "keyword": "scrum master",
+      "category": "Agile",
+      "total_occurrences": 5,
+      "files_count": 5,
+      "coverage_pct": 2.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.5
+    },
+    {
+      "keyword": "natural language",
+      "category": "AI",
+      "total_occurrences": 4,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.2
+    },
+    {
+      "keyword": "amplitude",
+      "category": "Analytics",
+      "total_occurrences": 4,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.2
+    },
+    {
+      "keyword": "funnel analysis",
+      "category": "Analytics",
+      "total_occurrences": 4,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.2
+    },
+    {
+      "keyword": "anti-money laundering",
+      "category": "Compliance",
+      "total_occurrences": 4,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.2
+    },
+    {
+      "keyword": "data pipeline",
+      "category": "Technical",
+      "total_occurrences": 4,
+      "files_count": 4,
+      "coverage_pct": 2.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 5.2
+    },
+    {
+      "keyword": "ai agent",
+      "category": "AI",
+      "total_occurrences": 3,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.9
+    },
+    {
+      "keyword": "founding",
+      "category": "Leadership",
+      "total_occurrences": 3,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.9
+    },
+    {
+      "keyword": "prince2",
+      "category": "PMO",
+      "total_occurrences": 3,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.9
+    },
+    {
+      "keyword": "ci/cd",
+      "category": "Technical",
+      "total_occurrences": 3,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.9
+    },
+    {
+      "keyword": "resource management",
+      "category": "PMO",
+      "total_occurrences": 3,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.9
+    },
+    {
+      "keyword": "coo",
+      "category": "Leadership",
+      "total_occurrences": 3,
+      "files_count": 3,
+      "coverage_pct": 1.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.9
+    },
+    {
+      "keyword": "stakeholder influence",
+      "category": "Leadership",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "soc 2",
+      "category": "Compliance",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "soc",
+      "category": "Risk & Security",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "gantt",
+      "category": "PMO",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "mentor",
+      "category": "Leadership",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "talent development",
+      "category": "Leadership",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "1:1",
+      "category": "Leadership",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "looker",
+      "category": "Analytics",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "postgresql",
+      "category": "Technical",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "mongodb",
+      "category": "Technical",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "metabase",
+      "category": "Analytics",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "amex",
+      "category": "Payments",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "node",
+      "category": "Technical",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "project governance",
+      "category": "PMO",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "discovery to delivery",
+      "category": "Product Management",
+      "total_occurrences": 2,
+      "files_count": 2,
+      "coverage_pct": 1.0,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.6
+    },
+    {
+      "keyword": "wbs",
+      "category": "PMO",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "regtech",
+      "category": "Fintech",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "python",
+      "category": "Technical",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "java",
+      "category": "Technical",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "authorization rate",
+      "category": "Payments",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "penetration testing",
+      "category": "Risk & Security",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "people management",
+      "category": "Leadership",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "fatf",
+      "category": "Compliance",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "recruiting",
+      "category": "Leadership",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "voice of customer",
+      "category": "Product Management",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "cmo",
+      "category": "Leadership",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "north star metric",
+      "category": "Product Management",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "standup",
+      "category": "Agile",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "graphql",
+      "category": "Technical",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "gcp",
+      "category": "Technical",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "heap",
+      "category": "Analytics",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "snowflake",
+      "category": "Analytics",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "bigquery",
+      "category": "Analytics",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "data warehouse",
+      "category": "Analytics",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "statistical significance",
+      "category": "Analytics",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "rtp",
+      "category": "Payments",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "agentic commerce",
+      "category": "Fintech",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "generative ai",
+      "category": "AI",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "scheme certification",
+      "category": "Payments",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "payment service provider",
+      "category": "Payments",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "scaled organization",
+      "category": "Leadership",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "node.js",
+      "category": "Technical",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "power bi",
+      "category": "Analytics",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "microservice",
+      "category": "Technical",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "project charter",
+      "category": "PMO",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "product kpi",
+      "category": "Product Management",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "ios sdk",
+      "category": "Technical",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    },
+    {
+      "keyword": "android sdk",
+      "category": "Technical",
+      "total_occurrences": 1,
+      "files_count": 1,
+      "coverage_pct": 0.5,
+      "avg_per_file": 1.0,
+      "ats_strength": 4.3
+    }
+  ],
+  "by_category": {
+    "Product Management": {
+      "category": "Product Management",
+      "keyword_count": 33,
+      "top_keywords": [
+        "product strategy",
+        "product owner",
+        "product management",
+        "stakeholder management",
+        "go-to-market",
+        "product roadmap",
+        "product lifecycle",
+        "product manager",
+        "gtm",
+        "user stories"
+      ],
+      "avg_strength": 14.7,
+      "total_occurrences": 1575
+    },
+    "Fintech": {
+      "category": "Fintech",
+      "keyword_count": 14,
+      "top_keywords": [
+        "fintech",
+        "credit",
+        "financial services",
+        "bnpl",
+        "digital banking",
+        "financial infrastructure",
+        "financial inclusion",
+        "lending",
+        "open banking",
+        "buy now pay later"
+      ],
+      "avg_strength": 17.5,
+      "total_occurrences": 1225
+    },
+    "Payments": {
+      "category": "Payments",
+      "keyword_count": 69,
+      "top_keywords": [
+        "payment",
+        "payments",
+        "settlement",
+        "merchant",
+        "reconciliation",
+        "cross-border",
+        "card",
+        "mastercard",
+        "fx",
+        "gtv"
+      ],
+      "avg_strength": 24.3,
+      "total_occurrences": 12289
+    },
+    "Compliance": {
+      "category": "Compliance",
+      "keyword_count": 24,
+      "top_keywords": [
+        "compliance",
+        "regulatory",
+        "iso 27001",
+        "audit",
+        "aml",
+        "cft",
+        "kyc",
+        "central bank",
+        "audit trail",
+        "auditor"
+      ],
+      "avg_strength": 21.3,
+      "total_occurrences": 3395
+    },
+    "Agile": {
+      "category": "Agile",
+      "keyword_count": 19,
+      "top_keywords": [
+        "agile",
+        "scrum",
+        "acp",
+        "cspo",
+        "csm",
+        "sprint",
+        "velocity",
+        "lean",
+        "sprint planning",
+        "safe"
+      ],
+      "avg_strength": 21.7,
+      "total_occurrences": 1940
+    },
+    "PMO": {
+      "category": "PMO",
+      "keyword_count": 19,
+      "top_keywords": [
+        "pmo",
+        "pmp",
+        "project management office",
+        "pmbok",
+        "program management",
+        "raid",
+        "ms project",
+        "milestone",
+        "portfolio management",
+        "steering committee"
+      ],
+      "avg_strength": 15.4,
+      "total_occurrences": 1199
+    },
+    "Technical": {
+      "category": "Technical",
+      "keyword_count": 35,
+      "top_keywords": [
+        "api",
+        "jira",
+        "confluence",
+        "kafka",
+        "apis",
+        "system design",
+        "event-driven",
+        "swagger",
+        "openapi",
+        "distributed systems"
+      ],
+      "avg_strength": 10.7,
+      "total_occurrences": 993
+    },
+    "Leadership": {
+      "category": "Leadership",
+      "keyword_count": 34,
+      "top_keywords": [
+        "leadership",
+        "chief",
+        "head of",
+        "cfo",
+        "executive",
+        "cpo",
+        "leader",
+        "vp",
+        "board",
+        "hiring"
+      ],
+      "avg_strength": 17.3,
+      "total_occurrences": 2335
+    },
+    "Analytics": {
+      "category": "Analytics",
+      "keyword_count": 28,
+      "top_keywords": [
+        "analytics",
+        "r",
+        "churn",
+        "bi",
+        "data analytics",
+        "dashboard",
+        "ltv",
+        "tableau",
+        "experimentation",
+        "dau"
+      ],
+      "avg_strength": 11.5,
+      "total_occurrences": 893
+    },
+    "AI": {
+      "category": "AI",
+      "keyword_count": 19,
+      "top_keywords": [
+        "ai",
+        "genai",
+        "agentic",
+        "llm",
+        "openai",
+        "langchain",
+        "claude",
+        "ml",
+        "rag",
+        "machine learning"
+      ],
+      "avg_strength": 12.2,
+      "total_occurrences": 522
+    },
+    "Risk & Security": {
+      "category": "Risk & Security",
+      "keyword_count": 16,
+      "top_keywords": [
+        "risk management",
+        "fraud detection",
+        "operational risk",
+        "risk mitigation",
+        "credit risk",
+        "fraud prevention",
+        "cybersecurity",
+        "incident response",
+        "privacy",
+        "transaction monitoring"
+      ],
+      "avg_strength": 10.6,
+      "total_occurrences": 390
+    }
+  },
+  "missing_from_vocabulary": [
+    "ab testing",
+    "agile coach",
+    "ai consulting",
+    "artificial intelligence",
+    "auth rate",
+    "bin sponsor",
+    "card not present",
+    "card-not-present",
+    "challenger bank",
+    "cnp",
+    "computer vision",
+    "dast",
+    "data lake",
+    "dbt",
+    "decline recovery",
+    "dlp",
+    "docker",
+    "earned value",
+    "epic",
+    "etl",
+    "event driven",
+    "feature flag",
+    "fincen",
+    "fine tuning",
+    "fine-tuning",
+    "foreign exchange",
+    "gemini",
+    "github actions",
+    "gpt-3.5",
+    "gpt-4",
+    "growing teams",
+    "grpc",
+    "hashing",
+    "infosec",
+    "insurance tech",
+    "iso 9001",
+    "jcb",
+    "jenkins",
+    "jupyter",
+    "jwt",
+    "kubernetes",
+    "large language model",
+    "llamaindex",
+    "mas",
+    "matplotlib",
+    "mlops",
+    "model deployment",
+    "money services business",
+    "monolith",
+    "msb",
+    "neobank",
+    "neural network",
+    "next.js",
+    "nlp",
+    "oauth",
+    "ofac",
+    "owasp",
+    "pandas",
+    "pen testing",
+    "pep",
+    "pii",
+    "postgres",
+    "powerbi",
+    "predictive analytics",
+    "principal member",
+    "product hypothesis",
+    "product market fit",
+    "psm",
+    "pspo",
+    "rabbitmq",
+    "raid log",
+    "recommendation engine",
+    "redis",
+    "redshift",
+    "retention analysis",
+    "retrieval augmented generation",
+    "retrieval-augmented",
+    "rupay",
+    "saml",
+    "sast",
+    "scaled agile",
+    "schedule management",
+    "scheme tokenization",
+    "scope management",
+    "secure coding",
+    "security operations center",
+    "speech recognition",
+    "stage gate",
+    "stand-up",
+    "succession planning",
+    "threat modeling",
+    "tls",
+    "typescript",
+    "vara",
+    "vector database",
+    "vector db",
+    "vice president",
+    "wau",
+    "wealth management",
+    "wealthtech",
+    "wire transfer",
+    "work breakdown structure",
+    "zero trust"
+  ],
+  "vocabulary_size": 413
+}

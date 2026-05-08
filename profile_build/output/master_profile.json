@@ -1,0 +1,315 @@
+{
+  "name": "RIZWAN ZAFAR",
+  "headline": "Product & Program Leader \u00b7 Payments \u00b7 Fintech \u00b7 Cross-Border Systems",
+  "contact": {
+    "location": "Dubai, UAE",
+    "phones": [
+      "+971-58-9683970",
+      "+92-321-2027229"
+    ],
+    "email": "rizwanzaffar.pk@gmail.com",
+    "linkedin": "https://linkedin.com/in/rizwanzafarpmp"
+  },
+  "summary": "Payments and financial services leader with 12+ years delivering measurable outcomes across digital payments, eCommerce, fintech, and banking \u2014 spanning five countries (Pakistan, Bangladesh, Nepal, Egypt, Iraq) and three continents. I've built and scaled a B2B payment platform from zero to $1B+ in transaction volume, managing the full lifecycle from strategy through execution across regulated markets. My work covers product management, P&L ownership, ecosystem readiness, cross-border payment corridors, issuer enablement, advanced analytics, AI strategy, and digital transformation. I've deployed four production AI solutions, built project management frameworks from scratch, and managed day-to-day relationships with 50+ financial institution partners. I combine technology architecture expertise with client-facing relationship management \u2014 communicating complex information to both technical and non-technical audiences, including executive leadership. I'm hands-on, intellectually curious, and comfortable rolling up my sleeves. I bring strong analytical, problem-solving, and decision-making skills, along with deep experience in stakeholder management, negotiation, risk management, and regulatory compliance. I drive collaborative cultures, develop talent, and build trust with every stakeholder in the chain. ---",
+  "core_competencies": [
+    "Product Management & P&L Ownership",
+    "Advanced Analytics & AI Strategy / Implementation",
+    "Digital Transformation (Strategy to Execution)",
+    "Payments Ecosystem Readiness & Performance Monitoring",
+    "Cross-Border Payment Corridors & Remittance",
+    "Issuer Acceptance & Enablement Optimization",
+    "GenAI Use Case Identification & Value Modeling",
+    "Digital Maturity Assessments & Market Research",
+    "Digital Acquisition Strategies & Growth",
+    "Omnichannel Customer Journey Mapping",
+    "Product Innovation & Product Roadmap",
+    "Commercialization & Go-to-Market Strategy",
+    "Business Development & Specialist Sales Support",
+    "Thought Leadership & Marketing Initiatives",
+    "Client Relationships & Client Engagement",
+    "Workshop Facilitation & Consulting Delivery",
+    "Stakeholder Management & Negotiation",
+    "Value Propositions for Digital Banking & Fintech",
+    "Proposal Development & Revenue Modeling",
+    "Data-Driven Advisory & Decision-Making",
+    "Approval Rates, Fraud & Risk Metrics Monitoring",
+    "Regulatory Alignment, KYC, AML & Compliance",
+    "Cross-Functional Collaboration & Team Coordination",
+    "Large-Scale Capital Project Delivery",
+    "Project Management Frameworks & Best Practices (Agile, PMBOK, Hybrid)",
+    "Scope, Budget & Timeline Management",
+    "Resource Allocation & Cost Management",
+    "Risk Identification, Mitigation & Management",
+    "Post-Launch Monitoring & Continuous Improvement",
+    "Conflict Management & Trust Building",
+    "Team Mentoring & Professional Development",
+    "Presentation Skills, Storytelling & Executive Communication",
+    "Product & Technical Documentation",
+    "Operational Resilience & Scalable Solutions",
+    ""
+  ],
+  "ai_solutions": [
+    {
+      "title": "AI Merchant Integration Chatbot (Slack & Telegram)",
+      "description": "Built and deployed a GenAI-powered virtual integration expert that guides onboarded merchants through API setup, troubleshoots errors, and provides real-time documentation. Developed using open source LLM models with RAG architecture. Cut integration support time by 65% \u2014 a digital transformation of the entire merchant onboarding customer journey."
+    },
+    {
+      "title": "Intelligent System Monitoring & Auto-Escalation Bot",
+      "description": "Deployed an AI system that detects payment error spikes, runs log analysis, identifies root cause, and auto-escalates to internal teams on Slack with full diagnostics \u2014 within minutes. Cut incident response time by 70%. Data-driven decision-making in real time."
+    },
+    {
+      "title": "AI Partner Support Automation (90% Resolution)",
+      "description": "Built a GenAI-powered support bot handling merchant payment queries \u2014 settlement, disputes, decline codes, integration issues \u2014 resolving 90% without human intervention. That's not a prototype; it's been running in production for months."
+    },
+    {
+      "title": "Fraud Detection & AML Pilot (Active Banking Partner)",
+      "description": "Currently in pilot with a major banking partner to deploy AI-driven fraud transaction identification and AML compliance. Value modeling showed 40% reduction in manual review \u2014 the pilot is validating that number."
+    }
+  ],
+  "experience": [
+    {
+      "title": "Chief Product Officer",
+      "company": "Simpaisa (B2B Fintech Platform)",
+      "location": "Dubai, UAE",
+      "dates": "Aug 2020 \u2013 Present",
+      "summary": "B2B payment infrastructure enabling the movement of money to cards, accounts, and wallets for 150+ merchants, 390M+ mobile wallets, 370M+ bank accounts across five countries. $1B+ GTV, 97% success rate. Work cross-functionally with product, technology, risk and AML, finance, legal, and client services teams.",
+      "highlights": [],
+      "groups": [
+        {
+          "label": "Ecosystem Growth & P&L Ownership",
+          "bullets": [
+            "Built the payment ecosystem from scratch across five markets \u2014 spanning enablement (150+ merchant integrations), acceptance (50+ issuer partners), performance (97% success rate), compliance (PCI DSS, ISO 27001, AML/CFT across five jurisdictions), and revenue outcomes ($1B+ GTV).",
+            "Own and drive the P&L for the full product line. Every product decision ties back to commercial results. Track record of successfully managing a P&L \u2014 built from zero to $1B+ in transaction volume."
+          ]
+        },
+        {
+          "label": "Product Innovation & Roadmap",
+          "bullets": [
+            "Built the multi-year product roadmap in partnership with regional stakeholders \u2014 prioritizing new use cases (card-on-file, recurring billing, tokenized payments, cross-border payouts), balancing regional needs against global standards.",
+            "Led GenAI use case identification across the organization \u2014 evaluated 20+ potential use cases, built value modeling for each (ROI, feasibility, data readiness), and deployed four solutions into production. Translated strategic recommendations into actionable roadmaps with clear milestones and KPIs."
+          ]
+        },
+        {
+          "label": "Cross-Border Payment Corridors",
+          "bullets": [
+            "Led remittance corridor enablement across Pakistan, Bangladesh, Nepal, Egypt, and Iraq \u2014 ensuring market readiness, regulatory alignment, and seamless technical integration.",
+            "Integrated with banks, mobile wallets, and acquirers to build cross-border payout rails with real-time disbursement and multi-currency settlement."
+          ]
+        },
+        {
+          "label": "Ecosystem Readiness & Performance Monitoring",
+          "bullets": [
+            "Built monitoring infrastructure tracking approval rates (improved from 60% to 85%), fraud and risk metrics, data integrity, and overall operational health across all five markets. Maintained 99.9% uptime SLAs.",
+            "Set up real-time dashboards that surface performance degradation before it hits merchants."
+          ]
+        },
+        {
+          "label": "Issuer Acceptance & Enablement",
+          "bullets": [
+            "Ran the issuer enablement programme across 50+ payment partners \u2014 conducting technical workshops, optimizing risk policies, decline code mapping, threshold tuning, and authentication flow improvements.",
+            "Achieved 14% authorization uplift and 22% token failure reduction. Led new and emerging use case enablement for card-on-file payments, recurring billing, and tokenized transactions."
+          ]
+        },
+        {
+          "label": "Post-Launch Monitoring & Continuous Improvement",
+          "bullets": [
+            "Implemented smart retry logic using decline code segmentation that recovers 120K+ failed transactions monthly ($14M+ GTV).",
+            "Set up L1/L2/L3 triage workflows, TRT commitments, and root-cause reviews on every P1 incident \u2014 reducing merchant escalations by 40%."
+          ]
+        },
+        {
+          "label": "Data-Driven Initiatives",
+          "bullets": [
+            "Built analytics tracking decline codes, failure segmentation, and cohort performance to improve acceptance quality, consistency, and operational resilience across endpoints.",
+            "Drove data-driven initiatives that feed every product and advisory decision."
+          ]
+        },
+        {
+          "label": "Commercialization & Go-to-Market",
+          "bullets": [
+            "Led go-to-market for every product launch across five markets. Provided specialist sales support \u2014 built pitch decks, ROI models, and data-driven advisory materials that helped close deals with 50+ financial institution partners.",
+            "Created market entry proposals for five new corridors \u2014 each included regulatory analysis, competitive landscape, partner ecosystem mapping, revenue modeling, and go-to-market strategy. Secured board funding for expansion."
+          ]
+        },
+        {
+          "label": "Client Engagement & Ecosystem SME",
+          "bullets": [
+            "Serve as primary relationship manager for 50+ financial institution and banking partners. Guide clients through technical, operational, and compliance requirements.",
+            "Create presentations for internal approvals and external client facing discussions. Storytelling translates commercialization opportunities into clear technical understanding for every audience.",
+            "Work closely with sales and account managers to plan and manage the client's integration strategy, schedule, and deadlines.",
+            "Facilitate workshops and stakeholder sessions on payment strategy, digital banking capabilities, and GenAI adoption.",
+            "Use moderation and facilitation skills in every partner readiness workshop, ensuring scalable outcomes.",
+            "Proven ability to influence and communicate effectively across regional and functional lines."
+          ]
+        },
+        {
+          "label": "Thought Leadership & Documentation",
+          "bullets": [
+            "Authored whitepapers, case studies, and point-of-views on AI in payments, digital transformation, digital banking trends, and fintech innovation.",
+            "Created API documentation, integration guides, merchant onboarding playbooks, and compliance documentation across all five markets.",
+            "Built self-service SDKs (iOS, Android, Web) with certification automation tools that reduced merchant integration time from 6 weeks to 2 weeks."
+          ]
+        },
+        {
+          "label": "Project Delivery & Frameworks",
+          "bullets": [
+            "Delivered the full platform build across five countries \u2014 payment gateway infrastructure, cross-border payout corridors, tokenization systems, and merchant integration platforms. Every project delivered within scope, budget, and timeline.",
+            "Built the organization's project management methodology from scratch \u2014 Agile sprints for product development, PMBOK-based stage gates for capital projects, and a hybrid framework for cross-functional delivery."
+          ]
+        },
+        {
+          "label": "Team Leadership & Talent Development",
+          "bullets": [
+            "Grew the organization from 2 to 50+ across product, engineering, compliance, and BizOps.",
+            "Built a culture of openness, flexibility, innovation, accountability, and excellence.",
+            "Developed talent through mentoring, career development programmes, and knowledge sharing sessions on GenAI, digital strategy, and consulting best practices.",
+            "Manage a complex and varied workload supporting multiple ongoing product and solution development initiatives."
+          ]
+        },
+        {
+          "label": "Technical Achievements",
+          "bullets": [
+            "MDES tokenization integration on MPGS rails (DPAN/FPAN provisioning, credential lifecycle management, cryptographic validation)",
+            "Smart retry logic recovering 120K+ failed transactions/month ($14M+ GTV)",
+            "Payment success improvement from 60% to 85%",
+            "14% authorization uplift across 50+ issuer partners",
+            "97% overall transaction success rate, 99.9% uptime"
+          ]
+        }
+      ],
+      "scope": "5 Markets (PK, BD, NP, EG, IQ)"
+    },
+    {
+      "title": "Project Manager \u2014 Payments & Platform Delivery",
+      "company": "Daraz (Alibaba Group)",
+      "location": "Karachi, Pakistan",
+      "dates": "Mar 2020 \u2013 Aug 2020",
+      "summary": "South Asia's leading eCommerce platform (5 countries, 50M+ users). Led ecosystem readiness and performance optimization for digital payments.",
+      "highlights": [
+        "Optimized multi-rail checkout integrating cards and wallets \u2014 15% conversion uplift, 20% reduction in false declines through 3DS2 policy optimization. Worked cross-functionally with client services, risk, and technology teams.",
+        "Aligned payment orchestration with Alibaba's global technical standards on retry logic, failure handling, and API response code management.",
+        "Automated payout reconciliation achieving 99.5% settlement accuracy and data integrity.",
+        "Created product documentation and presentations for internal approvals and external partner discussions.",
+        "Communicated complex information to both technical and non-technical audiences across multiple geographic locations and time zones.",
+        "Strong decision-making abilities to raise issues at appropriate times."
+      ],
+      "groups": [],
+      "scope": "PK, BD, Sri Lanka"
+    },
+    {
+      "title": "Head of Product & Projects",
+      "company": "TapmadTV (OTT Platform)",
+      "location": "Karachi, Pakistan",
+      "dates": "Jul 2017 \u2013 Mar 2020",
+      "summary": "",
+      "highlights": [
+        "Scaled the platform from 0 to 5M paid subscribers through ecosystem enablement \u2014 multi-rail payment acceptance (cards, wallets, carrier billing), issuer acceptance optimization, and seamless technical integration with payment service providers.",
+        "Designed tokenized subscription billing with Card-on-File framework.",
+        "Managed cross-border remittance operations for content licensing payments. Led regulatory requirements, KYC and compliance processes for payment integrations.",
+        "Built analytics infrastructure tracking approval rates and fraud metrics \u2014 improved subscriber retention by 30%.",
+        "Owned P&L for the subscription product line. Built the product roadmap, drove commercialization of new payment methods, and managed go-to-market strategy.",
+        "Managed a complex and varied workload across product development, partner enablement, and ongoing solution development initiatives.",
+        "Developed talent across product and engineering teams. Drove thought leadership on OTT monetization in emerging markets."
+      ],
+      "groups": []
+    },
+    {
+      "title": "Project Management Roles",
+      "company": "Infinity Engineering",
+      "location": "Wing Logic LLC (UAE)",
+      "dates": "2012 \u2013 2017",
+      "summary": "",
+      "highlights": [
+        "Led ERP implementations, infrastructure projects, and digital transformation projects using Agile and PMBOK methodologies.",
+        "Managed cross-functional teams across multiple geographic locations (UAE, Pakistan, D.R. Congo) and time zones.",
+        "Reduced project delays by 60%.",
+        "Built project management frameworks, best practices, and tools from the ground up.",
+        "Managed project risks, ensured compliance with quality standards, and maintained rigorous budgeting and scheduling.",
+        "Built strong analytical, problem-solving, and decision-making skills in high-pressure environments.",
+        "Demonstrated negotiation capabilities and stakeholder management with diverse clients and regulatory bodies.",
+        "Demonstrated flexibility and adaptability in response to changing roles, priorities, and responsibilities."
+      ],
+      "groups": [],
+      "scope": "CIMKO (D.R. Congo) | DS Engineering | UAE, Pakistan, D.R. Congo"
+    }
+  ],
+  "education": [
+    {
+      "raw": "MIT \u2014 Certificate, Mastering Design Thinking",
+      "year": "",
+      "title": "MIT \u2014 Certificate, Mastering Design Thinking"
+    },
+    {
+      "raw": "Masters (M.Sc.), Applied Physics \u2014 University of Karachi",
+      "year": "",
+      "title": "Masters (M.Sc.), Applied Physics \u2014 University of Karachi",
+      "notes": "Postgraduate / Advanced Degree. Quantitative discipline with deep technical understanding, analytical rigor, and product development foundations."
+    },
+    {
+      "raw": "B.Sc., Physics \u2014 University of Karachi",
+      "year": "",
+      "title": "B.Sc., Physics \u2014 University of Karachi",
+      "notes": "Bachelor's Degree."
+    }
+  ],
+  "certifications": [
+    {
+      "name": "PMP",
+      "full_name": "Project Management Professional"
+    },
+    {
+      "name": "PMI-ACP",
+      "full_name": "Agile Certified Practitioner"
+    },
+    {
+      "name": "CSPO",
+      "full_name": "Certified Scrum Product Owner"
+    },
+    {
+      "name": "CSM",
+      "full_name": "Certified ScrumMaster"
+    },
+    {
+      "name": "COBIT 5",
+      "full_name": ""
+    },
+    {
+      "name": "ITIL v3",
+      "full_name": ""
+    }
+  ],
+  "technical_knowledge": [
+    "RESTful APIs",
+    "ISO 8583",
+    "ISO 20022",
+    "SWIFT Messaging",
+    "MPGS",
+    "MDES Tokenization",
+    "3DS / 3DS2",
+    "PCI DSS",
+    "ISO 27001",
+    "Mobile & eCommerce Payment Technologies",
+    "Self-Service SDKs (iOS, Android, Web)",
+    "Data Platforms & Analytics Infrastructure",
+    "GenAI (LLM, RAG Architecture)",
+    "Agile (Scrum, Kanban)",
+    "PMBOK",
+    "Jira",
+    "Confluence\n\n---"
+  ],
+  "languages": [
+    {
+      "name": "English",
+      "level": "Fluent (exceptional interpersonal and presentation skills)"
+    },
+    {
+      "name": "Urdu",
+      "level": "Native"
+    },
+    {
+      "name": "Arabic",
+      "level": "Conversational"
+    }
+  ],
+  "tailored_resumes_count": 20
+}

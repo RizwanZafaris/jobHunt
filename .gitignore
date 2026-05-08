@@ -18,8 +18,9 @@ venv/
 env/
 
 # Outputs (generated files)
-output/
+/output/
 data/
+!profile_build/output/
 
 # Logs
 *.log
