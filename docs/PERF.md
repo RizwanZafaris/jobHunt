@@ -83,14 +83,48 @@ if real-world latency norms differ.
 SELECT * FROM v_agent_call_health;
 ```
 
-### Alerting hook (future)
+### Alerting (Phase 1.10)
 
-When you wire alerting (PagerDuty, Slack, etc.), poll
-`/costs/health` and fire an alert if any provider has:
-- error_rate_pct > 5%, OR
-- p95_latency_ms > 20000
+`agents/cost_alerter.py` runs two cron-driven checks:
 
-The Phase 1.9 dashboard surfaces these visually but doesn't push.
+1. **Daily threshold check** (22:00 GST after the boss audit) — reads
+   today's spend from `agent_call_log`, compares against
+   `settings.daily_cost_alert_usd` (default $20), fires if exceeded.
+   Idempotent — won't double-fire same day (boss_audit_log dedup).
+2. **Weekly digest** (Sundays 09:00 GST) — aggregates last 7 days:
+   per-provider cost + error rate, top 5 most expensive resume_builds,
+   cost_capped count, conversion funnel.
+
+Dispatch order (first match wins):
+1. **Slack webhook** (preferred) — set `SLACK_WEBHOOK_URL` in env. Get
+   one at https://api.slack.com/messaging/webhooks.
+2. **SendGrid email** (fallback) — uses existing `SENDGRID_API_KEY` +
+   `ALERT_EMAIL_TO` (or `DIGEST_EMAIL_TO` if blank).
+3. **Stdout** (last resort) — logged to Railway stdout. Useful when
+   you haven't wired anything yet.
+
+**Manual triggers:**
+```bash
+# CLI
+python main.py --alert-check
+python main.py --weekly-digest
+
+# API
+curl -X POST "$API/alerts/check"          -H "X-Secret-Key: $SECRET"
+curl -X POST "$API/alerts/weekly-digest"  -H "X-Secret-Key: $SECRET"
+
+# Inspect last 10 alerter audit entries
+curl "$API/alerts/last" -H "X-Secret-Key: $SECRET"
+```
+
+**Tuning the threshold:**
+- Realistic floor: `$5/day` if you're running ≤ 2 G2 builds/day
+- Defensive upper bound: `$50/day` for active job hunting (10+ builds)
+- Set 2× your typical daily — alerts should fire on anomalies, not
+  routine traffic. Adjust after the first week of real data.
+
+**Adding `> 5% error rate` or `> 20s p95` alerting** as a layer on top
+is a future enhancement — currently surfaced visually on `/costs` only.
 
 ---
 

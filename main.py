@@ -81,6 +81,18 @@ async def run_persona_synthesis(force: bool = False):
     return results
 
 
+async def run_daily_cost_alert():
+    """Phase 1.10 daily-spend threshold check (cron 22:00 GST)."""
+    from agents.cost_alerter import CostAlerter
+    return await CostAlerter().check_daily_spend()
+
+
+async def run_weekly_cost_digest():
+    """Phase 1.10 weekly cost digest (cron Sunday 09:00 GST)."""
+    from agents.cost_alerter import CostAlerter
+    return await CostAlerter().send_weekly_digest()
+
+
 async def run_interview_prep(job_id: int):
     """Generate interview prep for a specific job."""
     from agents.interview_agent import InterviewAgent
@@ -178,8 +190,28 @@ def start_scheduler():
         name="Weekly Persona Synthesis",
         misfire_grace_time=3600,    # 1h grace — non-urgent
     )
-
     console.print(f"   Persona Synthesis: Sundays 03:00 (auto-skips when no new data)")
+
+    # Phase 1.10: daily cost-spend alert (after boss audit) +
+    # weekly cost digest (Sunday morning, before user wakes up).
+    daily_alert_h, daily_alert_m = map(int, s.daily_alert_time.split(":"))
+    weekly_digest_h, weekly_digest_m = map(int, s.weekly_digest_time.split(":"))
+    scheduler.add_job(
+        lambda: asyncio.create_task(run_daily_cost_alert()),
+        CronTrigger(hour=daily_alert_h, minute=daily_alert_m, timezone=tz),
+        id="daily_cost_alert",
+        name="Daily Cost Alert",
+        misfire_grace_time=600,    # 10m grace
+    )
+    scheduler.add_job(
+        lambda: asyncio.create_task(run_weekly_cost_digest()),
+        CronTrigger(day_of_week="sun", hour=weekly_digest_h, minute=weekly_digest_m, timezone=tz),
+        id="weekly_cost_digest",
+        name="Weekly Cost Digest",
+        misfire_grace_time=3600,    # 1h grace
+    )
+    console.print(f"   Daily Cost Alert:  {s.daily_alert_time} (>= ${s.daily_cost_alert_usd:.0f} threshold)")
+    console.print(f"   Weekly Digest:     Sundays {s.weekly_digest_time}")
 
     scheduler.start()
     console.print("[green]Scheduler running. Waiting for next trigger...[/green]")
@@ -209,6 +241,10 @@ if __name__ == "__main__":
                         help="Run persona synthesizer now (Phase 1.6)")
     parser.add_argument("--force", action="store_true",
                         help="With --persona-synth: re-synthesize even when no new data")
+    parser.add_argument("--alert-check", action="store_true",
+                        help="Run daily cost-alert threshold check now (Phase 1.10)")
+    parser.add_argument("--weekly-digest", action="store_true",
+                        help="Send weekly cost digest now (Phase 1.10)")
     parser.add_argument("--interview", action="store_true", help="Generate interview prep")
     parser.add_argument("--job-id", type=int, help="Job ID for interview prep")
     parser.add_argument("--company", type=str, help="Target a specific company")
@@ -238,6 +274,10 @@ if __name__ == "__main__":
         asyncio.run(run_boss_agent())
     elif args.persona_synth:
         asyncio.run(run_persona_synthesis(force=args.force))
+    elif args.alert_check:
+        asyncio.run(run_daily_cost_alert())
+    elif args.weekly_digest:
+        asyncio.run(run_weekly_cost_digest())
     elif args.interview and args.job_id:
         asyncio.run(run_interview_prep(args.job_id))
     elif args.now or args.company or args.role:
