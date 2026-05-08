@@ -1258,3 +1258,275 @@ async def get_persona(company_name: str, _auth=Depends(verify_secret)):
     if not rows:
         raise HTTPException(status_code=404, detail="Persona not found")
     return rows[0]
+
+
+# ── Cost Observability (Phase 1.8) ────────────────────────────────────
+# All endpoints query public.agent_call_log (written by agents/llm_router.py
+# on every LLM call). Rollups happen in Python — table is small enough
+# (a few thousand rows after months of use) that this is faster than
+# adding more views.
+
+def _cost_window_query(days: int):
+    """Return the supabase query builder filtered to last `days` days."""
+    from db.client import get_supabase
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return (
+        get_supabase()
+        .table("agent_call_log")
+        .select(
+            "called_at, agent_name, graph, node_name, provider, model, "
+            "input_tokens, output_tokens, cost_usd, latency_ms, "
+            "job_id, application_id, resume_build_id, error"
+        )
+        .gte("called_at", cutoff)
+    )
+
+
+@app.get("/costs/summary")
+async def costs_summary(_auth=Depends(verify_secret)):
+    """
+    Top-line cost stats: today / 7d / 30d totals, plus all-time + per-resume_build avg.
+    Empty-state safe — returns zeros when agent_call_log is empty.
+    """
+    from db.client import get_supabase
+    from datetime import datetime, timezone, timedelta
+    db = get_supabase()
+    now = datetime.now(timezone.utc)
+
+    def _bucket(rows: list[dict]) -> dict:
+        return {
+            "calls": len(rows),
+            "cost_usd": round(sum(float(r.get("cost_usd") or 0) for r in rows), 4),
+            "input_tokens": sum(int(r.get("input_tokens") or 0) for r in rows),
+            "output_tokens": sum(int(r.get("output_tokens") or 0) for r in rows),
+            "avg_latency_ms": (
+                round(sum(int(r.get("latency_ms") or 0) for r in rows) / len(rows))
+                if rows else 0
+            ),
+        }
+
+    try:
+        rows_30d = (
+            db.table("agent_call_log")
+            .select("called_at, cost_usd, input_tokens, output_tokens, latency_ms, resume_build_id")
+            .gte("called_at", (now - timedelta(days=30)).isoformat())
+            .execute()
+            .data
+        ) or []
+    except Exception as e:
+        logger.warning(f"costs_summary query failed: {e}")
+        return {
+            "warning": "agent_call_log not present yet",
+            "today": _bucket([]),
+            "last_7d": _bucket([]),
+            "last_30d": _bucket([]),
+            "avg_per_resume_build": 0,
+            "n_resume_builds": 0,
+        }
+
+    today_iso = now.date().isoformat()
+    cutoff_7d = (now - timedelta(days=7)).isoformat()
+
+    rows_today = [r for r in rows_30d if (r.get("called_at") or "")[:10] == today_iso]
+    rows_7d = [r for r in rows_30d if (r.get("called_at") or "") >= cutoff_7d]
+
+    # Per-resume-build cost avg (only rows with a build id)
+    by_build: dict[str, float] = {}
+    for r in rows_30d:
+        rb = r.get("resume_build_id")
+        if rb:
+            by_build[rb] = by_build.get(rb, 0.0) + float(r.get("cost_usd") or 0)
+    avg_per_build = round(sum(by_build.values()) / len(by_build), 4) if by_build else 0
+
+    return {
+        "today": _bucket(rows_today),
+        "last_7d": _bucket(rows_7d),
+        "last_30d": _bucket(rows_30d),
+        "avg_per_resume_build": avg_per_build,
+        "n_resume_builds": len(by_build),
+    }
+
+
+@app.get("/costs/daily")
+async def costs_daily(days: int = 30, _auth=Depends(verify_secret)):
+    """
+    Per-day rollup, fronted by the v_daily_llm_cost view when present.
+    Returns one row per (day, provider, model) — frontend re-aggregates
+    for line chart vs. provider stack, etc.
+    """
+    from db.client import get_supabase
+    from datetime import datetime, timezone, timedelta
+    db = get_supabase()
+    cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
+
+    try:
+        result = (
+            db.table("v_daily_llm_cost")
+            .select("*")
+            .gte("day", cutoff)
+            .order("day", desc=False)
+            .execute()
+        )
+        return {"days": days, "rows": result.data or []}
+    except Exception as e:
+        logger.warning(f"v_daily_llm_cost query failed: {e}")
+        return {
+            "days": days, "rows": [],
+            "warning": "v_daily_llm_cost view not present (apply db/multi_llm_schema.sql)",
+        }
+
+
+@app.get("/costs/by-provider")
+async def costs_by_provider(days: int = 7, _auth=Depends(verify_secret)):
+    """Aggregate cost + calls + tokens + latency by provider over the window."""
+    rows = _cost_window_query(days).execute().data or []
+    agg: dict[str, dict] = {}
+    for r in rows:
+        p = r.get("provider") or "(unknown)"
+        a = agg.setdefault(p, {
+            "provider": p, "calls": 0, "cost_usd": 0.0,
+            "input_tokens": 0, "output_tokens": 0, "latency_ms_total": 0,
+        })
+        a["calls"] += 1
+        a["cost_usd"] += float(r.get("cost_usd") or 0)
+        a["input_tokens"] += int(r.get("input_tokens") or 0)
+        a["output_tokens"] += int(r.get("output_tokens") or 0)
+        a["latency_ms_total"] += int(r.get("latency_ms") or 0)
+
+    out = []
+    for a in agg.values():
+        a["cost_usd"] = round(a["cost_usd"], 4)
+        a["avg_latency_ms"] = round(a["latency_ms_total"] / a["calls"]) if a["calls"] else 0
+        a.pop("latency_ms_total")
+        out.append(a)
+    out.sort(key=lambda x: x["cost_usd"], reverse=True)
+    return {"days": days, "providers": out}
+
+
+@app.get("/costs/by-agent")
+async def costs_by_agent(days: int = 7, _auth=Depends(verify_secret)):
+    """Aggregate by agent_name (e.g. 'g2.writer', 'CompanyAgent[Stripe]')."""
+    rows = _cost_window_query(days).execute().data or []
+    agg: dict[str, dict] = {}
+    for r in rows:
+        a_name = r.get("agent_name") or "(unknown)"
+        a = agg.setdefault(a_name, {
+            "agent_name": a_name, "calls": 0, "cost_usd": 0.0,
+            "input_tokens": 0, "output_tokens": 0, "latency_ms_total": 0,
+            "providers": set(), "models": set(),
+        })
+        a["calls"] += 1
+        a["cost_usd"] += float(r.get("cost_usd") or 0)
+        a["input_tokens"] += int(r.get("input_tokens") or 0)
+        a["output_tokens"] += int(r.get("output_tokens") or 0)
+        a["latency_ms_total"] += int(r.get("latency_ms") or 0)
+        if r.get("provider"):
+            a["providers"].add(r["provider"])
+        if r.get("model"):
+            a["models"].add(r["model"])
+
+    out = []
+    for a in agg.values():
+        a["cost_usd"] = round(a["cost_usd"], 4)
+        a["avg_latency_ms"] = round(a["latency_ms_total"] / a["calls"]) if a["calls"] else 0
+        a["providers"] = sorted(a["providers"])
+        a["models"] = sorted(a["models"])
+        a.pop("latency_ms_total")
+        out.append(a)
+    out.sort(key=lambda x: x["cost_usd"], reverse=True)
+    return {"days": days, "agents": out}
+
+
+@app.get("/costs/by-resume-build")
+async def costs_by_resume_build(limit: int = 20, _auth=Depends(verify_secret)):
+    """
+    Top resume_builds by total cost. Joins to resume_builds for context
+    (company_name, polisher_score, status).
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+    # Pull rows that have a resume_build_id in the last 90 days, aggregate in Python
+    rows = _cost_window_query(90).execute().data or []
+    agg: dict[str, dict] = {}
+    for r in rows:
+        rb = r.get("resume_build_id")
+        if not rb:
+            continue
+        a = agg.setdefault(rb, {
+            "resume_build_id": rb, "calls": 0, "cost_usd": 0.0,
+            "input_tokens": 0, "output_tokens": 0,
+        })
+        a["calls"] += 1
+        a["cost_usd"] += float(r.get("cost_usd") or 0)
+        a["input_tokens"] += int(r.get("input_tokens") or 0)
+        a["output_tokens"] += int(r.get("output_tokens") or 0)
+
+    # Hydrate with resume_builds context
+    if agg:
+        try:
+            build_rows = (
+                db.table("resume_builds")
+                .select("id, company_name, polisher_score, status, ats_score_a, ats_score_b, iterations, created_at")
+                .in_("id", list(agg.keys()))
+                .execute()
+                .data
+            ) or []
+            build_map = {b["id"]: b for b in build_rows}
+            for rb_id, a in agg.items():
+                b = build_map.get(rb_id, {})
+                a["company_name"] = b.get("company_name")
+                a["polisher_score"] = b.get("polisher_score")
+                a["status"] = b.get("status")
+                a["iterations"] = b.get("iterations")
+                a["created_at"] = b.get("created_at")
+        except Exception as e:
+            logger.debug(f"by-resume-build hydration failed: {e}")
+
+    out = []
+    for a in agg.values():
+        a["cost_usd"] = round(a["cost_usd"], 4)
+        out.append(a)
+    out.sort(key=lambda x: x["cost_usd"], reverse=True)
+    return {"builds": out[:limit]}
+
+
+@app.get("/costs/recent-calls")
+async def costs_recent_calls(
+    limit: int = 100,
+    provider: Optional[str] = None,
+    agent_name: Optional[str] = None,
+    has_error: Optional[bool] = None,
+    _auth=Depends(verify_secret),
+):
+    """
+    Last N rows from agent_call_log with optional filters.
+    Used by the dashboard's recent-calls table.
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+    q = (
+        db.table("agent_call_log")
+        .select(
+            "id, called_at, agent_name, graph, node_name, provider, model, "
+            "input_tokens, output_tokens, cost_usd, latency_ms, "
+            "job_id, resume_build_id, error"
+        )
+        .order("called_at", desc=True)
+        .limit(min(max(limit, 1), 500))
+    )
+    if provider:
+        q = q.eq("provider", provider)
+    if agent_name:
+        q = q.eq("agent_name", agent_name)
+    if has_error is True:
+        q = q.not_.is_("error", "null")
+    elif has_error is False:
+        q = q.is_("error", "null")
+
+    try:
+        result = q.execute()
+        return {"calls": result.data or []}
+    except Exception as e:
+        logger.warning(f"recent-calls query failed: {e}")
+        return {"calls": [], "warning": "agent_call_log not present yet"}

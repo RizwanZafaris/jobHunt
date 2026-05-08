@@ -536,6 +536,161 @@ export async function triggerPersonaSynthesis(opts: {
   return res.json()
 }
 
+// ── Cost Observability (Phase 1.8) ─────────────────────────────────────
+
+export interface CostBucket {
+  calls: number
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  avg_latency_ms: number
+}
+
+export interface CostSummary {
+  today: CostBucket
+  last_7d: CostBucket
+  last_30d: CostBucket
+  avg_per_resume_build: number
+  n_resume_builds: number
+  warning?: string
+}
+
+export interface DailyCostRow {
+  day: string                 // 'YYYY-MM-DD'
+  provider: string
+  model: string
+  calls: number
+  in_toks: number
+  out_toks: number
+  total_cost_usd: number
+  avg_latency_ms: number
+}
+
+export interface DailyCostResponse {
+  days: number
+  rows: DailyCostRow[]
+  warning?: string
+}
+
+export interface CostByProviderRow {
+  provider: string
+  calls: number
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  avg_latency_ms: number
+}
+
+export interface CostByAgentRow {
+  agent_name: string
+  calls: number
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  avg_latency_ms: number
+  providers: string[]
+  models: string[]
+}
+
+export interface CostByResumeBuildRow {
+  resume_build_id: string
+  calls: number
+  cost_usd: number
+  input_tokens: number
+  output_tokens: number
+  company_name?: string | null
+  polisher_score?: number | null
+  status?: string | null
+  iterations?: number | null
+  created_at?: string | null
+}
+
+export interface AgentCallLogRow {
+  id: number
+  called_at: string
+  agent_name: string | null
+  graph: string | null
+  node_name: string | null
+  provider: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cost_usd: number
+  latency_ms: number
+  job_id: number | null
+  resume_build_id: string | null
+  error: string | null
+}
+
+export async function fetchCostSummary(): Promise<CostSummary> {
+  const res = await fetch(`${baseUrl}/costs/summary`, { headers, cache: 'no-store' })
+  if (!res.ok) throw new Error(`Failed to fetch cost summary: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchDailyCost(days = 30): Promise<DailyCostResponse> {
+  const res = await fetch(`${baseUrl}/costs/daily?days=${days}`, {
+    headers,
+    next: { revalidate: 300 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch daily cost: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchCostByProvider(days = 7): Promise<{
+  days: number
+  providers: CostByProviderRow[]
+}> {
+  const res = await fetch(`${baseUrl}/costs/by-provider?days=${days}`, {
+    headers,
+    next: { revalidate: 300 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch provider costs: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchCostByAgent(days = 7): Promise<{
+  days: number
+  agents: CostByAgentRow[]
+}> {
+  const res = await fetch(`${baseUrl}/costs/by-agent?days=${days}`, {
+    headers,
+    next: { revalidate: 300 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch agent costs: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchCostByResumeBuild(limit = 20): Promise<{
+  builds: CostByResumeBuildRow[]
+}> {
+  const res = await fetch(`${baseUrl}/costs/by-resume-build?limit=${limit}`, {
+    headers,
+    next: { revalidate: 300 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch by-build costs: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchRecentCalls(opts?: {
+  limit?: number
+  provider?: string
+  agent_name?: string
+  has_error?: boolean
+}): Promise<{ calls: AgentCallLogRow[]; warning?: string }> {
+  const params = new URLSearchParams()
+  if (opts?.limit !== undefined) params.set('limit', String(opts.limit))
+  if (opts?.provider) params.set('provider', opts.provider)
+  if (opts?.agent_name) params.set('agent_name', opts.agent_name)
+  if (opts?.has_error !== undefined) params.set('has_error', String(opts.has_error))
+  const res = await fetch(`${baseUrl}/costs/recent-calls?${params}`, {
+    headers,
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`Failed to fetch recent calls: ${res.status}`)
+  return res.json()
+}
+
 // ── Company knowledge / research ───────────────────────────────────────
 
 export interface CompanyKnowledgeSection {
