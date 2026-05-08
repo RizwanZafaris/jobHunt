@@ -576,10 +576,17 @@ export async function fetchPersonaDetail(companyName: string) {
 export async function triggerPersonaSynthesis(opts: {
   company_name?: string
   force?: boolean
+  /**
+   * Phase 1.13: bulk-regenerate only personas at this quality tier.
+   * Mutually exclusive with `company_name` (caller must pass one or
+   * the other, not both).
+   */
+  quality_filter?: 'low' | 'medium' | 'high' | 'unknown'
 }) {
   const params = new URLSearchParams()
   if (opts.company_name) params.set('company_name', opts.company_name)
   if (opts.force) params.set('force', 'true')
+  if (opts.quality_filter) params.set('quality_filter', opts.quality_filter)
   const res = await fetch(`${baseUrl}/personas/synthesize?${params}`, {
     method: 'POST',
     headers,
