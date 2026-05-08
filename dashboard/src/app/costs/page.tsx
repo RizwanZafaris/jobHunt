@@ -7,6 +7,7 @@ import {
   fetchRecentCalls,
   fetchCostHealth,
   fetchLogStats,
+  fetchLastAlerts,
   type CostSummary,
   type DailyCostResponse,
   type CostByProviderRow,
@@ -15,6 +16,7 @@ import {
   type AgentCallLogRow,
   type ProviderHealthRow,
   type AgentCallLogStats,
+  type AlertHistoryEntry,
 } from '@/lib/profile-api'
 import Link from 'next/link'
 import ProfileNav from '@/components/ProfileNav'
@@ -24,6 +26,7 @@ import CostByProviderChart from '@/components/CostByProviderChart'
 import CostByAgentTable from '@/components/CostByAgentTable'
 import RecentCallsTable from '@/components/RecentCallsTable'
 import ProviderHealthBadges from '@/components/ProviderHealthBadges'
+import AlertHistoryTable from '@/components/AlertHistoryTable'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,10 +39,11 @@ export default async function CostsPage() {
   let recentCalls: { calls: AgentCallLogRow[]; warning?: string } | null = null
   let health: { providers: ProviderHealthRow[]; warning?: string } | null = null
   let logStats: AgentCallLogStats | null = null
+  let alerts: { alerts: AlertHistoryEntry[]; warning?: string } | null = null
   let error: string | null = null
 
   try {
-    const [s, d, p, a, b, r, h, ls] = await Promise.all([
+    const [s, d, p, a, b, r, h, ls, al] = await Promise.all([
       fetchCostSummary(),
       fetchDailyCost(30),
       fetchCostByProvider(7),
@@ -48,6 +52,10 @@ export default async function CostsPage() {
       fetchRecentCalls({ limit: 100 }),
       fetchCostHealth().catch(() => ({ providers: [] as ProviderHealthRow[] })),
       fetchLogStats().catch(() => ({ total_rows: 0 } as AgentCallLogStats)),
+      fetchLastAlerts().catch(() => ({
+        alerts: [] as AlertHistoryEntry[],
+        warning: 'fetch failed',
+      })),
     ])
     summary = s
     daily = d
@@ -57,6 +65,7 @@ export default async function CostsPage() {
     recentCalls = r
     health = h
     logStats = ls
+    alerts = al
   } catch (e: any) {
     error = e?.message || 'Failed to load cost data'
   }
@@ -212,6 +221,11 @@ export default async function CostsPage() {
       {/* Recent calls — debug-grade visibility */}
       {recentCalls && (
         <RecentCallsTable initial={recentCalls.calls} warning={recentCalls.warning} />
+      )}
+
+      {/* Phase 1.14: cost-alerter audit history */}
+      {alerts && (
+        <AlertHistoryTable alerts={alerts.alerts} warning={alerts.warning} />
       )}
 
       {/* Phase 1.9: log-stats footer with scale-up guidance */}
