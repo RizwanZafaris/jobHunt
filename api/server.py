@@ -792,6 +792,61 @@ async def run_pipeline_targets(
     return {"status": "started", "message": "Scout-only pipeline running. No auto-resume — manual gate at score >= 85."}
 
 
+@app.post("/jobs/reclassify")
+async def reclassify_existing_jobs(
+    background_tasks: BackgroundTasks,
+    only_missing: bool = True,
+    _auth=Depends(verify_secret),
+):
+    """
+    Re-run archetype + legitimacy classification on jobs that were scored
+    BEFORE workflow v2. Default: only jobs where archetype IS NULL.
+    Set only_missing=false to reclassify ALL jobs.
+    """
+    async def _run():
+        from db.client import get_supabase, upsert_job
+        from agents.job_scout_agent import JobScoutAgent
+
+        db = get_supabase()
+        q = db.table("jobs").select("id, title, company, location, description, match_score, archetype")
+        if only_missing:
+            q = q.is_("archetype", "null")
+        rows = (q.execute().data) or []
+        if not rows:
+            logger.info("No jobs to reclassify")
+            return
+
+        logger.info(f"Reclassifying {len(rows)} jobs...")
+        scout = JobScoutAgent()
+
+        # Re-run scoring + classifier in batches of 25
+        batch_size = 25
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i + batch_size]
+            try:
+                # Pass through the existing _score_jobs_batch which now also classifies
+                rescored = await scout._score_jobs_batch(batch)
+                for j in rescored:
+                    if j.get("id") and j.get("archetype"):
+                        # Don't overwrite match_score — only add archetype + legitimacy
+                        db.table("jobs").update({
+                            "archetype": j.get("archetype"),
+                            "legitimacy_tier": j.get("legitimacy_tier"),
+                            "legitimacy_signals": j.get("legitimacy_signals", []),
+                        }).eq("id", j["id"]).execute()
+            except Exception as e:
+                logger.error(f"Reclassify batch failed: {e}")
+
+        logger.info(f"Reclassified {len(rows)} jobs")
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "scope": "jobs missing archetype" if only_missing else "all jobs",
+        "message": "Reclassification running in background",
+    }
+
+
 @app.post("/jobs/{job_id}/generate-resume")
 async def generate_resume_for_job(
     job_id: int,

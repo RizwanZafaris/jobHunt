@@ -289,7 +289,9 @@ class JobHuntPipeline:
             logger.warning(f"Cover email generation failed for {title} @ {company}: {e}")
 
         # ── Phase 2g: Interview prep (if high score) ───────────────────────
-        if score_from_analysis >= 65:
+        # Use the higher of original scout score and secondary review.
+        effective_score = max(match_score, score_from_analysis)
+        if effective_score >= 65:
             try:
                 interview_result = await self.interview_agent.run(
                     company=company,
@@ -302,22 +304,27 @@ class JobHuntPipeline:
                 logger.warning(f"Interview prep failed: {e}")
 
         # ── Update DB ──────────────────────────────────────────────────────
+        # Workflow v2: NEVER overwrite match_score during resume gen.
+        # The scout's score is authoritative; CompanyAgent's secondary review
+        # was producing different numbers and downgrading jobs out of the
+        # 85+ gate. Only update artifacts + status.
         if job_id:
             update_job(job_id, {
                 "status": "evaluated",
-                "match_score": score_from_analysis,
                 "resume_path": resume_path,
                 "email_path": email_path,
+                "interview_path": result.get("interview_path"),
                 "fit_details": {
                     "gaps_found": len(gaps),
                     "gaps_filled": len(filled_gaps),
                     "strengths": [s["area"] for s in gap_analysis.get("strengths", [])],
                     "tailoring_priorities": priorities,
+                    "secondary_review_score": score_from_analysis,
                 }
             })
 
         if progress:
-            progress.print(f"    ✅ Complete: resume + email + {'interview prep' if score_from_analysis >= 65 else 'no interview prep'}")
+            progress.print(f"    ✅ Complete: resume + email + {'interview prep' if effective_score >= 65 else 'no interview prep'}")
 
         return result
 
