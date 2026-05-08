@@ -1,6 +1,12 @@
-# AI
+# AI — multi-LLM router supports Anthropic + OpenAI + Google + DeepSeek + Moonshot
 anthropic>=0.40.0
-openai>=1.50.0           # GPT-4.1 scoring + text-embedding-3-small for pgvector
+openai>=1.50.0           # GPT + text-embedding-3-small for pgvector + DeepSeek/Kimi (OpenAI-compatible)
+google-genai>=0.7.0      # Gemini 2.5 Pro (insider expert, meta-critic, company synth)
+
+# LangGraph — Phase 1+: G2 resume builder, G3 conversion, G1 discovery refactor
+langgraph>=0.2.50
+langgraph-checkpoint-postgres>=2.0.0   # Postgres-backed checkpointer (Supabase)
+langchain-core>=0.3.0
 
 # Web framework (API / Railway deployment)
 fastapi>=0.115.0
