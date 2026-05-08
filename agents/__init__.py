@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # only for IDEs / type checkers
     from agents.networking_agent import NetworkingAgent
     from agents.salary_research_agent import SalaryResearchAgent
     from agents.application_tracker_agent import ApplicationTrackerAgent
+    from agents.persona_synthesizer import PersonaSynthesizer
 
 # Map exported name → (module path, attribute name)
 _LAZY_ATTRS = {
@@ -37,6 +38,7 @@ _LAZY_ATTRS = {
     "NetworkingAgent":        ("agents.networking_agent",        "NetworkingAgent"),
     "SalaryResearchAgent":    ("agents.salary_research_agent",   "SalaryResearchAgent"),
     "ApplicationTrackerAgent":("agents.application_tracker_agent","ApplicationTrackerAgent"),
+    "PersonaSynthesizer":     ("agents.persona_synthesizer",     "PersonaSynthesizer"),
 }
 
 __all__ = sorted(_LAZY_ATTRS.keys())

@@ -390,6 +390,152 @@ export async function updateApplication(id: string, updates: Partial<Application
   return res.json()
 }
 
+// ── Resume Outcomes (Phase 1.5 — the learning loop) ───────────────────
+
+export interface ResumeOutcome {
+  id: string
+  job_id: number | null
+  resume_build_id: string | null
+  application_id: string | null
+  company_name: string | null
+  ats_passed: boolean | null
+  submitted_at: string | null
+  recruiter_responded: boolean | null
+  recruiter_response_at: string | null
+  interview_received: boolean | null
+  rounds_reached: number | null
+  offer_received: boolean | null
+  rejected_reason: string | null
+  self_rated_quality: number | null   // 1-5
+  notes: string | null
+  logged_at: string
+  updated_at: string
+}
+
+export interface OutcomeUpsertPayload {
+  job_id?: number
+  resume_build_id?: string
+  application_id?: string
+  company_name?: string
+  ats_passed?: boolean | null
+  submitted_at?: string | null
+  recruiter_responded?: boolean | null
+  recruiter_response_at?: string | null
+  interview_received?: boolean | null
+  rounds_reached?: number | null
+  offer_received?: boolean | null
+  rejected_reason?: string | null
+  self_rated_quality?: number | null
+  notes?: string | null
+}
+
+export async function fetchOutcomeByJob(
+  jobId: number,
+): Promise<{ outcome: ResumeOutcome | null }> {
+  const res = await fetch(`${baseUrl}/resumes/outcomes/by-job/${jobId}`, {
+    headers,
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`Failed to fetch outcome: ${res.status}`)
+  return res.json()
+}
+
+export async function saveOutcome(payload: OutcomeUpsertPayload) {
+  const res = await fetch(`${baseUrl}/resumes/outcomes`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data?.detail || `Failed to save outcome: ${res.status}`)
+  }
+  return res.json()
+}
+
+export interface ConversionFunnelRow {
+  company_name: string
+  resumes_built: number
+  responses: number | null
+  interviews: number | null
+  offers: number | null
+  avg_polisher_score: number | null
+  avg_cost_usd: number | null
+}
+
+export async function fetchConversionFunnel(): Promise<{
+  funnel: ConversionFunnelRow[]
+  warning?: string
+}> {
+  const res = await fetch(`${baseUrl}/resumes/outcomes/conversion`, {
+    headers,
+    next: { revalidate: 300 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch conversion funnel: ${res.status}`)
+  return res.json()
+}
+
+// ── Company Personas (Phase 1.6) ──────────────────────────────────────
+
+export interface PersonaRow {
+  company_name: string
+  persona_version: number
+  n_examples_used: number
+  last_synthesized_at: string
+  metadata: {
+    persona_quality?: 'high' | 'medium' | 'low'
+    unknown_sections?: number
+    seeded_from?: string
+    seeded_at?: string
+  }
+  ats_keyword_bank: {
+    required?: string[]
+    boost?: string[]
+    banned?: string[]
+    raw_signals?: string
+  }
+}
+
+export interface PersonasResponse {
+  personas: PersonaRow[]
+  total: number
+  by_quality: Record<string, number>
+}
+
+export async function fetchPersonas(): Promise<PersonasResponse> {
+  const res = await fetch(`${baseUrl}/personas`, {
+    headers,
+    next: { revalidate: 300 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch personas: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchPersonaDetail(companyName: string) {
+  const res = await fetch(`${baseUrl}/personas/${encodeURIComponent(companyName)}`, {
+    headers,
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`Failed to fetch persona: ${res.status}`)
+  return res.json()
+}
+
+export async function triggerPersonaSynthesis(opts: {
+  company_name?: string
+  force?: boolean
+}) {
+  const params = new URLSearchParams()
+  if (opts.company_name) params.set('company_name', opts.company_name)
+  if (opts.force) params.set('force', 'true')
+  const res = await fetch(`${baseUrl}/personas/synthesize?${params}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) throw new Error(`Failed to trigger synthesis: ${res.status}`)
+  return res.json()
+}
+
 // ── Company knowledge / research ───────────────────────────────────────
 
 export interface CompanyKnowledgeSection {
