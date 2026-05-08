@@ -122,11 +122,20 @@ async def search_story_bank(topic: str, match_count: int = 3) -> list[dict]:
     return result.data or []
 
 
+_JOBS_COLUMNS = {
+    "id", "title", "company", "company_id", "location", "url", "description",
+    "jd_embedding", "source", "match_score", "fit_details", "status",
+    "report_path", "resume_path", "email_path", "interview_path",
+    "discovered_at", "applied_at", "updated_at",
+}
+
+
 def upsert_job(job_data: dict) -> dict:
-    """Insert or update a job record."""
+    """Insert or update a job record. Filters out keys that aren't real columns."""
     db = get_supabase()
+    filtered = {k: v for k, v in job_data.items() if k in _JOBS_COLUMNS}
     result = db.table("jobs").upsert(
-        job_data,
+        filtered,
         on_conflict="url"
     ).execute()
     return result.data[0] if result.data else {}
@@ -150,10 +159,17 @@ def get_company_by_name(name: str) -> Optional[dict]:
     return result.data[0] if result.data else None
 
 
+_COMPANIES_COLUMNS = {
+    "id", "name", "domain", "careers_url", "ats_type", "country", "industry",
+    "stage", "headcount", "created_at", "updated_at",
+}
+
+
 def upsert_company(company_data: dict) -> dict:
     db = get_supabase()
+    filtered = {k: v for k, v in company_data.items() if k in _COMPANIES_COLUMNS}
     result = db.table("companies").upsert(
-        company_data, on_conflict="name"
+        filtered, on_conflict="name"
     ).execute()
     return result.data[0] if result.data else {}
 
