@@ -302,15 +302,68 @@ export interface JobDetail {
   } | null
 }
 
-export async function generateResumeForJob(jobId: number) {
-  const res = await fetch(`${baseUrl}/jobs/${jobId}/generate-resume`, {
+/**
+ * Phase 1.12: when persona quality is too low, the API returns
+ * HTTP 400 with `detail` shaped like:
+ *   {
+ *     code: 'persona_quality_too_low',
+ *     message: '...',
+ *     company_name, persona_quality, persona_version, unknown_sections,
+ *     retry_with_force: true
+ *   }
+ * We wrap that into a typed Error subclass so the button can detect
+ * it and offer a force-retry confirm dialog.
+ */
+export class PersonaQualityGateError extends Error {
+  code = 'persona_quality_too_low' as const
+  detail: {
+    company_name: string
+    persona_quality: 'low' | 'medium' | 'high' | null
+    persona_version: number | null
+    unknown_sections: number | null
+    message: string
+  }
+  constructor(detail: any) {
+    super(detail.message || 'Persona quality too low')
+    this.detail = {
+      company_name: detail.company_name,
+      persona_quality: detail.persona_quality,
+      persona_version: detail.persona_version,
+      unknown_sections: detail.unknown_sections,
+      message: detail.message,
+    }
+  }
+}
+
+export async function generateResumeForJob(
+  jobId: number,
+  opts?: { force?: boolean; max_cost_usd?: number },
+) {
+  const params = new URLSearchParams()
+  if (opts?.force) params.set('force', 'true')
+  if (opts?.max_cost_usd !== undefined) params.set('max_cost_usd', String(opts.max_cost_usd))
+  const url =
+    `${baseUrl}/jobs/${jobId}/generate-resume` +
+    (params.toString() ? `?${params}` : '')
+  const res = await fetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({}),
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
-    throw new Error(data?.detail || `Failed: ${res.status}`)
+    // Phase 1.12: structured detail surfaces persona-quality-too-low
+    if (
+      res.status === 400 &&
+      data?.detail &&
+      typeof data.detail === 'object' &&
+      data.detail.code === 'persona_quality_too_low'
+    ) {
+      throw new PersonaQualityGateError(data.detail)
+    }
+    const detailMsg =
+      typeof data?.detail === 'string' ? data.detail : JSON.stringify(data?.detail || data)
+    throw new Error(detailMsg || `Failed: ${res.status}`)
   }
   return res.json()
 }
