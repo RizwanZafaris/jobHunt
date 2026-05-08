@@ -62,6 +62,25 @@ async def run_boss_agent():
     return await boss.run()
 
 
+async def run_persona_synthesis(force: bool = False):
+    """Run the PersonaSynthesizer (Phase 1.6 weekly cron)."""
+    from agents.persona_synthesizer import PersonaSynthesizer
+    synth = PersonaSynthesizer()
+    results = await synth.run(force=force)
+    n_synth = sum(1 for r in results if r.status == "synthesized")
+    n_skipped = sum(1 for r in results if r.status.startswith("skipped"))
+    n_failed = sum(1 for r in results if r.status == "failed")
+    total_cost = sum(r.cost_usd for r in results)
+    console.print(
+        f"\n[bold green]✅ Persona synthesis done[/bold green]\n"
+        f"   Synthesized: {n_synth}\n"
+        f"   Skipped:     {n_skipped}\n"
+        f"   Failed:      {n_failed}\n"
+        f"   Total cost:  ${total_cost:.2f}\n"
+    )
+    return results
+
+
 async def run_interview_prep(job_id: int):
     """Generate interview prep for a specific job."""
     from agents.interview_agent import InterviewAgent
@@ -148,6 +167,20 @@ def start_scheduler():
         misfire_grace_time=300,
     )
 
+    # Phase 1.6: weekly persona-synthesis cron
+    # Sundays at 03:00 GST (or whatever timezone) — quiet time, after a full week
+    # of outcome data accumulation. The synthesizer skips companies with no new
+    # data, so this is cheap on weeks where you haven't logged outcomes.
+    scheduler.add_job(
+        lambda: asyncio.create_task(run_persona_synthesis()),
+        CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=tz),
+        id="persona_synthesis",
+        name="Weekly Persona Synthesis",
+        misfire_grace_time=3600,    # 1h grace — non-urgent
+    )
+
+    console.print(f"   Persona Synthesis: Sundays 03:00 (auto-skips when no new data)")
+
     scheduler.start()
     console.print("[green]Scheduler running. Waiting for next trigger...[/green]")
 
@@ -172,6 +205,10 @@ if __name__ == "__main__":
     parser.add_argument("--now", action="store_true", help="Run pipeline immediately")
     parser.add_argument("--scheduler", action="store_true", help="Start daily scheduler")
     parser.add_argument("--boss", action="store_true", help="Run boss agent audit now")
+    parser.add_argument("--persona-synth", action="store_true",
+                        help="Run persona synthesizer now (Phase 1.6)")
+    parser.add_argument("--force", action="store_true",
+                        help="With --persona-synth: re-synthesize even when no new data")
     parser.add_argument("--interview", action="store_true", help="Generate interview prep")
     parser.add_argument("--job-id", type=int, help="Job ID for interview prep")
     parser.add_argument("--company", type=str, help="Target a specific company")
@@ -199,6 +236,8 @@ if __name__ == "__main__":
         start_scheduler()
     elif args.boss:
         asyncio.run(run_boss_agent())
+    elif args.persona_synth:
+        asyncio.run(run_persona_synthesis(force=args.force))
     elif args.interview and args.job_id:
         asyncio.run(run_interview_prep(args.job_id))
     elif args.now or args.company or args.role:

@@ -1027,3 +1027,234 @@ async def update_application(
     if not rows:
         raise HTTPException(status_code=404, detail="Application not found")
     return {"updated": True, "row": rows[0]}
+
+
+# ── Resume Outcomes (Phase 1.5 — the learning loop) ───────────────────────
+# resume_outcomes is the "did the resume actually work?" tracking table.
+# User logs from /jobs/[id] page after applying. The persona_synthesizer
+# reads this weekly to update success_patterns / failure_patterns on
+# company_personas.
+
+class ResumeOutcomeUpsert(BaseModel):
+    """All fields nullable — the user fills these in over time as outcomes
+    become known (applied → response → interview → offer)."""
+    job_id: Optional[int] = None
+    resume_build_id: Optional[str] = None
+    application_id: Optional[str] = None
+    company_name: Optional[str] = None
+    ats_passed: Optional[bool] = None
+    submitted_at: Optional[str] = None
+    recruiter_responded: Optional[bool] = None
+    recruiter_response_at: Optional[str] = None
+    interview_received: Optional[bool] = None
+    rounds_reached: Optional[int] = None
+    offer_received: Optional[bool] = None
+    rejected_reason: Optional[str] = None
+    self_rated_quality: Optional[int] = None  # 1-5
+    notes: Optional[str] = None
+
+
+@app.get("/resumes/outcomes/by-job/{job_id}")
+async def get_outcome_by_job(job_id: int, _auth=Depends(verify_secret)):
+    """
+    Return the most-recent outcome row for this job (or null if none).
+    There can be multiple if multiple resume_builds exist for the same
+    job; we return the most recently logged.
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+    result = (
+        db.table("resume_outcomes")
+        .select("*")
+        .eq("job_id", job_id)
+        .order("logged_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return {"outcome": rows[0] if rows else None}
+
+
+@app.post("/resumes/outcomes")
+async def upsert_outcome(
+    payload: ResumeOutcomeUpsert,
+    _auth=Depends(verify_secret),
+):
+    """
+    Create OR update an outcome row.
+
+    Resolution order for the target row:
+      1. If `resume_build_id` provided and a row exists for it → update
+      2. Else if `job_id` provided + a row already exists for this job
+         → update the most recent one
+      3. Else → INSERT a new row
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+
+    payload_dict: dict = {k: v for k, v in payload.dict().items() if v is not None}
+    if not payload_dict:
+        raise HTTPException(status_code=400, detail="No fields to write")
+
+    target_id: Optional[str] = None
+
+    # Case 1: resume_build_id provided — find by it
+    if payload_dict.get("resume_build_id"):
+        existing = (
+            db.table("resume_outcomes")
+            .select("id")
+            .eq("resume_build_id", payload_dict["resume_build_id"])
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            target_id = existing.data[0]["id"]
+
+    # Case 2: fall back to job_id-based update
+    elif payload_dict.get("job_id"):
+        existing = (
+            db.table("resume_outcomes")
+            .select("id")
+            .eq("job_id", payload_dict["job_id"])
+            .order("logged_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            target_id = existing.data[0]["id"]
+
+    if target_id:
+        result = (
+            db.table("resume_outcomes")
+            .update(payload_dict)
+            .eq("id", target_id)
+            .execute()
+        )
+        return {"updated": True, "row": (result.data or [None])[0]}
+
+    # Case 3: INSERT new row. If company_name not passed but job_id is,
+    # auto-fill company_name from the job for downstream persona aggregation.
+    if not payload_dict.get("company_name") and payload_dict.get("job_id"):
+        job_lookup = (
+            db.table("jobs")
+            .select("company")
+            .eq("id", payload_dict["job_id"])
+            .limit(1)
+            .execute()
+        )
+        if job_lookup.data:
+            payload_dict["company_name"] = job_lookup.data[0]["company"]
+
+    result = db.table("resume_outcomes").insert(payload_dict).execute()
+    return {"created": True, "row": (result.data or [None])[0]}
+
+
+@app.patch("/resumes/outcomes/{outcome_id}")
+async def patch_outcome(
+    outcome_id: str,
+    payload: ResumeOutcomeUpsert,
+    _auth=Depends(verify_secret),
+):
+    """Direct PATCH by outcome id. Used when the client already has the row id."""
+    from db.client import get_supabase
+    updates: dict = {k: v for k, v in payload.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    result = (
+        get_supabase()
+        .table("resume_outcomes")
+        .update(updates)
+        .eq("id", outcome_id)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Outcome not found")
+    return {"updated": True, "row": rows[0]}
+
+
+@app.get("/resumes/outcomes/conversion")
+async def get_conversion_funnel(_auth=Depends(verify_secret)):
+    """
+    Per-company conversion funnel from the v_company_conversion_funnel view.
+    Used by the dashboard to show which company personas are converting best.
+    """
+    from db.client import get_supabase
+    try:
+        result = get_supabase().table("v_company_conversion_funnel").select("*").execute()
+        return {"funnel": result.data or []}
+    except Exception as e:
+        # View may not exist yet on dev DBs that haven't run multi_llm_schema
+        logger.warning(f"conversion funnel view query failed: {e}")
+        return {"funnel": [], "warning": "v_company_conversion_funnel view not present"}
+
+
+# ── Persona Synthesis (Phase 1.6 — manual trigger; weekly cron in main.py) ──
+
+@app.post("/personas/synthesize")
+async def trigger_persona_synthesis(
+    background_tasks: BackgroundTasks,
+    company_name: Optional[str] = None,
+    force: bool = False,
+    _auth=Depends(verify_secret),
+):
+    """
+    Manually trigger PersonaSynthesizer. By default, runs against all
+    companies with personas. Pass `company_name` to limit to one.
+    `force=true` re-synthesizes even if no new data since last run.
+    """
+    async def _run():
+        from agents.persona_synthesizer import PersonaSynthesizer
+        synth = PersonaSynthesizer()
+        if company_name:
+            await synth.synthesize_one(company_name, force=force)
+        else:
+            await synth.run(force=force)
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "scope": company_name or "all_personas",
+        "force": force,
+        "message": "Persona synthesis running in background.",
+    }
+
+
+@app.get("/personas")
+async def list_personas(_auth=Depends(verify_secret)):
+    """List all company_personas with quality + version info."""
+    from db.client import get_supabase
+    result = (
+        get_supabase()
+        .table("company_personas")
+        .select(
+            "company_name, persona_version, n_examples_used, "
+            "last_synthesized_at, metadata, ats_keyword_bank"
+        )
+        .order("last_synthesized_at", desc=True)
+        .execute()
+    )
+    rows = result.data or []
+    by_quality: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "unknown": 0}
+    for r in rows:
+        q = (r.get("metadata") or {}).get("persona_quality", "unknown")
+        by_quality[q] = by_quality.get(q, 0) + 1
+    return {"personas": rows, "total": len(rows), "by_quality": by_quality}
+
+
+@app.get("/personas/{company_name}")
+async def get_persona(company_name: str, _auth=Depends(verify_secret)):
+    """Full persona row for a single company (incl. system_prompt_template)."""
+    from db.client import get_supabase
+    result = (
+        get_supabase()
+        .table("company_personas")
+        .select("*")
+        .eq("company_name", company_name)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Persona not found")
+    return rows[0]

@@ -2,6 +2,7 @@ import { fetchJobDetail } from '@/lib/profile-api'
 import ProfileNav from '@/components/ProfileNav'
 import JobApplyButton from '@/components/JobApplyButton'
 import GenerateResumeButton from '@/components/GenerateResumeButton'
+import OutcomeLogger from '@/components/OutcomeLogger'
 
 export const dynamic = 'force-dynamic'
 
@@ -180,7 +181,7 @@ export default async function JobDetailPage({ params }: { params: { id: string }
           )}
         </div>
 
-        {/* Right col: artifacts */}
+        {/* Right col: artifacts + outcome */}
         <div className="space-y-4">
           <ArtifactCard
             title="📄 Tailored Resume"
@@ -198,6 +199,12 @@ export default async function JobDetailPage({ params }: { params: { id: string }
             path={j.interview_path}
             artifact={data.artifacts.interview_path}
             preview
+          />
+          {/* Phase 1.5: outcome logging closes the learning loop */}
+          <OutcomeLogger
+            jobId={j.id}
+            applicationId={data.application?.id || null}
+            companyName={j.company}
           />
         </div>
       </div>
