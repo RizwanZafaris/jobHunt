@@ -1,6 +1,7 @@
 import { fetchJobDetail } from '@/lib/profile-api'
 import ProfileNav from '@/components/ProfileNav'
 import JobApplyButton from '@/components/JobApplyButton'
+import GenerateResumeButton from '@/components/GenerateResumeButton'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,7 +37,7 @@ export default async function JobDetailPage({ params }: { params: { id: string }
     <Shell>
       {/* Header */}
       <section className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-800 rounded-2xl p-6">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex-1 min-w-0">
             <h1 className="text-2xl font-bold text-white">{j.title}</h1>
             <p className="text-base text-blue-400 mt-1">
@@ -46,6 +47,26 @@ export default async function JobDetailPage({ params }: { params: { id: string }
               <span className={`text-xs border px-2 py-0.5 rounded ${SCORE_COLOR(j.match_score)}`}>
                 Match {j.match_score}/100
               </span>
+              {j.archetype && (
+                <span className="text-xs bg-emerald-900/40 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded">
+                  📐 {j.archetype}
+                </span>
+              )}
+              {j.legitimacy_tier && (
+                <span
+                  className={`text-xs border px-2 py-0.5 rounded ${
+                    j.legitimacy_tier === 'High Confidence'
+                      ? 'bg-emerald-900/40 border-emerald-800 text-emerald-300'
+                      : j.legitimacy_tier === 'Suspicious'
+                      ? 'bg-red-900/40 border-red-800 text-red-300'
+                      : 'bg-amber-900/40 border-amber-800 text-amber-300'
+                  }`}
+                  title={(j.legitimacy_signals || []).join(' · ')}
+                >
+                  {j.legitimacy_tier === 'High Confidence' ? '✅' : j.legitimacy_tier === 'Suspicious' ? '⚠️' : '◑'}{' '}
+                  {j.legitimacy_tier}
+                </span>
+              )}
               <span className="text-xs bg-gray-800 border border-gray-700 text-gray-300 px-2 py-0.5 rounded">
                 {j.status}
               </span>
@@ -65,8 +86,22 @@ export default async function JobDetailPage({ params }: { params: { id: string }
                 </a>
               )}
             </div>
+            {(j.legitimacy_signals?.length ?? 0) > 0 && (
+              <div className="mt-3 text-[11px] text-gray-500">
+                <span className="font-semibold">Legitimacy signals:</span>{' '}
+                {(j.legitimacy_signals || []).join(' · ')}
+              </div>
+            )}
           </div>
-          <JobApplyButton jobId={j.id} existingApp={data.application} />
+          <div className="flex flex-col items-end gap-3">
+            <GenerateResumeButton
+              jobId={j.id}
+              score={j.match_score}
+              alreadyGenerated={Boolean(j.resume_generated_at)}
+              archetype={j.archetype}
+            />
+            <JobApplyButton jobId={j.id} existingApp={data.application} />
+          </div>
         </div>
       </section>
 
@@ -119,6 +154,16 @@ export default async function JobDetailPage({ params }: { params: { id: string }
                   </ul>
                 </div>
               )}
+            </section>
+          )}
+
+          {/* A-F Evaluation Blocks (workflow v2) */}
+          {j.evaluation_blocks && Object.keys(j.evaluation_blocks).length > 0 && (
+            <section className="bg-gray-900 border border-emerald-900/50 rounded-xl p-5">
+              <h2 className="text-sm font-semibold text-emerald-300 uppercase tracking-wider mb-3">
+                Recruitment-Expert Brief
+              </h2>
+              <EvaluationBlocks blocks={j.evaluation_blocks} />
             </section>
           )}
 
@@ -179,6 +224,148 @@ function Stat({ label, value }: { label: string; value: number | string }) {
     <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-3 py-1.5">
       <div className="text-xs text-gray-400">{label}</div>
       <div className="text-base font-bold text-white">{value}</div>
+    </div>
+  )
+}
+
+function EvaluationBlocks({ blocks }: { blocks: any }) {
+  const sections: { key: string; label: string; render: (v: any) => React.ReactNode }[] = [
+    {
+      key: 'block_a_role_summary',
+      label: 'A · Role Summary',
+      render: (v) => (
+        <div className="space-y-1.5 text-xs text-gray-300">
+          {v.tldr && <p className="italic">"{v.tldr}"</p>}
+          {v.level_signal && <p><span className="text-gray-500">Level:</span> {v.level_signal}</p>}
+          {v.key_themes?.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {v.key_themes.map((t: string, i: number) => (
+                <span key={i} className="bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded text-[10px]">{t}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'block_b_match',
+      label: 'B · Match & Gaps',
+      render: (v) => (
+        <div className="space-y-2">
+          {v.matched_requirements?.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase text-gray-500 mb-1">Matched</div>
+              <ul className="text-xs text-gray-300 space-y-1">
+                {v.matched_requirements.slice(0, 5).map((m: any, i: number) => (
+                  <li key={i}>• <span className="text-emerald-400">{m.jd_requirement}</span> — {m.candidate_evidence}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {v.gaps?.length > 0 && (
+            <div>
+              <div className="text-[10px] uppercase text-gray-500 mb-1">Gaps</div>
+              <ul className="text-xs text-gray-300 space-y-1">
+                {v.gaps.slice(0, 5).map((g: any, i: number) => (
+                  <li key={i}>
+                    <span className={
+                      g.severity === 'blocker' ? 'text-red-400' :
+                      g.severity === 'gap' ? 'text-amber-400' : 'text-gray-400'
+                    }>● </span>
+                    {g.requirement} — <span className="text-gray-500">{g.mitigation}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'block_c_level_strategy',
+      label: 'C · Level Strategy',
+      render: (v) => (
+        <div className="space-y-1.5 text-xs text-gray-300">
+          {v.target_level && <p><span className="text-gray-500">Target:</span> {v.target_level}</p>}
+          {v.selling_phrases?.length > 0 && (
+            <ul className="space-y-1">
+              {v.selling_phrases.map((p: string, i: number) => (
+                <li key={i}>• "{p}"</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'block_e_personalization',
+      label: 'E · Tailoring',
+      render: (v) => (
+        <div className="space-y-2">
+          {v.summary_rewrite && (
+            <div className="bg-gray-950 border border-gray-800 rounded p-2">
+              <div className="text-[10px] uppercase text-gray-500 mb-1">Proposed summary</div>
+              <p className="text-xs text-gray-300 italic">{v.summary_rewrite}</p>
+            </div>
+          )}
+          {v.ats_keywords_to_inject?.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {v.ats_keywords_to_inject.map((k: string, i: number) => (
+                <span key={i} className="bg-violet-900/30 border border-violet-800 text-violet-300 px-1.5 py-0.5 rounded text-[10px]">{k}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      ),
+    },
+    {
+      key: 'block_f_interview_prep',
+      label: 'F · Interview Prep',
+      render: (v) => (
+        <div className="space-y-2">
+          {v.likely_questions_with_star?.length > 0 && (
+            <div className="space-y-2">
+              {v.likely_questions_with_star.slice(0, 3).map((q: any, i: number) => (
+                <div key={i} className="bg-gray-950 border border-gray-800 rounded p-2 text-xs text-gray-300">
+                  <p className="font-semibold text-white">Q: {q.question}</p>
+                  {q.star_situation && <p className="mt-1"><span className="text-gray-500">S:</span> {q.star_situation}</p>}
+                  {q.action && <p><span className="text-gray-500">A:</span> {q.action}</p>}
+                  {q.result && <p><span className="text-gray-500">R:</span> {q.result}</p>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ),
+    },
+  ]
+
+  return (
+    <div className="space-y-4">
+      {sections.map((s) => {
+        const v = blocks[s.key]
+        if (!v) return null
+        return (
+          <div key={s.key}>
+            <h3 className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">
+              {s.label}
+            </h3>
+            {s.render(v)}
+          </div>
+        )
+      })}
+      {blocks.tailoring_priorities?.length > 0 && (
+        <div>
+          <h3 className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">
+            Top Resume Changes (priority order)
+          </h3>
+          <ol className="text-xs text-gray-300 space-y-1 list-decimal list-inside">
+            {blocks.tailoring_priorities.map((p: string, i: number) => (
+              <li key={i}>{p}</li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   )
 }

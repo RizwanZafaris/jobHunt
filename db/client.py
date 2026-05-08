@@ -127,6 +127,9 @@ _JOBS_COLUMNS = {
     "jd_embedding", "source", "match_score", "fit_details", "status",
     "report_path", "resume_path", "email_path", "interview_path",
     "discovered_at", "applied_at", "updated_at",
+    # Workflow v2
+    "archetype", "legitimacy_tier", "legitimacy_signals",
+    "resume_generated_at", "evaluation_blocks",
 }
 
 

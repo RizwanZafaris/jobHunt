@@ -269,6 +269,143 @@ If data is unavailable for a section, write "Unknown — insufficient data." """
             text = soup.get_text(separator=" ", strip=True)
             return text[:5000]  # Limit per page
 
+    async def build_resume_as_recruitment_expert(
+        self,
+        jd_text: str,
+        rizwan_profile_text: str,
+        job_title: str,
+        archetype: Optional[str] = None,
+    ) -> dict:
+        """
+        Workflow v2: invoked when user clicks "Generate Resume" on a job >= 85.
+        Persona: Head of an expert recruitment agency advising on the BEST
+        possible resume for THIS role at THIS company.
+
+        Returns the full A-F evaluation + tailoring brief that downstream
+        ResumeBuilderAgent uses.
+        """
+        company_context = await self._get_relevant_knowledge(jd_text)
+        recruitment_intel = await self._get_recruitment_intel()
+
+        system = f"""You are the Head of an Expert Recruitment Agency that has placed
+hundreds of senior product leaders at {self.company_name} and similar fintechs.
+
+You know {self.company_name}'s recruitment process inside out:
+- How their ATS parses resumes
+- What hiring managers scan for in the first 6 seconds
+- Which keywords pass screening, which raise flags
+- What story arcs and metrics resonate with their interview panels
+- The do's and don'ts specific to {self.company_name}
+
+You are now advising the candidate on how to position themselves for THIS specific role,
+based on YOUR insider knowledge of {self.company_name}.
+
+You speak as a trusted advisor — direct, concrete, no fluff. You only recommend
+changes that are 100% truthful to the candidate's actual experience. You never invent.
+
+Your output is a structured tailoring brief that downstream agents use to
+generate the final resume."""
+
+        user = f"""Role: {job_title}{f' (archetype: {archetype})' if archetype else ''}
+
+═══ THE JOB DESCRIPTION ═══
+{jd_text[:6000]}
+
+═══ {self.company_name} — RECRUITMENT INTEL (your insider knowledge) ═══
+{recruitment_intel[:3500]}
+
+═══ {self.company_name} — STRATEGIC CONTEXT ═══
+{company_context[:3500]}
+
+═══ THE CANDIDATE'S ACTUAL EXPERIENCE ═══
+{rizwan_profile_text[:5000]}
+
+═══ YOUR TASK ═══
+Produce a structured A-F tailoring brief in JSON. Be specific to {self.company_name}'s style.
+
+Return JSON with these blocks:
+{{
+  "block_a_role_summary": {{
+    "tldr": "1-sentence positioning of why the candidate fits this role",
+    "level_signal": "level we're targeting and why (Senior PM / Head of / VP)",
+    "key_themes": ["theme1", "theme2", "theme3"]
+  }},
+  "block_b_match": {{
+    "matched_requirements": [
+      {{"jd_requirement": "...", "candidate_evidence": "...", "strength": "high|medium|low"}}
+    ],
+    "gaps": [
+      {{"requirement": "...", "severity": "blocker|gap|nice_to_have", "mitigation": "specific phrase or angle"}}
+    ]
+  }},
+  "block_c_level_strategy": {{
+    "target_level": "...",
+    "selling_phrases": ["phrase that positions seniority without overclaiming", "..."],
+    "if_downleveled_plan": "what to negotiate if they offer a lower level"
+  }},
+  "block_d_comp_signals": {{
+    "expected_range": "based on level + location + company stage",
+    "negotiation_anchors": ["specific leverage points based on candidate's record"]
+  }},
+  "block_e_personalization": {{
+    "summary_rewrite": "3-line professional summary tailored for this exact role at {self.company_name}",
+    "top_5_resume_changes": [
+      {{"section": "...", "current": "...", "tailored": "...", "why": "..."}}
+    ],
+    "ats_keywords_to_inject": ["keyword1", "keyword2", "..."],
+    "achievements_to_lead_with": ["...", "..."]
+  }},
+  "block_f_interview_prep": {{
+    "likely_questions_with_star": [
+      {{"question": "expected behavioral or case Q", "star_situation": "...", "task": "...", "action": "...", "result": "...", "reflection": "what was learned"}}
+    ],
+    "red_flag_questions": [
+      {{"question": "tricky Q they'll ask", "framed_answer": "..."}}
+    ],
+    "case_to_pitch": "1 specific candidate project to lead with and why"
+  }},
+  "company_hooks": ["3-5 specific hooks tying candidate's record to {self.company_name}'s strategic priorities"],
+  "tailoring_priorities": ["ordered list of 5 things to fix on the resume in priority order"]
+}}
+
+Be concrete. Use real phrases. No fluff. JSON only."""
+
+        try:
+            response = await self.ask_claude(
+                system=system,
+                messages=[{"role": "user", "content": user}],
+                max_tokens=6000,
+                temperature=0.25,
+            )
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            return json.loads(response[start:end])
+        except Exception as e:
+            logger.error(f"Resume-mode brief failed for {self.company_name}: {e}")
+            return {"error": str(e)}
+
+    async def _get_recruitment_intel(self) -> str:
+        """Pull just the recruitment-intel sections of company_knowledge."""
+        from db.client import get_supabase
+        sections = ("recruitment_process", "resume_dos_donts", "ats_signals",
+                    "interview_format", "hiring_signals")
+        try:
+            rows = (
+                get_supabase()
+                .table("company_knowledge")
+                .select("section, content")
+                .eq("company_name", self.company_name)
+                .in_("section", list(sections))
+                .execute()
+                .data
+            ) or []
+            if not rows:
+                return "No recruitment intel cached. Apply general best practices."
+            return "\n\n".join(f"[{r['section']}]\n{r['content']}" for r in rows)
+        except Exception as e:
+            logger.debug(f"Recruitment intel fetch failed: {e}")
+            return ""
+
     async def review_resume_against_jd(
         self,
         jd_text: str,

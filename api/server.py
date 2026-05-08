@@ -180,7 +180,8 @@ async def list_jobs(
     from db.client import get_supabase
     db = get_supabase()
     query = db.table("jobs").select(
-        "id, title, company, location, match_score, status, url, discovered_at"
+        "id, title, company, location, match_score, status, url, discovered_at, "
+        "archetype, legitimacy_tier, resume_generated_at"
     ).gte("match_score", min_score).order("match_score", desc=True).limit(limit)
 
     if status:
@@ -774,7 +775,11 @@ async def run_pipeline_targets(
     background_tasks: BackgroundTasks,
     _auth=Depends(verify_secret),
 ):
-    """Run the pipeline ONLY for target companies — no random web search."""
+    """
+    Workflow v2: scout-only mode. Scans all target companies, scores + classifies
+    archetype + assesses posting legitimacy, stores in DB. Does NOT auto-build
+    resumes — user clicks "Generate Resume" on each high-scoring job.
+    """
     async def _run():
         from pipeline import JobHuntPipeline
         from db.client import get_supabase
@@ -782,10 +787,55 @@ async def run_pipeline_targets(
         targets = db.table("companies").select("name").eq("is_target", True).execute()
         target_names = [t["name"] for t in (targets.data or [])]
         pipeline = JobHuntPipeline()
-        # Run scout filtered to targets only — pipeline will handle each
-        await pipeline.run_for_targets(target_names=target_names)
+        await pipeline.scout_only(target_names=target_names)
     background_tasks.add_task(_run)
-    return {"status": "started", "message": "Targets-only pipeline running in background"}
+    return {"status": "started", "message": "Scout-only pipeline running. No auto-resume — manual gate at score >= 85."}
+
+
+@app.post("/jobs/{job_id}/generate-resume")
+async def generate_resume_for_job(
+    job_id: int,
+    background_tasks: BackgroundTasks,
+    _auth=Depends(verify_secret),
+):
+    """
+    Workflow v2: manual trigger to build a tailored resume for ONE job.
+    Only allowed for jobs scoring >= 85 (configurable threshold).
+    Runs the recruitment-expert flow in background.
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+    job_result = db.table("jobs").select("*").eq("id", job_id).limit(1).execute()
+    job_rows = job_result.data or []
+    if not job_rows:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = job_rows[0]
+    score = job.get("match_score", 0)
+    if score < 85:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job scored {score}/100. Resume generation gated at 85+. Update threshold via config or override.",
+        )
+
+    async def _run():
+        from pipeline import JobHuntPipeline
+        pipeline = JobHuntPipeline()
+        try:
+            await pipeline._process_single_job(job)
+            db.table("jobs").update({
+                "resume_generated_at": "now()",
+            }).eq("id", job_id).execute()
+        except Exception as e:
+            logger.error(f"Resume generation failed for job {job_id}: {e}")
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "message": f"Generating tailored resume for {job.get('title')} @ {job.get('company')}. Refresh in ~60s.",
+        "job_id": job_id,
+        "score": score,
+        "archetype": job.get("archetype"),
+    }
 
 
 # ── Job Detail (Phase D) ──────────────────────────────────────────────────

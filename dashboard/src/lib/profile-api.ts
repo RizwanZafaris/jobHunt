@@ -285,6 +285,12 @@ export interface JobDetail {
     interview_path: string | null
     discovered_at: string
     applied_at: string | null
+    // Workflow v2
+    archetype: string | null
+    legitimacy_tier: string | null
+    legitimacy_signals: string[] | null
+    resume_generated_at: string | null
+    evaluation_blocks: any
   }
   artifacts: Record<string, { exists: boolean; path?: string; size?: number; content?: string }>
   application: {
@@ -294,6 +300,19 @@ export interface JobDetail {
     applied_date: string | null
     follow_up_due: string | null
   } | null
+}
+
+export async function generateResumeForJob(jobId: number) {
+  const res = await fetch(`${baseUrl}/jobs/${jobId}/generate-resume`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data?.detail || `Failed: ${res.status}`)
+  }
+  return res.json()
 }
 
 export async function fetchJobDetail(jobId: number | string): Promise<JobDetail> {

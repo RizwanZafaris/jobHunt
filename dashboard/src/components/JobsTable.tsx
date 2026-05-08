@@ -13,6 +13,8 @@ interface Job {
   status: string
   url: string
   discovered_at: string
+  archetype?: string | null
+  legitimacy_tier?: string | null
 }
 
 interface Props {
@@ -103,6 +105,18 @@ export default function JobsTable({ jobs }: Props) {
                     <Link href={`/jobs/${job.id}`} className="text-white font-medium text-sm hover:text-blue-400">
                       {job.title}
                     </Link>
+                    <div className="flex gap-1 mt-0.5">
+                      {job.archetype && (
+                        <span className="text-[10px] bg-emerald-900/40 border border-emerald-800 text-emerald-300 px-1.5 py-0 rounded">
+                          {job.archetype}
+                        </span>
+                      )}
+                      {job.legitimacy_tier === 'Suspicious' && (
+                        <span className="text-[10px] bg-red-900/40 border border-red-800 text-red-300 px-1.5 py-0 rounded">
+                          ⚠️ ghost?
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-4 py-3 text-gray-300 text-sm">{job.company}</td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{job.location || '—'}</td>

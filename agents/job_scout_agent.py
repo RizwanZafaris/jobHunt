@@ -724,7 +724,10 @@ class JobScoutAgent(BaseAgent):
     # ── Scoring ───────────────────────────────────────────────────────────────
 
     async def _score_jobs_batch(self, jobs: list[dict]) -> list[dict]:
-        """Use GPT-4.1 to score jobs in chunks of 25 in parallel."""
+        """
+        Use GPT-4.1 to score jobs in chunks of 25 in parallel.
+        Each job gets: match_score, archetype, legitimacy_tier, legitimacy_signals.
+        """
         if not jobs:
             return jobs
 
@@ -739,37 +742,54 @@ class JobScoutAgent(BaseAgent):
                     "title": j.get("title"),
                     "company": j.get("company"),
                     "location": j.get("location"),
-                    "description": (j.get("description") or "")[:500]
+                    "description": (j.get("description") or "")[:800]
                 }
                 for i, j in enumerate(chunk)
             ], indent=2)
 
-            system = """You are a precision job-fit scoring engine for a specific candidate.
-Score each job 0-100 based on fit with the candidate profile below.
-Return ONLY valid JSON: {"scores": [{"id": N, "score": X, "reason": "brief reason"}]}
-Be strict: score 80+ only for genuinely excellent matches."""
+            system = """You are a precision job-fit scoring + classification engine.
+For each job return:
+  score: 0-100 fit score (be strict; 85+ only for excellent matches)
+  archetype: one of [CPO, Head of Product, Senior PM, Group PM, Program Manager, PMO Director, VP Product, Solutions Architect, Other]
+  legitimacy: one of [High Confidence, Proceed with Caution, Suspicious]
+  legitimacy_signals: array of brief strings explaining the legitimacy tier
+  reason: 1-line scoring rationale
+
+Return ONLY valid JSON: {"scores":[{"id":N,"score":X,"archetype":"...","legitimacy":"...","legitimacy_signals":["..."],"reason":"..."}]}"""
 
             user = f"""Candidate Profile:
 {profile_summary}
 
-Jobs to score (assess fit carefully):
+Jobs to score:
 {jobs_json}
 
-Score 0-100 for each. Key criteria:
-- Role type: PM/Head of Product/CPO/PMO = 20pts; adjacent = 10pts; wrong = 0
-- Domain: fintech/payments/digital banking/BNPL = 20pts; general tech = 10pts
-- Location: UAE/KSA/Qatar/UK/Remote = 20pts; other = 5pts
-- Seniority: Senior/Head/Director/CPO = 20pts; mid-level = 10pts; junior = 0
-- Company brand: tier-1 fintech (Stripe/Adyen/Wise/Revolut/Tabby etc) = 20pts bonus
-- Red flags: UAE Nationals preferred = -30; junior graduate role = -25
+SCORING (0-100, strict):
+- Role type: CPO/Head of Product/VP Product = 25; Senior/Group PM = 20; Program Manager/PMO = 15; adjacent = 8; wrong = 0
+- Domain: fintech/payments/BNPL/digital banking/issuer/acquirer = 20; embedded finance/BaaS = 18; general tech = 5
+- Location: UAE/KSA/Qatar = 20; UK/EU = 15; Remote = 18; Asia = 8; US visa-required = 5
+- Seniority: Senior/Head/Director/Chief = 20; mid = 10; junior = 0
+- Company brand: tier-1 (Stripe/Adyen/Wise/Visa/Mastercard/Marqeta/Plaid/Revolut/Tabby/Airwallex) = +15
+- Red flags: UAE Nationals only = -40; entry-level/grad = -30; commission-only = -30
 
-Return JSON only. No explanation outside JSON."""
+ARCHETYPE: classify by JD focus (not just title)
+- CPO / Head of Product / VP Product: full P&L + roadmap ownership signals
+- Senior PM / Group PM: own a product line, team of PMs reports to them
+- Program Manager / PMO: cross-team delivery, governance, no direct product ownership
+- Solutions Architect: technical pre-sales, customer integration
+
+LEGITIMACY: assess if this is a real, active opening
+- High Confidence signals: specific tech named, named hiring manager, team context, recent JD, clear scope
+- Caution signals: vague JD, generic boilerplate, no salary band where required, requirements contradict each other
+- Suspicious signals: extremely old posting, requirements impossible (10y exp on 3yo tech), reposting pattern, "always hiring" language
+List the actual signals in legitimacy_signals.
+
+Return JSON only."""
 
             try:
                 response = await self.ask_openai(
                     system=system,
                     messages=[{"role": "user", "content": user}],
-                    max_tokens=3000,
+                    max_tokens=4500,
                     temperature=0.1,
                 )
                 result = json.loads(response.strip())
@@ -791,9 +811,13 @@ Return JSON only. No explanation outside JSON."""
         for i, job in enumerate(jobs):
             scored = score_map.get(i, {})
             job["match_score"] = scored.get("score", 0)
+            job["archetype"] = scored.get("archetype")
+            job["legitimacy_tier"] = scored.get("legitimacy")
+            job["legitimacy_signals"] = scored.get("legitimacy_signals", [])
             if job.get("fit_details") is None:
                 job["fit_details"] = {}
             job["fit_details"]["gpt4_reason"] = scored.get("reason", "")
+            job["fit_details"]["archetype"] = scored.get("archetype")
 
         scored_count = sum(1 for j in jobs if j.get("match_score", 0) > 0)
         self.log(f"   Scored: {scored_count}/{len(jobs)} jobs in {len(chunks)} chunks")
