@@ -419,6 +419,88 @@ status badge — cost_capped builds appear in red.
 
 ---
 
+## 8.6. Persona quality gate (Phase 1.12)
+
+**Why**: ~$5 per build × 5 low-quality target personas = $25 wasted before
+you realize the resume came back generic. Phase 1.12 refuses builds for
+companies whose persona is below `g2_min_persona_quality` (default
+`medium`) unless the user explicitly forces.
+
+### Quality tiers (set by Phase 0 seed + Phase 1.6 synthesizer)
+
+| Tier | unknown_sections | Live examples (2026-05-09) |
+|---|---|---|
+| `high` | 0 | PayPal, Plaid, Revolut, Square (Block), Standard Chartered |
+| `medium` | 1–2 | Adyen, Mastercard, Stripe, Wise, Tabby (and 18 more) |
+| `low` | 3+ | Visa, Thunes, Wio Bank, Payoneer, "Merchant Acquiring …" |
+
+`unknown_sections` counts how many of the five recruitment-intel sections
+in `company_knowledge` (`recruitment_process`, `resume_dos_donts`,
+`ats_signals`, `interview_format`, `hiring_signals`) start with
+`"Unknown — insufficient data"` at synthesis time.
+
+### Gate logic (`check_persona_quality_gate`)
+
+```
+   force=True?  ─── yes ──→ verdict='pass' (override noted)
+       │ no
+       ▼
+   no persona row?  ─── yes ──→ verdict='cold_start'
+       │ no                     (Insider Expert uses fallback prompt)
+       ▼
+   quality < min_quality?  ─── yes ──→ verdict='blocked'
+       │ no                            (HTTP 400 with retry_with_force=true)
+       ▼
+   verdict='pass'
+```
+
+### How it surfaces
+
+**API**: `POST /jobs/{id}/generate-resume?force=true` to bypass.
+On block, returns HTTP 400 with structured detail:
+
+```json
+{
+  "detail": {
+    "code": "persona_quality_too_low",
+    "message": "Persona quality for 'Visa' is 'low' (v1, 4/5 sections were 'Unknown — insufficient data' at synthesis). Minimum required is 'medium'. Pass force=true to override and accept the risk of a sub-par build.",
+    "company_name": "Visa",
+    "persona_quality": "low",
+    "persona_version": 1,
+    "unknown_sections": 4,
+    "retry_with_force": true
+  }
+}
+```
+
+**Dashboard**: `GenerateResumeButton` catches `PersonaQualityGateError`
+and renders an inline amber confirm panel with two buttons:
+- "Force build anyway" — re-fires with `?force=true`
+- "Cancel" — dismisses, with a tip pointing to `/personas` for
+  regenerating the persona once outcomes flow in
+
+### Configuration
+
+| Setting | Default | Effect |
+|---|---|---|
+| `G2_MIN_PERSONA_QUALITY=high` | — | Only PayPal/Plaid/Revolut/Square/Standard Chartered allowed without force |
+| `G2_MIN_PERSONA_QUALITY=medium` | ✅ default | Blocks low only |
+| `G2_MIN_PERSONA_QUALITY=low` | — | Allows everything (gate disabled) |
+
+### Tuning guidance
+
+- **First few weeks of using G2**: keep at default `medium`. The 5 low
+  personas (Visa, Thunes, etc.) need outcome data before re-synthesizing
+  to a higher tier — there's nothing to gain by building against them yet.
+- **After the synthesizer runs once**: re-check `/personas` quality
+  distribution. If everyone is high/medium, consider tightening to `high`
+  for cost discipline.
+- **For one-off exploratory builds against a specific low-quality target**:
+  pass `?force=true` from the dashboard's confirm dialog. The override is
+  visible in `boss_audit_log` so you can audit how often it's used.
+
+---
+
 ## 9. Live-data validation (2026-05-09 snapshot)
 
 Before committing to this design we ran an inventory against the live

@@ -19,6 +19,12 @@ import pytest
 # Ensure the project root is on path so `import resume_agents` works
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Stub the `supabase` package so db.client's top-level
+# `from supabase import create_client, Client` import succeeds even when
+# the package isn't pip-installed locally. Tests that need Supabase
+# behavior monkeypatch get_supabase() directly.
+sys.modules.setdefault("supabase", MagicMock())
+
 
 # ─── State schema ─────────────────────────────────────────────────────────
 class TestResumeState:
@@ -371,3 +377,150 @@ class TestCostCap:
         assert '"cost_capped"' in src
         assert '"exhausted"' in src
         assert '"converged"' in src
+
+
+# ─── Phase 1.12: persona quality gate ────────────────────────────────────
+class TestPersonaQualityGate:
+    """
+    check_persona_quality_gate decides whether G2 may proceed for a
+    company based on its persona's metadata.persona_quality. The Supabase
+    lookup is mocked so we don't hit the live DB.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _env(self):
+        os.environ.setdefault("ANTHROPIC_API_KEY", "test")
+        os.environ.setdefault("OPENAI_API_KEY", "test")
+        os.environ.setdefault("SUPABASE_URL", "http://test")
+        os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
+
+    def _mock_supabase(self, monkeypatch, persona_row):
+        """
+        Patch db.client.get_supabase to return a fake client whose
+        company_personas query returns persona_row (or [] if None).
+        """
+        from resume_agents import g2_run
+
+        class _Result:
+            def __init__(self, data): self.data = data
+        class _Builder:
+            def __init__(self, data): self._data = data
+            def select(self, *a, **kw): return self
+            def eq(self, *a, **kw): return self
+            def limit(self, *a, **kw): return self
+            def execute(self): return _Result(self._data)
+        class _Table:
+            def __init__(self, data): self._data = data
+            def __call__(self, *a, **kw): return _Builder(self._data)
+        class _Client:
+            def __init__(self, data): self._data = data
+            def table(self, name):
+                if name == "company_personas":
+                    return _Builder(self._data)
+                return _Builder([])
+
+        data = [persona_row] if persona_row is not None else []
+
+        def fake_get_supabase():
+            return _Client(data)
+
+        # Patch in db.client where g2_run imports it from
+        from db import client as db_client
+        monkeypatch.setattr(db_client, "get_supabase", fake_get_supabase)
+        return _Client(data)
+
+    def test_force_always_passes(self, monkeypatch):
+        """force=True bypasses the gate even when persona is low."""
+        from resume_agents.g2_run import check_persona_quality_gate
+        # Even though we don't mock supabase, force should short-circuit
+        # before the lookup
+        result = check_persona_quality_gate("Visa", force=True)
+        assert result.verdict == "pass"
+        assert "force" in result.message.lower()
+
+    def test_no_persona_is_cold_start(self, monkeypatch):
+        from resume_agents.g2_run import check_persona_quality_gate
+        self._mock_supabase(monkeypatch, persona_row=None)
+        result = check_persona_quality_gate("UnknownCo")
+        assert result.verdict == "cold_start"
+        assert result.quality is None
+        assert "INSIDER_EXPERT_FALLBACK_SYSTEM" in result.message or \
+               "cold start" in result.message.lower()
+
+    def test_high_quality_passes(self, monkeypatch):
+        from resume_agents.g2_run import check_persona_quality_gate
+        self._mock_supabase(monkeypatch, persona_row={
+            "persona_version": 1,
+            "metadata": {"persona_quality": "high", "unknown_sections": 0},
+        })
+        result = check_persona_quality_gate("Plaid")
+        assert result.verdict == "pass"
+        assert result.quality == "high"
+        assert result.persona_version == 1
+
+    def test_medium_passes_default_min(self, monkeypatch):
+        from resume_agents.g2_run import check_persona_quality_gate
+        self._mock_supabase(monkeypatch, persona_row={
+            "persona_version": 2,
+            "metadata": {"persona_quality": "medium", "unknown_sections": 1},
+        })
+        result = check_persona_quality_gate("Mastercard")
+        assert result.verdict == "pass"
+        assert result.quality == "medium"
+
+    def test_low_quality_blocked_by_default(self, monkeypatch):
+        """Default min_quality='medium' — 'low' should be blocked."""
+        from resume_agents.g2_run import check_persona_quality_gate
+        self._mock_supabase(monkeypatch, persona_row={
+            "persona_version": 1,
+            "metadata": {"persona_quality": "low", "unknown_sections": 4},
+        })
+        result = check_persona_quality_gate("Visa")
+        assert result.verdict == "blocked"
+        assert result.quality == "low"
+        assert result.unknown_sections == 4
+        assert "force=true" in result.message.lower()
+
+    def test_low_quality_passes_with_min_low(self, monkeypatch):
+        """Setting min_quality='low' allows everything."""
+        from resume_agents.g2_run import check_persona_quality_gate
+        self._mock_supabase(monkeypatch, persona_row={
+            "persona_version": 1,
+            "metadata": {"persona_quality": "low", "unknown_sections": 4},
+        })
+        result = check_persona_quality_gate("Visa", min_quality="low")
+        assert result.verdict == "pass"
+
+    def test_medium_blocked_when_min_high(self, monkeypatch):
+        """Tightening to min_quality='high' rejects medium personas."""
+        from resume_agents.g2_run import check_persona_quality_gate
+        self._mock_supabase(monkeypatch, persona_row={
+            "persona_version": 2,
+            "metadata": {"persona_quality": "medium", "unknown_sections": 1},
+        })
+        result = check_persona_quality_gate("Mastercard", min_quality="high")
+        assert result.verdict == "blocked"
+        assert result.quality == "medium"
+
+    def test_unknown_quality_passes_with_warning(self, monkeypatch):
+        """Persona without recognised metadata.persona_quality — pass + flag."""
+        from resume_agents.g2_run import check_persona_quality_gate
+        self._mock_supabase(monkeypatch, persona_row={
+            "persona_version": 5,
+            "metadata": {"persona_quality": "experimental"},   # non-standard
+        })
+        result = check_persona_quality_gate("Stripe")
+        assert result.verdict == "pass"
+        assert "unrecognised" in result.message.lower() or \
+               "review manually" in result.message.lower()
+
+    def test_invalid_min_quality_defaults_to_medium(self, monkeypatch):
+        """Caller passes garbage min_quality — should default to 'medium'."""
+        from resume_agents.g2_run import check_persona_quality_gate
+        self._mock_supabase(monkeypatch, persona_row={
+            "persona_version": 1,
+            "metadata": {"persona_quality": "low", "unknown_sections": 4},
+        })
+        # Garbage min_quality string — should default to 'medium' and block
+        result = check_persona_quality_gate("Visa", min_quality="ULTRA_PREMIUM")
+        assert result.verdict == "blocked"

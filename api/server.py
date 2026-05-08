@@ -852,6 +852,7 @@ async def generate_resume_for_job(
     job_id: int,
     background_tasks: BackgroundTasks,
     max_cost_usd: Optional[float] = None,
+    force: bool = False,
     _auth=Depends(verify_secret),
 ):
     """
@@ -864,6 +865,14 @@ async def generate_resume_for_job(
     top-tier targets where you want to allow more iterations.
         POST /jobs/123/generate-resume?max_cost_usd=10
     Refused if max_cost_usd < 0.50 (would always cost-cap before any work).
+
+    Phase 1.12: persona quality gate. Refuses builds for companies whose
+    persona quality is below g2_min_persona_quality (default 'medium')
+    unless force=true. This prevents wasting ~$5 on a build for Visa,
+    Thunes, etc. where 3+ of 5 recruitment-intel sections are missing.
+        POST /jobs/123/generate-resume?force=true
+    Returns HTTP 400 with a structured detail if blocked, so the
+    dashboard can show a confirm dialog and retry with force=true.
     """
     from db.client import get_supabase
     db = get_supabase()
@@ -889,6 +898,31 @@ async def generate_resume_for_job(
         # job is a fresh dict from Supabase; mutating it locally is fine.
         job["_g2_max_cost_usd"] = max_cost_usd
 
+    # ── Phase 1.12: persona quality gate ────────────────────────────────
+    from resume_agents.g2_run import check_persona_quality_gate
+    company_name = job.get("company") or ""
+    gate = check_persona_quality_gate(company_name, force=force)
+    if gate.verdict == "blocked":
+        # 400 with structured payload so the dashboard can show a confirm
+        # dialog and offer a "force anyway" retry.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "persona_quality_too_low",
+                "message": gate.message,
+                "company_name": company_name,
+                "persona_quality": gate.quality,
+                "persona_version": gate.persona_version,
+                "unknown_sections": gate.unknown_sections,
+                "min_quality": (
+                    "medium"
+                    if not hasattr(check_persona_quality_gate, "_settings_cache")
+                    else check_persona_quality_gate._settings_cache
+                ),
+                "retry_with_force": True,
+            },
+        )
+
     async def _run():
         from pipeline import JobHuntPipeline
         from datetime import datetime, timezone
@@ -909,6 +943,13 @@ async def generate_resume_for_job(
         "score": score,
         "archetype": job.get("archetype"),
         "max_cost_usd": max_cost_usd,
+        "force": force,
+        "persona_gate": {
+            "verdict": gate.verdict,
+            "quality": gate.quality,
+            "persona_version": gate.persona_version,
+            "message": gate.message,
+        },
     }
 
 

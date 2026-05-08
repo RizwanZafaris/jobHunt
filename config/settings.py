@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     #   Override per-build via POST /jobs/{id}/generate-resume?max_cost_usd=X.
     g2_max_cost_usd: float = Field(5.0, env="G2_MAX_COST_USD")
 
+    # Phase 1.12: persona quality gate.
+    #   Refuses to invoke G2 for a company whose persona quality is below
+    #   this threshold. Three levels: 'high' (0 unknown sections), 'medium'
+    #   (1-2 unknown), 'low' (3+ unknown). Default 'medium' blocks builds
+    #   for low-quality personas (Visa, Thunes, Wio Bank, Payoneer,
+    #   Merchant Acquiring …) — saves ~$5 per blocked build that would
+    #   produce a poor resume due to insufficient recruitment intel.
+    #   Override per-build via POST /jobs/{id}/generate-resume?force=true.
+    g2_min_persona_quality: str = Field("medium", env="G2_MIN_PERSONA_QUALITY")
+
     # Phase 1.10: cost alerts (daily check + weekly digest).
     #   Daily check fires after the boss audit at 22:00 GST. Compares
     #   today's cumulative spend (from agent_call_log) against

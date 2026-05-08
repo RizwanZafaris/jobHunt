@@ -11,13 +11,148 @@ Wraps:
   2. Build/get the compiled graph (cached process-wide)
   3. Invoke graph with a thread_id so checkpointer state is keyed properly
   4. Catch fatal errors and finalize the resume_builds row to status='failed'
+
+Phase 1.12 also exports `check_persona_quality_gate` — used by the API to
+refuse builds against low-quality personas without an explicit force flag.
 """
 from __future__ import annotations
 import logging
 import os
+from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Persona quality gate (Phase 1.12) ──────────────────────────────────
+QUALITY_RANK = {"low": 1, "medium": 2, "high": 3}
+
+
+@dataclass
+class GateResult:
+    """Outcome of check_persona_quality_gate."""
+    verdict: str          # 'pass' | 'cold_start' | 'blocked'
+    quality: Optional[str]  # 'high' | 'medium' | 'low' | None (cold start)
+    persona_version: Optional[int]
+    unknown_sections: Optional[int]
+    message: str          # human-readable rationale
+
+
+def check_persona_quality_gate(
+    company_name: str,
+    *,
+    force: bool = False,
+    min_quality: Optional[str] = None,
+) -> GateResult:
+    """
+    Decide whether a G2 build for `company_name` should proceed.
+
+    Logic:
+      - force=True               → always pass (verdict='pass', message notes override)
+      - no persona row           → pass with verdict='cold_start' (Insider Expert
+                                   uses fallback prompt; quality is unknown but
+                                   we don't block since cold-start is a real path)
+      - quality < min_quality    → blocked (caller should surface to user with
+                                   option to retry with force=true)
+      - quality >= min_quality   → pass
+
+    The min_quality parameter defaults to settings.g2_min_persona_quality
+    (default 'medium', which blocks 'low').
+    """
+    from config.settings import get_settings
+    from db.client import get_supabase
+
+    settings = get_settings()
+    min_q = (min_quality or settings.g2_min_persona_quality or "medium").lower()
+    if min_q not in QUALITY_RANK:
+        logger.warning(f"Invalid min_quality {min_q!r} — defaulting to 'medium'")
+        min_q = "medium"
+
+    if force:
+        return GateResult(
+            verdict="pass",
+            quality=None,
+            persona_version=None,
+            unknown_sections=None,
+            message=f"force=true override (min_quality={min_q!r} bypassed)",
+        )
+
+    # Look up the persona for this company
+    try:
+        rows = (
+            get_supabase()
+            .table("company_personas")
+            .select("persona_version, metadata")
+            .eq("company_name", company_name)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+    except Exception as e:
+        # If we can't reach the table, don't block — treat as cold start.
+        logger.warning(f"persona quality gate query failed: {e} — treating as cold start")
+        return GateResult(
+            verdict="cold_start",
+            quality=None,
+            persona_version=None,
+            unknown_sections=None,
+            message=f"could not query company_personas ({e}) — cold start",
+        )
+
+    if not rows:
+        return GateResult(
+            verdict="cold_start",
+            quality=None,
+            persona_version=None,
+            unknown_sections=None,
+            message=(
+                f"No persona row for {company_name!r}. G2 will use the "
+                f"INSIDER_EXPERT_FALLBACK_SYSTEM prompt. Quality unknown "
+                f"but cold-start is a supported path."
+            ),
+        )
+
+    row = rows[0]
+    metadata = row.get("metadata") or {}
+    quality = (metadata.get("persona_quality") or "unknown").lower()
+    unknown_sections = metadata.get("unknown_sections")
+    version = row.get("persona_version")
+
+    if quality not in QUALITY_RANK:
+        # Unknown quality tier — don't block, but flag it
+        return GateResult(
+            verdict="pass",
+            quality=quality,
+            persona_version=version,
+            unknown_sections=unknown_sections,
+            message=(
+                f"Persona v{version} has metadata.persona_quality={quality!r} "
+                f"(unrecognised tier). Allowing build — review manually."
+            ),
+        )
+
+    if QUALITY_RANK[quality] < QUALITY_RANK[min_q]:
+        return GateResult(
+            verdict="blocked",
+            quality=quality,
+            persona_version=version,
+            unknown_sections=unknown_sections,
+            message=(
+                f"Persona quality for {company_name!r} is {quality!r} "
+                f"(v{version}, {unknown_sections or 0}/5 sections were "
+                f"'Unknown — insufficient data' at synthesis). Minimum "
+                f"required is {min_q!r}. Pass force=true to override "
+                f"and accept the risk of a sub-par build."
+            ),
+        )
+
+    return GateResult(
+        verdict="pass",
+        quality=quality,
+        persona_version=version,
+        unknown_sections=unknown_sections,
+        message=f"Persona v{version} quality={quality!r} meets min={min_q!r}",
+    )
 
 # Process-wide compiled graph (with checkpointer if available)
 _GRAPH = None
