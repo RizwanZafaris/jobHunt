@@ -425,3 +425,60 @@ async def get_pipeline_stats(_auth=Depends(verify_secret)):
         "by_score": score_buckets,
         "applications": Counter(a["status"] for a in apps_data),
     }
+
+
+# ── Profile endpoints ──────────────────────────────────────────────────────
+
+@app.get("/profile")
+async def get_profile(_auth=Depends(verify_secret)):
+    """Return master profile + experience + certs + education."""
+    from db.client import get_supabase
+    db = get_supabase()
+
+    master = db.table("profile_master").select("*").eq("id", 1).limit(1).execute()
+    experience = db.table("profile_experience").select("*").order("sort_order").execute()
+    certs = db.table("profile_certification").select("*").order("sort_order").execute()
+    edu = db.table("profile_education").select("*").order("sort_order").execute()
+
+    return {
+        "master": (master.data or [None])[0],
+        "experience": experience.data or [],
+        "certifications": certs.data or [],
+        "education": edu.data or [],
+    }
+
+
+@app.get("/profile/keywords")
+async def get_profile_keywords(_auth=Depends(verify_secret), category: Optional[str] = None, limit: int = 500):
+    """Return keyword bank, optionally filtered by category."""
+    from db.client import get_supabase
+    db = get_supabase()
+
+    q = db.table("profile_keyword").select("*").order("ats_strength", desc=True).limit(limit)
+    if category:
+        q = q.eq("category", category)
+    result = q.execute()
+
+    cats = db.table("profile_keyword_category").select("*").order("total_occurrences", desc=True).execute()
+    return {
+        "keywords": result.data or [],
+        "categories": cats.data or [],
+    }
+
+
+@app.get("/profile/sources")
+async def get_profile_sources(_auth=Depends(verify_secret)):
+    """Return parsed source-document registry."""
+    from db.client import get_supabase
+    from collections import Counter
+    db = get_supabase()
+    result = db.table("profile_source_document").select(
+        "id, file_hash, file_name, document_class, char_count, file_size, parsed_at"
+    ).order("parsed_at", desc=True).execute()
+    docs = result.data or []
+    by_class = Counter(d["document_class"] for d in docs)
+    return {
+        "documents": docs,
+        "total": len(docs),
+        "by_class": dict(by_class),
+    }

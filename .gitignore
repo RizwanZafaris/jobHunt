@@ -43,3 +43,8 @@ dashboard/.env.local
 
 # Railway / Docker
 .railway/
+
+# Profile build — keep the scripts + consolidated JSON outputs,
+# but exclude raw text staging (contains full resume PII)
+profile_build/staging/
+

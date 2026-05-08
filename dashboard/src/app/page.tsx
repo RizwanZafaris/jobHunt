@@ -4,6 +4,7 @@ import StatsCards from '@/components/StatsCards'
 import DigestPanel from '@/components/DigestPanel'
 import PipelineActions from '@/components/PipelineActions'
 import ScoreChart from '@/components/ScoreChart'
+import ProfileNav from '@/components/ProfileNav'
 
 export const revalidate = 60
 
@@ -25,14 +26,10 @@ export default async function Dashboard() {
     <div className="min-h-screen bg-gray-950">
       {/* Header */}
       <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold text-white">
-              🤖 Job Hunt AI
-            </h1>
-            <p className="text-xs text-gray-400 mt-0.5">
-              Rizwan Zafar · Dubai, UAE · {new Date().toLocaleDateString('en-GB', { dateStyle: 'medium' })}
-            </p>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-6">
+            <h1 className="text-xl font-bold text-white whitespace-nowrap">🤖 Job Hunt AI</h1>
+            <ProfileNav />
           </div>
           <PipelineActions />
         </div>
