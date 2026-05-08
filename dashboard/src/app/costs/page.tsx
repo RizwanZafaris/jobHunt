@@ -5,12 +5,16 @@ import {
   fetchCostByAgent,
   fetchCostByResumeBuild,
   fetchRecentCalls,
+  fetchCostHealth,
+  fetchLogStats,
   type CostSummary,
   type DailyCostResponse,
   type CostByProviderRow,
   type CostByAgentRow,
   type CostByResumeBuildRow,
   type AgentCallLogRow,
+  type ProviderHealthRow,
+  type AgentCallLogStats,
 } from '@/lib/profile-api'
 import Link from 'next/link'
 import ProfileNav from '@/components/ProfileNav'
@@ -19,6 +23,7 @@ import DailyCostChart from '@/components/DailyCostChart'
 import CostByProviderChart from '@/components/CostByProviderChart'
 import CostByAgentTable from '@/components/CostByAgentTable'
 import RecentCallsTable from '@/components/RecentCallsTable'
+import ProviderHealthBadges from '@/components/ProviderHealthBadges'
 
 export const dynamic = 'force-dynamic'
 
@@ -29,16 +34,20 @@ export default async function CostsPage() {
   let byAgent: { agents: CostByAgentRow[]; days: number } | null = null
   let byBuild: { builds: CostByResumeBuildRow[] } | null = null
   let recentCalls: { calls: AgentCallLogRow[]; warning?: string } | null = null
+  let health: { providers: ProviderHealthRow[]; warning?: string } | null = null
+  let logStats: AgentCallLogStats | null = null
   let error: string | null = null
 
   try {
-    const [s, d, p, a, b, r] = await Promise.all([
+    const [s, d, p, a, b, r, h, ls] = await Promise.all([
       fetchCostSummary(),
       fetchDailyCost(30),
       fetchCostByProvider(7),
       fetchCostByAgent(7),
       fetchCostByResumeBuild(20),
       fetchRecentCalls({ limit: 100 }),
+      fetchCostHealth().catch(() => ({ providers: [] as ProviderHealthRow[] })),
+      fetchLogStats().catch(() => ({ total_rows: 0 } as AgentCallLogStats)),
     ])
     summary = s
     daily = d
@@ -46,6 +55,8 @@ export default async function CostsPage() {
     byAgent = a
     byBuild = b
     recentCalls = r
+    health = h
+    logStats = ls
   } catch (e: any) {
     error = e?.message || 'Failed to load cost data'
   }
@@ -102,6 +113,11 @@ export default async function CostsPage() {
 
       {/* Summary cards */}
       {summary && <CostSummaryCards summary={summary} />}
+
+      {/* Phase 1.9: provider health strip — error rate + p95 latency per provider */}
+      {health && (
+        <ProviderHealthBadges providers={health.providers} warning={health.warning} />
+      )}
 
       {/* Daily trend */}
       {daily && (
@@ -198,36 +214,91 @@ export default async function CostsPage() {
         <RecentCallsTable initial={recentCalls.calls} warning={recentCalls.warning} />
       )}
 
-      {/* Footer help */}
-      <section className="bg-gray-900/50 border border-gray-800 rounded-xl p-4 text-[11px] text-gray-500 leading-relaxed">
-        <p className="font-semibold text-gray-400 mb-1">How cost telemetry flows</p>
-        <ol className="list-decimal list-inside space-y-0.5">
-          <li>
-            Every <code className="text-gray-400">agents/llm_router.py</code>{' '}
-            call wraps the request with <code>time.perf_counter()</code> + cost
-            estimate (from <code>PRICING_PER_1M</code> table).
-          </li>
-          <li>
-            On success, the default log callback INSERTs a row into{' '}
-            <code className="text-gray-400">agent_call_log</code>:
-            (provider, model, tokens, cost_usd, latency_ms, agent_name,
-            resume_build_id, called_at).
-          </li>
-          <li>
-            This page reads via the{' '}
-            <code className="text-gray-400">v_daily_llm_cost</code> view (for
-            daily rollups) + raw aggregations (for provider/agent/build).
-          </li>
-          <li>
-            Pricing is best-effort — update{' '}
-            <code className="text-gray-400">PRICING_PER_1M</code> in{' '}
-            <code className="text-gray-400">agents/llm_router.py</code> when
-            providers change rates.{' '}
-            <Link href="/personas" className="text-blue-400 hover:text-blue-300">
-              See personas →
-            </Link>
-          </li>
-        </ol>
+      {/* Phase 1.9: log-stats footer with scale-up guidance */}
+      <section className="bg-gray-900/50 border border-gray-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Stats */}
+        <div>
+          <p className="font-semibold text-gray-400 mb-2 text-[11px] uppercase tracking-wider">
+            agent_call_log stats
+          </p>
+          {logStats?.warning ? (
+            <p className="text-[11px] text-amber-400">⚠ {logStats.warning}</p>
+          ) : logStats ? (
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+              <span className="text-gray-500">Total rows</span>
+              <span className="text-gray-200 font-mono">{logStats.total_rows}</span>
+              {logStats.rows_last_24h !== undefined && (
+                <>
+                  <span className="text-gray-500">Last 24h</span>
+                  <span className="text-gray-200 font-mono">{logStats.rows_last_24h}</span>
+                </>
+              )}
+              {logStats.rows_last_7d !== undefined && (
+                <>
+                  <span className="text-gray-500">Last 7d</span>
+                  <span className="text-gray-200 font-mono">{logStats.rows_last_7d}</span>
+                </>
+              )}
+              {logStats.total_size && (
+                <>
+                  <span className="text-gray-500">Table size</span>
+                  <span className="text-gray-200 font-mono">{logStats.total_size}</span>
+                </>
+              )}
+              {logStats.indexes_size && (
+                <>
+                  <span className="text-gray-500">Indexes</span>
+                  <span className="text-gray-200 font-mono">{logStats.indexes_size}</span>
+                </>
+              )}
+              {logStats.oldest_row_at && (
+                <>
+                  <span className="text-gray-500">Oldest entry</span>
+                  <span className="text-gray-200 font-mono text-[11px]">
+                    {new Date(logStats.oldest_row_at).toLocaleDateString('en-GB', {
+                      day: 'numeric',
+                      month: 'short',
+                      year: 'numeric',
+                    })}
+                  </span>
+                </>
+              )}
+            </div>
+          ) : (
+            <p className="text-[11px] text-gray-500">…</p>
+          )}
+        </div>
+
+        {/* Scaling guidance */}
+        <div>
+          <p className="font-semibold text-gray-400 mb-2 text-[11px] uppercase tracking-wider">
+            Scale-up guidance
+          </p>
+          <ul className="text-[11px] text-gray-500 space-y-1 leading-relaxed">
+            <li>
+              <span className="text-gray-300">≤ 10k rows</span> — current setup
+              is fine. Composite indexes from{' '}
+              <code className="text-gray-400">agent_call_log_perf.sql</code>{' '}
+              keep all queries sub-50ms.
+            </li>
+            <li>
+              <span className="text-amber-400">10k – 100k rows</span> — consider
+              cleanup cron:{' '}
+              <code className="text-gray-400">POST /costs/cleanup</code>{' '}
+              with default 365-day retention.
+            </li>
+            <li>
+              <span className="text-red-400">&gt; 100k rows</span> — apply the
+              partition setup at the bottom of{' '}
+              <code className="text-gray-400">db/agent_call_log_perf.sql</code>{' '}
+              (monthly via pg_partman). See{' '}
+              <Link href="/personas" className="text-blue-400 hover:text-blue-300">
+                docs/PERF.md
+              </Link>{' '}
+              once it lands.
+            </li>
+          </ul>
+        </div>
       </section>
     </Shell>
   )

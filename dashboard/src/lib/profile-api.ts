@@ -691,6 +691,68 @@ export async function fetchRecentCalls(opts?: {
   return res.json()
 }
 
+// ── Phase 1.9: health + perf observability ─────────────────────────────
+
+export interface ProviderHealthRow {
+  provider: string
+  calls_7d: number
+  errors_7d: number
+  error_rate_pct: number
+  p50_latency_ms: number
+  p95_latency_ms: number
+  p99_latency_ms: number
+  total_cost_usd_7d: number
+  last_call_at: string | null
+}
+
+export interface AgentCallLogStats {
+  total_rows: number
+  rows_last_24h?: number
+  rows_last_7d?: number
+  oldest_row_at?: string | null
+  newest_row_at?: string | null
+  total_size?: string
+  indexes_size?: string
+  warning?: string
+}
+
+export async function fetchCostHealth(): Promise<{
+  providers: ProviderHealthRow[]
+  warning?: string
+}> {
+  const res = await fetch(`${baseUrl}/costs/health`, {
+    headers,
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch cost health: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchLogStats(): Promise<AgentCallLogStats> {
+  const res = await fetch(`${baseUrl}/costs/log-stats`, {
+    headers,
+    next: { revalidate: 300 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch log stats: ${res.status}`)
+  return res.json()
+}
+
+export async function cleanupCallLog(daysToKeep: number = 365): Promise<{
+  deleted: number
+  days_to_keep: number
+}> {
+  const res = await fetch(`${baseUrl}/costs/cleanup`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ days_to_keep: daysToKeep }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data?.detail || `Cleanup failed: ${res.status}`)
+  }
+  return res.json()
+}
+
 // ── Company knowledge / research ───────────────────────────────────────
 
 export interface CompanyKnowledgeSection {

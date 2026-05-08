@@ -1379,7 +1379,31 @@ async def costs_daily(days: int = 30, _auth=Depends(verify_secret)):
 
 @app.get("/costs/by-provider")
 async def costs_by_provider(days: int = 7, _auth=Depends(verify_secret)):
-    """Aggregate cost + calls + tokens + latency by provider over the window."""
+    """
+    Aggregate cost + calls + tokens + latency by provider over the window.
+    Phase 1.9: uses cost_by_provider_window() RPC for DB-side aggregation
+    (was Python-side; matters at >10k rows). Falls back gracefully if the
+    function isn't installed yet.
+    """
+    from db.client import get_supabase
+    try:
+        result = get_supabase().rpc(
+            "cost_by_provider_window", {"days_back": days}
+        ).execute()
+        rows = result.data or []
+        # cost_usd comes back as numeric → JSON string in some configs;
+        # coerce to float for predictable shape
+        for r in rows:
+            r["cost_usd"] = float(r.get("cost_usd") or 0)
+            r["avg_latency_ms"] = int(float(r.get("avg_latency_ms") or 0))
+        return {"days": days, "providers": rows}
+    except Exception as e:
+        logger.warning(
+            f"cost_by_provider_window RPC failed ({e}); "
+            f"falling back to Python aggregation"
+        )
+
+    # Fallback: legacy Python aggregation
     rows = _cost_window_query(days).execute().data or []
     agg: dict[str, dict] = {}
     for r in rows:
@@ -1393,7 +1417,6 @@ async def costs_by_provider(days: int = 7, _auth=Depends(verify_secret)):
         a["input_tokens"] += int(r.get("input_tokens") or 0)
         a["output_tokens"] += int(r.get("output_tokens") or 0)
         a["latency_ms_total"] += int(r.get("latency_ms") or 0)
-
     out = []
     for a in agg.values():
         a["cost_usd"] = round(a["cost_usd"], 4)
@@ -1406,7 +1429,30 @@ async def costs_by_provider(days: int = 7, _auth=Depends(verify_secret)):
 
 @app.get("/costs/by-agent")
 async def costs_by_agent(days: int = 7, _auth=Depends(verify_secret)):
-    """Aggregate by agent_name (e.g. 'g2.writer', 'CompanyAgent[Stripe]')."""
+    """
+    Aggregate by agent_name (e.g. 'g2.writer', 'CompanyAgent[Stripe]').
+    Phase 1.9: uses cost_by_agent_window() RPC for DB-side aggregation.
+    """
+    from db.client import get_supabase
+    try:
+        result = get_supabase().rpc(
+            "cost_by_agent_window", {"days_back": days}
+        ).execute()
+        rows = result.data or []
+        for r in rows:
+            r["cost_usd"] = float(r.get("cost_usd") or 0)
+            r["avg_latency_ms"] = int(float(r.get("avg_latency_ms") or 0))
+            # providers/models are already TEXT[] from the RPC
+            r["providers"] = r.get("providers") or []
+            r["models"] = r.get("models") or []
+        return {"days": days, "agents": rows}
+    except Exception as e:
+        logger.warning(
+            f"cost_by_agent_window RPC failed ({e}); "
+            f"falling back to Python aggregation"
+        )
+
+    # Fallback: legacy Python aggregation
     rows = _cost_window_query(days).execute().data or []
     agg: dict[str, dict] = {}
     for r in rows:
@@ -1425,7 +1471,6 @@ async def costs_by_agent(days: int = 7, _auth=Depends(verify_secret)):
             a["providers"].add(r["provider"])
         if r.get("model"):
             a["models"].add(r["model"])
-
     out = []
     for a in agg.values():
         a["cost_usd"] = round(a["cost_usd"], 4)
@@ -1436,6 +1481,96 @@ async def costs_by_agent(days: int = 7, _auth=Depends(verify_secret)):
         out.append(a)
     out.sort(key=lambda x: x["cost_usd"], reverse=True)
     return {"days": days, "agents": out}
+
+
+@app.get("/costs/health")
+async def costs_health(_auth=Depends(verify_secret)):
+    """
+    Per-provider health summary: error rate, p50/p95/p99 latency, last 7d
+    cost, last call timestamp. Reads v_agent_call_health (added in
+    db/agent_call_log_perf.sql).
+    """
+    from db.client import get_supabase
+    try:
+        result = (
+            get_supabase().table("v_agent_call_health").select("*").execute()
+        )
+        rows = result.data or []
+        # Coerce numerics for predictable JSON shape
+        for r in rows:
+            for k in (
+                "calls_7d", "errors_7d",
+                "p50_latency_ms", "p95_latency_ms", "p99_latency_ms",
+            ):
+                if r.get(k) is not None:
+                    r[k] = int(r[k])
+            for k in ("error_rate_pct", "total_cost_usd_7d"):
+                if r.get(k) is not None:
+                    r[k] = float(r[k])
+        return {"providers": rows}
+    except Exception as e:
+        logger.warning(f"v_agent_call_health query failed: {e}")
+        return {
+            "providers": [],
+            "warning": "v_agent_call_health view not present "
+                       "(apply db/agent_call_log_perf.sql)",
+        }
+
+
+@app.get("/costs/log-stats")
+async def costs_log_stats(_auth=Depends(verify_secret)):
+    """
+    Stats on the agent_call_log table itself: row count, size, oldest +
+    newest entries. Used by docs/PERF.md guidance + dashboard footer.
+    """
+    from db.client import get_supabase
+    try:
+        result = (
+            get_supabase().table("v_agent_call_log_stats").select("*").execute()
+        )
+        rows = result.data or []
+        if not rows:
+            return {"total_rows": 0}
+        return rows[0]
+    except Exception as e:
+        logger.warning(f"v_agent_call_log_stats query failed: {e}")
+        return {
+            "total_rows": 0,
+            "warning": "v_agent_call_log_stats view not present "
+                       "(apply db/agent_call_log_perf.sql)",
+        }
+
+
+class CleanupRequest(BaseModel):
+    days_to_keep: int = 365
+
+
+@app.post("/costs/cleanup")
+async def costs_cleanup(
+    request: CleanupRequest,
+    _auth=Depends(verify_secret),
+):
+    """
+    Delete agent_call_log rows older than `days_to_keep` (default 365).
+    The DB function refuses anything < 7 days as a safety guard.
+    Returns the number of rows deleted.
+    """
+    from db.client import get_supabase
+    try:
+        result = get_supabase().rpc(
+            "cleanup_agent_call_log", {"days_to_keep": request.days_to_keep}
+        ).execute()
+        deleted = result.data
+        if isinstance(deleted, list):
+            deleted = deleted[0] if deleted else 0
+        return {"deleted": int(deleted or 0), "days_to_keep": request.days_to_keep}
+    except Exception as e:
+        # If the function refused (< 7 days), surface the message
+        msg = str(e)
+        if "refusing" in msg:
+            raise HTTPException(status_code=400, detail=msg)
+        logger.error(f"cleanup_agent_call_log failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {msg}")
 
 
 @app.get("/costs/by-resume-build")
