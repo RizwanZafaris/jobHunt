@@ -205,3 +205,169 @@ class TestFeatureFlag:
             assert is_enabled() is False
         with patch.dict(os.environ, {"USE_G2_GRAPH": ""}):
             assert is_enabled() is False
+
+
+# ─── Phase 1.11: per-build cost cap ──────────────────────────────────────
+class TestCostCap:
+    """
+    Validates the orchestrator's cost-cap enforcement and the
+    export-status mapping. The orchestrator pre-check short-circuits
+    before any LLM call when cost is already over cap; the post-check
+    accounts for the orchestrator's own cost.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _env(self):
+        os.environ.setdefault("ANTHROPIC_API_KEY", "test")
+        os.environ.setdefault("OPENAI_API_KEY", "test")
+        os.environ.setdefault("SUPABASE_URL", "http://test")
+        os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
+
+    @pytest.mark.asyncio
+    async def test_pre_check_short_circuits_when_already_over_cap(self):
+        """If cost_usd_total >= cost_cap before orchestrator runs, no LLM
+        call is made — we go straight to converged + cost_capped=True."""
+        from resume_agents.g2_nodes import orchestrator_node
+        state = {
+            "iteration": 1,
+            "cost_usd_total": 5.5,        # already over default $5 cap
+            "cost_cap_usd": 5.0,
+            "merged_critique": {
+                "ats_score": 80,
+                "specific_fixes": ["fix 1", "fix 2"],
+            },
+        }
+        out = await orchestrator_node(state)
+        assert out["converged"] is True
+        assert out["cost_capped"] is True
+        # Pre-check path doesn't increment cost (no LLM call made)
+        assert "cost_usd_total" not in out
+        # And the transcript turn records the cap-hit reason
+        turn = out["transcript"][0]
+        assert turn["node"] == "orchestrator"
+        assert "cost cap hit" in turn["output"]["rationale"]
+
+    @pytest.mark.asyncio
+    async def test_under_cap_proceeds_normally(self, monkeypatch):
+        """If cost is under cap, the orchestrator runs the LLM call as
+        usual. We mock the router so we don't actually hit Anthropic."""
+        from resume_agents import g2_nodes
+        from agents.llm_router import LLMResult
+
+        async def fake_ask(**kwargs):
+            return LLMResult(
+                text='{"converged": false, "rationale": "needs another pass"}',
+                provider="anthropic",
+                model="claude-opus-4-5-20251101",
+                input_tokens=100,
+                output_tokens=50,
+                cost_usd=0.05,
+                latency_ms=800,
+            )
+
+        class FakeRouter:
+            ask = staticmethod(fake_ask)
+
+        monkeypatch.setattr(g2_nodes, "get_router", lambda: FakeRouter())
+
+        state = {
+            "iteration": 1,
+            "cost_usd_total": 1.5,        # well under $5 cap
+            "cost_cap_usd": 5.0,
+            "merged_critique": {
+                "ats_score": 80,
+                "specific_fixes": ["fix 1"],
+            },
+        }
+        out = await g2_nodes.orchestrator_node(state)
+        # Not capped — converged might be true or false depending on
+        # decision + thresholds, but cost_capped specifically should NOT
+        # be set to True.
+        assert out.get("cost_capped") is not True
+        # Cost was incurred (the router returned 0.05)
+        assert out.get("cost_usd_total") == 0.05
+
+    @pytest.mark.asyncio
+    async def test_post_check_caps_when_orchestrator_call_pushes_over(self, monkeypatch):
+        """If we're under cap before the call but the orchestrator's
+        own cost pushes us over, we force converge + cost_capped."""
+        from resume_agents import g2_nodes
+        from agents.llm_router import LLMResult
+
+        async def fake_ask(**kwargs):
+            return LLMResult(
+                text='{"converged": false, "rationale": "wants more"}',
+                provider="anthropic",
+                model="claude-opus-4-5-20251101",
+                input_tokens=2000,
+                output_tokens=500,
+                cost_usd=0.30,                       # this push tips us over
+                latency_ms=1200,
+            )
+
+        class FakeRouter:
+            ask = staticmethod(fake_ask)
+
+        monkeypatch.setattr(g2_nodes, "get_router", lambda: FakeRouter())
+
+        state = {
+            "iteration": 2,
+            "cost_usd_total": 4.85,                  # 4.85 + 0.30 = 5.15 → over $5
+            "cost_cap_usd": 5.0,
+            "merged_critique": {
+                "ats_score": 88,
+                "specific_fixes": ["fix"],
+            },
+        }
+        out = await g2_nodes.orchestrator_node(state)
+        assert out["converged"] is True
+        assert out["cost_capped"] is True
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_still_forces_converge(self, monkeypatch):
+        """When iteration hits max, force converge regardless of cost.
+        cost_capped should NOT be set in that case (different reason)."""
+        from resume_agents import g2_nodes
+        from config.settings import get_settings
+        from agents.llm_router import LLMResult
+
+        async def fake_ask(**kwargs):
+            return LLMResult(
+                text='{"converged": false}',
+                provider="anthropic",
+                model="claude-opus-4-5",
+                input_tokens=100, output_tokens=20,
+                cost_usd=0.01, latency_ms=500,
+            )
+
+        class FakeRouter:
+            ask = staticmethod(fake_ask)
+
+        monkeypatch.setattr(g2_nodes, "get_router", lambda: FakeRouter())
+
+        max_iter = get_settings().g2_max_iterations
+        state = {
+            "iteration": max_iter - 1,    # next iteration triggers max
+            "cost_usd_total": 0.5,         # nowhere near cap
+            "cost_cap_usd": 5.0,
+            "merged_critique": {"ats_score": 70, "specific_fixes": ["x", "y", "z"]},
+        }
+        out = await g2_nodes.orchestrator_node(state)
+        assert out["converged"] is True       # iteration cap forces convergence
+        assert out.get("cost_capped") is not True
+
+    def test_export_status_hierarchy_cost_capped_wins(self):
+        """The export_node logic in g2_nodes maps state to status:
+            cost_capped → 'cost_capped'
+            iteration >= max && not converged → 'exhausted'
+            else → 'converged'
+        We test the mapping by inspecting the source — the function
+        also does I/O so end-to-end testing belongs in integration."""
+        import inspect
+        from resume_agents import g2_nodes
+        src = inspect.getsource(g2_nodes.export_node)
+        # Verify the three-way status hierarchy is present
+        assert 'state.get("cost_capped")' in src
+        assert '"cost_capped"' in src
+        assert '"exhausted"' in src
+        assert '"converged"' in src

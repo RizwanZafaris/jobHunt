@@ -851,12 +851,19 @@ async def reclassify_existing_jobs(
 async def generate_resume_for_job(
     job_id: int,
     background_tasks: BackgroundTasks,
+    max_cost_usd: Optional[float] = None,
     _auth=Depends(verify_secret),
 ):
     """
     Workflow v2: manual trigger to build a tailored resume for ONE job.
     Only allowed for jobs scoring >= 85 (configurable threshold).
     Runs the recruitment-expert flow in background.
+
+    Phase 1.11: pass max_cost_usd as a query param to override the default
+    per-build cost cap (settings.g2_max_cost_usd, default $5). Useful for
+    top-tier targets where you want to allow more iterations.
+        POST /jobs/123/generate-resume?max_cost_usd=10
+    Refused if max_cost_usd < 0.50 (would always cost-cap before any work).
     """
     from db.client import get_supabase
     db = get_supabase()
@@ -871,6 +878,16 @@ async def generate_resume_for_job(
             status_code=400,
             detail=f"Job scored {score}/100. Resume generation gated at 85+. Update threshold via config or override.",
         )
+
+    if max_cost_usd is not None:
+        if max_cost_usd < 0.50:
+            raise HTTPException(
+                status_code=400,
+                detail=f"max_cost_usd={max_cost_usd} too low — minimum is $0.50 to avoid no-op builds.",
+            )
+        # Stash on the job dict so _process_single_job picks it up below.
+        # job is a fresh dict from Supabase; mutating it locally is fine.
+        job["_g2_max_cost_usd"] = max_cost_usd
 
     async def _run():
         from pipeline import JobHuntPipeline
@@ -891,6 +908,7 @@ async def generate_resume_for_job(
         "job_id": job_id,
         "score": score,
         "archetype": job.get("archetype"),
+        "max_cost_usd": max_cost_usd,
     }
 
 

@@ -80,13 +80,23 @@ def _canonicalize_company(name: str) -> str:
     return n
 
 
-async def run_g2_graph(job_id: int, company_name: Optional[str] = None) -> dict:
+async def run_g2_graph(
+    job_id: int,
+    company_name: Optional[str] = None,
+    max_cost_usd: Optional[float] = None,
+) -> dict:
     """
     Run the G2 graph for one job. Returns the final ResumeState as a dict.
 
     If company_name isn't passed, it's read from the jobs row.
+
+    Phase 1.11: max_cost_usd defaults to settings.g2_max_cost_usd (5.0).
+    Pass a different value (e.g. 10.0 for top-tier targets) to relax the
+    cap. The orchestrator forces converge with status='cost_capped' if
+    cumulative cost exceeds the cap mid-build.
     """
     from resume_agents.g2_io import load_job, finalize_resume_build
+    from config.settings import get_settings
 
     # Resolve company name from the job if not provided
     if not company_name:
@@ -94,16 +104,23 @@ async def run_g2_graph(job_id: int, company_name: Optional[str] = None) -> dict:
         company_name = job.get("company") or ""
 
     canonical = _canonicalize_company(company_name)
+    cap = (
+        max_cost_usd if max_cost_usd is not None
+        else get_settings().g2_max_cost_usd
+    )
     logger.info(
         f"G2 run start: job_id={job_id} company={company_name!r} → canonical={canonical!r}"
+        f" cost_cap=${cap:.2f}"
     )
 
     initial_state = {
         "job_id": job_id,
         "company_name": canonical,
+        "cost_cap_usd": cap,
         "transcript": [],
         "iteration": 0,
         "converged": False,
+        "cost_capped": False,
         "cost_usd_total": 0.0,
         "latency_ms_total": 0,
     }

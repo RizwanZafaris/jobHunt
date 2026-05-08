@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     g2_target_ats_score: int = 95           # Polisher gate
     g2_meta_critic_lookback: int = 5        # Past resumes to read for THIS company
 
+    # Phase 1.11: per-build cost cap.
+    #   Hard cap that forces the orchestrator to converge early if a single
+    #   resume build's cumulative LLM spend exceeds this. Designed for
+    #   "production safety" — the worst-case cost when iterations run away
+    #   should still be bounded.
+    #   Override per-build via POST /jobs/{id}/generate-resume?max_cost_usd=X.
+    g2_max_cost_usd: float = Field(5.0, env="G2_MAX_COST_USD")
+
     # ── Supabase ────────────────────────────────────────────────────────────
     supabase_url: str = Field(..., env="SUPABASE_URL")
     supabase_service_key: str = Field(..., env="SUPABASE_SERVICE_KEY")
