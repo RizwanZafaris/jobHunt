@@ -1255,26 +1255,84 @@ async def trigger_persona_synthesis(
     background_tasks: BackgroundTasks,
     company_name: Optional[str] = None,
     force: bool = False,
+    quality_filter: Optional[str] = None,
     _auth=Depends(verify_secret),
 ):
     """
     Manually trigger PersonaSynthesizer. By default, runs against all
     companies with personas. Pass `company_name` to limit to one.
     `force=true` re-synthesizes even if no new data since last run.
+
+    Phase 1.13: pass `quality_filter` (one of low/medium/high/unknown)
+    to bulk-regenerate only personas at that quality tier. Useful for
+    fixing all 5 'low' personas in one click instead of clicking
+    'Regenerate' five times. Mutually exclusive with `company_name`
+    (company_name wins if both are set, but the dashboard never sends
+    both).
     """
+    allowed_quality = {"low", "medium", "high", "unknown"}
+    if quality_filter is not None and quality_filter not in allowed_quality:
+        raise HTTPException(
+            status_code=400,
+            detail=f"quality_filter must be one of {sorted(allowed_quality)}, got {quality_filter!r}",
+        )
+
+    # Pre-compute the filtered company list synchronously so we can echo
+    # the count in the response. The actual synthesis still runs in the
+    # background so the request returns immediately.
+    filtered_names: list[str] = []
+    if quality_filter and not company_name:
+        from db.client import get_supabase
+        rows = (
+            get_supabase()
+            .table("company_personas")
+            .select("company_name, metadata")
+            .execute()
+            .data
+        ) or []
+        filtered_names = [
+            r["company_name"]
+            for r in rows
+            if (r.get("metadata") or {}).get("persona_quality", "unknown")
+            == quality_filter
+        ]
+
     async def _run():
         from agents.persona_synthesizer import PersonaSynthesizer
         synth = PersonaSynthesizer()
         if company_name:
             await synth.synthesize_one(company_name, force=force)
+        elif quality_filter:
+            # Bulk-regenerate only personas matching the quality tier.
+            # We iterate manually instead of calling .run() so we don't
+            # touch personas at other quality tiers.
+            for name in filtered_names:
+                try:
+                    await synth.synthesize_one(name, force=force)
+                except Exception as e:
+                    logger.warning(
+                        f"persona synth failed for {name} (quality={quality_filter}): {e}"
+                    )
         else:
             await synth.run(force=force)
 
     background_tasks.add_task(_run)
+
+    if company_name:
+        scope = company_name
+    elif quality_filter:
+        scope = f"quality={quality_filter} ({len(filtered_names)} personas)"
+    else:
+        scope = "all_personas"
+
     return {
         "status": "started",
-        "scope": company_name or "all_personas",
+        "scope": scope,
         "force": force,
+        "quality_filter": quality_filter,
+        "filtered_count": (
+            len(filtered_names) if quality_filter and not company_name else None
+        ),
         "message": "Persona synthesis running in background.",
     }
 

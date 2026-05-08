@@ -52,6 +52,26 @@ export default async function PersonasPage() {
               <QualityBadge label="High" count={personas.by_quality?.high || 0} color="emerald" />
               <QualityBadge label="Medium" count={personas.by_quality?.medium || 0} color="amber" />
               <QualityBadge label="Low" count={personas.by_quality?.low || 0} color="red" />
+              {/* Phase 1.13: bulk-regenerate the low-quality tier in one
+                  click instead of clicking Regenerate on each row. Order
+                  is Low → Medium → All so the most-actionable button is
+                  closest to the badges. Tiers with count==0 are hidden. */}
+              {(personas.by_quality?.low || 0) > 0 && (
+                <RegeneratePersonaButton
+                  companyName=""
+                  qualityFilter="low"
+                  size="md"
+                  label={`Regenerate Low (${personas.by_quality.low})`}
+                />
+              )}
+              {(personas.by_quality?.medium || 0) > 0 && (
+                <RegeneratePersonaButton
+                  companyName=""
+                  qualityFilter="medium"
+                  size="md"
+                  label={`Regenerate Medium (${personas.by_quality.medium})`}
+                />
+              )}
               <RegenerateAllButton />
             </div>
           )}
