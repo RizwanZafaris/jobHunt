@@ -186,11 +186,14 @@ ARTIFACTS_BUCKET = "job-artifacts"
 
 def upload_artifact(local_path: str, remote_path: str, content_type: str = "application/octet-stream") -> str | None:
     """
-    Upload a file to Supabase Storage and return its public URL.
+    Upload a file to Supabase Storage and return its signed URL (1-year expiry).
     Returns None if upload fails (caller should fall back to local path).
     """
+    import logging
     import os
+    log = logging.getLogger(__name__)
     if not os.path.exists(local_path):
+        log.warning(f"upload_artifact: local file does not exist: {local_path}")
         return None
     try:
         db = get_supabase()
@@ -202,19 +205,61 @@ def upload_artifact(local_path: str, remote_path: str, content_type: str = "appl
         except Exception:
             pass  # already exists
         # Upload (overwrite if exists)
-        db.storage.from_(ARTIFACTS_BUCKET).upload(
-            path=remote_path,
-            file=data,
-            file_options={"content-type": content_type, "upsert": "true"},
-        )
-        # Return signed URL (1 year expiry)
+        try:
+            db.storage.from_(ARTIFACTS_BUCKET).upload(
+                path=remote_path,
+                file=data,
+                file_options={"content-type": content_type, "upsert": "true"},
+            )
+        except Exception as upload_err:
+            # supabase-py raises on existing files even with upsert; ignore that
+            if "Duplicate" not in str(upload_err) and "exists" not in str(upload_err).lower():
+                raise
+
+        # Return signed URL — supabase-py response shape varies by version
         signed = db.storage.from_(ARTIFACTS_BUCKET).create_signed_url(
             path=remote_path, expires_in=60 * 60 * 24 * 365
         )
-        return signed.get("signedURL") or signed.get("signed_url")
+        # Try every known key
+        if isinstance(signed, dict):
+            url = (signed.get("signedURL")
+                   or signed.get("signed_url")
+                   or signed.get("signedUrl")
+                   or signed.get("url"))
+            if url:
+                # Some versions return relative path; resolve to absolute
+                if url.startswith("/"):
+                    s = get_settings()
+                    url = f"{s.supabase_url}{url}"
+                return url
+        # Fallback: build URL manually
+        s = get_settings()
+        # Manual signed URL via REST (works with service key)
+        import httpx
+        try:
+            resp = httpx.post(
+                f"{s.supabase_url}/storage/v1/object/sign/{ARTIFACTS_BUCKET}/{remote_path}",
+                headers={
+                    "apikey": s.supabase_service_key,
+                    "Authorization": f"Bearer {s.supabase_service_key}",
+                    "Content-Type": "application/json",
+                },
+                json={"expiresIn": 60 * 60 * 24 * 365},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                token = resp.json().get("signedURL") or resp.json().get("signedUrl")
+                if token:
+                    if token.startswith("/"):
+                        return f"{s.supabase_url}/storage/v1{token}"
+                    return token
+        except Exception as fallback_err:
+            log.warning(f"Manual signed URL fallback failed: {fallback_err}")
+
+        log.warning(f"upload_artifact: uploaded but couldn't get signed URL. signed={signed}")
+        return None
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"Artifact upload failed for {remote_path}: {e}")
+        log.warning(f"Artifact upload failed for {remote_path}: {e}")
         return None
 
 

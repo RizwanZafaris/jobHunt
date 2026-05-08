@@ -66,9 +66,51 @@ class CompanyAgent(BaseAgent):
             name=f"CompanyAgent[{company_name}]",
             model=settings.company_agent_model
         )
-        self.company_name = company_name
+        self.company_name = self._canonicalize(company_name)
         self.company_record: Optional[dict] = None
         self.knowledge_loaded = False
+
+    @staticmethod
+    def _canonicalize(name: str) -> str:
+        """
+        Normalize company names so 'Adyen' and 'Adyen Careers' (and other
+        common scout-extracted variants) hit the same knowledge cache.
+        """
+        if not name:
+            return name
+        n = name.strip()
+        # Strip common suffixes that come from careers-page scraping
+        for suffix in (" Careers", " careers", " Jobs", " jobs",
+                       " hiring", " Hiring",
+                       " (Uber subsidiary)", " (Alibaba Group)",
+                       " — Careers"):
+            if n.endswith(suffix):
+                n = n[: -len(suffix)].strip()
+                break
+        # Match against known target companies (case-insensitive)
+        try:
+            from db.client import get_supabase
+            rows = (
+                get_supabase()
+                .table("companies")
+                .select("name")
+                .eq("is_target", True)
+                .execute()
+                .data
+            ) or []
+            target_names = {r["name"]: r["name"] for r in rows}
+            target_lower = {r["name"].lower(): r["name"] for r in rows}
+            if n in target_names:
+                return n
+            if n.lower() in target_lower:
+                return target_lower[n.lower()]
+            # Substring match: "Stripe Inc" → "Stripe"
+            for t in target_names:
+                if t.lower() in n.lower() and len(t) >= 4:
+                    return t
+        except Exception:
+            pass
+        return n
 
     async def build_or_refresh(self, force: bool = False) -> dict:
         """

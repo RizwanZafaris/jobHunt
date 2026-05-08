@@ -1,3 +1,4 @@
+
 """
 Generate one self-contained SQL file: schema + all seed data.
 User pastes this into Supabase SQL editor and clicks Run.

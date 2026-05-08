@@ -874,11 +874,12 @@ async def generate_resume_for_job(
 
     async def _run():
         from pipeline import JobHuntPipeline
+        from datetime import datetime, timezone
         pipeline = JobHuntPipeline()
         try:
             await pipeline._process_single_job(job)
             db.table("jobs").update({
-                "resume_generated_at": "now()",
+                "resume_generated_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", job_id).execute()
         except Exception as e:
             logger.error(f"Resume generation failed for job {job_id}: {e}")
