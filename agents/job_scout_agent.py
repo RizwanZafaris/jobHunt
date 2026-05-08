@@ -724,28 +724,32 @@ class JobScoutAgent(BaseAgent):
     # ── Scoring ───────────────────────────────────────────────────────────────
 
     async def _score_jobs_batch(self, jobs: list[dict]) -> list[dict]:
-        """Use GPT-4.1 to score all jobs in one batch call."""
+        """Use GPT-4.1 to score jobs in chunks of 25 in parallel."""
         if not jobs:
             return jobs
 
         profile_summary = self._get_profile_summary()
-        jobs_json = json.dumps([
-            {
-                "id": i,
-                "title": j.get("title"),
-                "company": j.get("company"),
-                "location": j.get("location"),
-                "description": (j.get("description") or "")[:500]
-            }
-            for i, j in enumerate(jobs)
-        ], indent=2)
+        chunk_size = 25
+        chunks = [jobs[i:i + chunk_size] for i in range(0, len(jobs), chunk_size)]
 
-        system = """You are a precision job-fit scoring engine for a specific candidate.
+        async def score_chunk(chunk: list[dict], offset: int) -> dict[int, dict]:
+            jobs_json = json.dumps([
+                {
+                    "id": offset + i,
+                    "title": j.get("title"),
+                    "company": j.get("company"),
+                    "location": j.get("location"),
+                    "description": (j.get("description") or "")[:500]
+                }
+                for i, j in enumerate(chunk)
+            ], indent=2)
+
+            system = """You are a precision job-fit scoring engine for a specific candidate.
 Score each job 0-100 based on fit with the candidate profile below.
 Return ONLY valid JSON: {"scores": [{"id": N, "score": X, "reason": "brief reason"}]}
 Be strict: score 80+ only for genuinely excellent matches."""
 
-        user = f"""Candidate Profile:
+            user = f"""Candidate Profile:
 {profile_summary}
 
 Jobs to score (assess fit carefully):
@@ -761,26 +765,38 @@ Score 0-100 for each. Key criteria:
 
 Return JSON only. No explanation outside JSON."""
 
-        try:
-            response = await self.ask_openai(
-                system=system,
-                messages=[{"role": "user", "content": user}],
-                max_tokens=2000,
-                temperature=0.1,
-            )
-            result = json.loads(response.strip())
-            score_map = {s["id"]: s for s in result.get("scores", [])}
-            for i, job in enumerate(jobs):
-                scored = score_map.get(i, {})
-                job["match_score"] = scored.get("score", 0)
-                if job.get("fit_details") is None:
-                    job["fit_details"] = {}
-                job["fit_details"]["gpt4_reason"] = scored.get("reason", "")
-        except json.JSONDecodeError as e:
-            logger.warning(f"Scoring JSON parse failed: {e}")
-        except Exception as e:
-            logger.warning(f"Batch scoring failed: {e}. Jobs will have score=0.")
+            try:
+                response = await self.ask_openai(
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                    max_tokens=3000,
+                    temperature=0.1,
+                )
+                result = json.loads(response.strip())
+                return {s["id"]: s for s in result.get("scores", [])}
+            except json.JSONDecodeError as e:
+                logger.warning(f"Scoring JSON parse failed for chunk offset={offset}: {e}")
+                return {}
+            except Exception as e:
+                logger.warning(f"Scoring chunk offset={offset} failed: {e}")
+                return {}
 
+        chunk_results = await asyncio.gather(
+            *[score_chunk(chunk, i * chunk_size) for i, chunk in enumerate(chunks)]
+        )
+        score_map: dict[int, dict] = {}
+        for partial in chunk_results:
+            score_map.update(partial)
+
+        for i, job in enumerate(jobs):
+            scored = score_map.get(i, {})
+            job["match_score"] = scored.get("score", 0)
+            if job.get("fit_details") is None:
+                job["fit_details"] = {}
+            job["fit_details"]["gpt4_reason"] = scored.get("reason", "")
+
+        scored_count = sum(1 for j in jobs if j.get("match_score", 0) > 0)
+        self.log(f"   Scored: {scored_count}/{len(jobs)} jobs in {len(chunks)} chunks")
         return jobs
 
     def _apply_red_flag_penalties(self, jobs: list[dict]) -> list[dict]:
