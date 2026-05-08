@@ -150,18 +150,28 @@ Each graph has its own `docs/<graph>_DESIGN.md`. G2 is fully spec'd today.
 
 ## 5. Data layer
 
-### 5.1 Existing tables (from `db/schema.sql`)
+### 5.1 Existing tables (live as of 2026-05-09 — project `oodvelyzdsncsssqvmyb`)
 
-| Table | Purpose |
-|---|---|
-| `companies` | Company registry + ATS slugs |
-| `company_knowledge` | 13-section pgvector intel store (built by CompanyAgent) |
-| `jobs` | Discovered postings + scores + status |
-| `applications` | Application tracker (kanban) |
-| `rizwan_profile` + `profile_*` | Master profile, experience, certs, keywords |
-| `story_bank` | STAR+R interview stories |
-| `agent_conversations` | Gap-filling dialogue history |
-| `boss_audit_log` | Nightly digest history |
+| Table | Rows | Purpose |
+|---|---|---|
+| `companies` | 140 | Company registry + ATS slugs (67 marked `is_target=true`) |
+| `company_knowledge` | 507 | 13-section pgvector intel store (33 companies fully complete) |
+| `jobs` | 245 | Postings + scores (11 at ≥85) + archetype + legitimacy_tier |
+| `applications` | 2 | Application tracker (both `status='evaluated'`) |
+| **Canonical profile** | | |
+| `profile_master` | 1 | The structured profile — name, headline, summary, competencies (text[]), tech (text[]), languages (jsonb), ai_solutions (jsonb) |
+| `profile_experience` | 4 | Roles ordered by `sort_order`, with `groups` (jsonb) for nested bullets |
+| `profile_certification` | 6 | PMP, PMI-ACP, CSPO, CSM, etc |
+| `profile_education` | 3 | Degrees |
+| `profile_keyword` | 310 | ATS keyword bank (310 terms across 11 categories) |
+| `profile_keyword_category` | 11 | Category rollup |
+| `profile_source_document` | 233 | Parsed source files (CVs, JDs, notes) the profile was built from |
+| `profile_recommendation` | 41 | AI-generated profile improvement suggestions |
+| **Legacy / supporting** | | |
+| `rizwan_profile` | 5 | **LEGACY** pgvector embedding cache with stale section names (`current_simpaisa`, `daraz_experience`...). Don't read as canonical text — use `profile_*` tables instead. Keep for pgvector retrieval only. |
+| `story_bank` | 0 | STAR+R interview stories — empty, will need seeding for G3 Stage B |
+| `agent_conversations` | 152 | Gap-filling dialogue history across 35 jobs — primary cold-start signal source for meta-critic |
+| `boss_audit_log` | 4 | Nightly digest history (most recent 2026-05-08) |
 
 ### 5.2 New tables (from `db/multi_llm_schema.sql`)
 

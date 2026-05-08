@@ -43,12 +43,18 @@ from operator import add
 
 class ResumeState(TypedDict, total=False):
     # ─── Inputs (set at entry) ──────────────────────────────────────────
-    job: dict                       # full job row from jobs table
+    job: dict                       # full job row from jobs table (jobs.id is INTEGER not UUID)
     job_id: int
     company_name: str
-    company_persona: dict           # row from company_personas (or None)
-    master_resume_md: str           # from rizwan_profile / cv.md
-    past_transcripts: list[dict]    # last 5 resume_builds for this company
+    company_persona: dict           # row from company_personas (or None on cold start)
+    master_resume_md: str           # rendered from profile_master + profile_experience
+                                    #   + profile_certification + profile_education
+                                    # (canonical source — NOT legacy rizwan_profile)
+    past_transcripts: list[dict]    # last N resume_builds.agent_transcript for this company.
+                                    # COLD-START fallback: when empty, fall back to reading
+                                    # agent_conversations for the company (152 rows live as of
+                                    # 2026-05-09 across 35 distinct jobs — older gap-dialogue
+                                    # signal that's still useful for meta-critic).
     resume_build_id: str            # uuid, set on entry
 
     # ─── Agent outputs (accumulated) ────────────────────────────────────
@@ -84,10 +90,26 @@ LangGraph's `Annotated[list, add]` reducer lets multiple nodes append to `transc
 
 ### 3.1 entry_point
 **Pure code, no LLM.** Loads:
-- `job` row from `jobs`
-- `company_persona` row from `company_personas` (NULL on cold start)
-- `master_resume_md` from `rizwan_profile` table or `cv.md` fallback
-- `past_transcripts` = last 5 `resume_builds.agent_transcript` for `WHERE company_name = company AND status = 'converged'`
+- `job` row from `jobs` (`jobs.id` is INTEGER — `resume_builds.job_id` matches)
+- `company_persona` row from `company_personas` (NULL on cold start — graceful)
+- `master_resume_md` rendered at runtime by joining:
+  - `profile_master` (id=1) — name, headline, summary, location, email,
+    `core_competencies` (text[]), `technical_knowledge` (text[]),
+    `languages` (jsonb), `ai_solutions` (jsonb)
+  - `profile_experience` (4 rows) ordered by `sort_order`, with `groups`
+    (jsonb) holding nested bullet structures
+  - `profile_certification` (6 rows) ordered by `sort_order`
+  - `profile_education` (3 rows) ordered by `sort_order`
+  - **NOT** `rizwan_profile` — that's a legacy embedding cache with 5
+    rows under stale section names (`current_simpaisa`, `daraz_experience`, etc).
+    Use it only as an additional pgvector retrieval source, not as the
+    canonical text source.
+- `past_transcripts`:
+  1. **Primary**: `resume_builds.agent_transcript` `WHERE company_name = $1 AND status = 'converged' ORDER BY finalized_at DESC LIMIT 5`
+  2. **Cold-start fallback** (when primary returns 0): pull last N rows from
+     `agent_conversations WHERE company = $1 ORDER BY created_at DESC` —
+     gap-dialogue history that pre-dates G2 still gives the meta-critic
+     useful signal (152 rows across 35 jobs as of 2026-05-09)
 
 Creates a `resume_builds` row with `status='running'` and seeds `resume_build_id`.
 
@@ -308,10 +330,30 @@ This design assumes:
 
 ---
 
-## 9. Open questions (for later resolution)
+## 9. Live-data validation (2026-05-09 snapshot)
+
+Before committing to this design we ran an inventory against the live
+project (`oodvelyzdsncsssqvmyb`). Findings:
+
+| Check | Result | Implication |
+|---|---|---|
+| Jobs at score ≥ 85 | 11 jobs / 10 companies | G2 has a real backlog to validate against |
+| Jobs at 85+ that already have a resume | **1** (Adyen Head of Product Operations) | Cold-start scenario is the norm; design must handle it |
+| Companies with all 13 knowledge sections | **33** | Persona-seed pool is rich (see `db/seed_company_personas.sql`) |
+| `agent_conversations` rows | 152 across 35 jobs, but **0 for Mastercard** | Even top targets can have 0 history → cold-start fallback path is hot, not edge case |
+| Applications | 2 rows, both `status='evaluated'` | **Zero outcome data** — meta-critic can't learn from outcomes yet, only from transcripts |
+| `interview_format` content quality (sample) | "Unknown — insufficient data" for Mastercard | Persona seed must quality-gate sections (skip "Unknown" prefixes) |
+| Top archetype × legitimacy | Senior PM × Proceed with Caution = 142 jobs | Most jobs aren't G2 candidates; ≥85 manual gate is correct |
+
+So the design holds, but the cold-start path (no past transcripts, no
+outcomes, possibly a low-quality persona) is the **primary** path for the
+first 10–20 builds. Make it robust, not an afterthought.
+
+## 10. Open questions (for later resolution)
 
 1. **PDF rendering** — pandoc-only or add wkhtmltopdf to Dockerfile? (Today: pandoc generates DOCX, no PDF.)
-2. **Meta-Critic on cold start** — when `len(past_transcripts) == 0`, does the node skip or fall back to a static "common pitfalls" prompt? Current design: skip, write empty warnings.
+2. **Meta-Critic on cold start** — when both `past_transcripts` AND `agent_conversations` are empty, the node should write a static "common ATS pitfalls" warning rather than skipping. Implement this.
 3. **Cover-email convergence** — should it have its own critic loop, or trust Claude single-shot? Current design: single-shot.
 4. **Streaming UX** — should the dashboard stream agent transcripts live via SSE so the user can watch the build? Nice-to-have.
 5. **Failure recovery** — if a node fails twice, fall back to a cheaper model or fail the build? Current design: fail the build, leave `status='failed'`, user retries.
+6. **Master profile rendering** — should `master_resume_md` be cached on `profile_master` (denormalised text column, regenerated on edit) or composed at every G2 invocation? Caching saves tokens; composition is always fresh.
