@@ -378,17 +378,32 @@ function ArtifactCard({
 }: {
   title: string
   path: string | null
-  artifact?: { exists?: boolean; size?: number; content?: string }
+  artifact?: { exists?: boolean; size?: number; content?: string; url?: string; kind?: string }
   preview?: boolean
 }) {
   const exists = artifact?.exists
+  const kind = artifact?.kind
   return (
     <section className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="text-sm font-semibold text-white mb-2">{title}</h3>
       {!path ? (
-        <p className="text-xs text-gray-500 italic">Not generated yet — run pipeline first.</p>
+        <p className="text-xs text-gray-500 italic">Not generated yet — click "Generate Resume" above.</p>
       ) : !exists ? (
-        <p className="text-xs text-amber-400">⚠ Path stored but file missing on backend.</p>
+        <p className="text-xs text-amber-400">
+          ⚠ Generated, but artifact lost on redeploy. Click "Re-generate Resume" to rebuild.
+        </p>
+      ) : kind === 'remote' && artifact?.url ? (
+        <>
+          <a
+            href={artifact.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg font-medium"
+          >
+            ⬇ Download
+          </a>
+          <p className="text-[10px] text-gray-500 mt-2 break-all">{path.split('/').pop()}</p>
+        </>
       ) : (
         <>
           <p className="text-[10px] text-gray-500 break-all">{path.split('/').pop()}</p>

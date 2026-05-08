@@ -177,6 +177,47 @@ def upsert_company(company_data: dict) -> dict:
     return result.data[0] if result.data else {}
 
 
+# ── Supabase Storage helpers ──────────────────────────────────────────────
+# Used by ResumeBuilderAgent / email / interview to persist artifacts
+# across Railway's ephemeral container redeploys.
+
+ARTIFACTS_BUCKET = "job-artifacts"
+
+
+def upload_artifact(local_path: str, remote_path: str, content_type: str = "application/octet-stream") -> str | None:
+    """
+    Upload a file to Supabase Storage and return its public URL.
+    Returns None if upload fails (caller should fall back to local path).
+    """
+    import os
+    if not os.path.exists(local_path):
+        return None
+    try:
+        db = get_supabase()
+        with open(local_path, "rb") as f:
+            data = f.read()
+        # Ensure bucket exists (idempotent)
+        try:
+            db.storage.create_bucket(ARTIFACTS_BUCKET, options={"public": False})
+        except Exception:
+            pass  # already exists
+        # Upload (overwrite if exists)
+        db.storage.from_(ARTIFACTS_BUCKET).upload(
+            path=remote_path,
+            file=data,
+            file_options={"content-type": content_type, "upsert": "true"},
+        )
+        # Return signed URL (1 year expiry)
+        signed = db.storage.from_(ARTIFACTS_BUCKET).create_signed_url(
+            path=remote_path, expires_in=60 * 60 * 24 * 365
+        )
+        return signed.get("signedURL") or signed.get("signed_url")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Artifact upload failed for {remote_path}: {e}")
+        return None
+
+
 def get_stale_companies(hours: int = 24) -> list[dict]:
     """Return companies whose knowledge hasn't been refreshed recently.
 

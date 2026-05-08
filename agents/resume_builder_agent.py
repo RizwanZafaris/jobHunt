@@ -50,6 +50,23 @@ class ResumeBuilderAgent(BaseAgent):
         # Build the DOCX
         path = self._build_docx(sections, job_title, company)
         self.log(f"✅ Resume saved: {path}", style="green")
+
+        # Workflow v2: upload to Supabase Storage so it survives Railway redeploys
+        try:
+            from db.client import upload_artifact
+            remote_path = f"resumes/{Path(path).name}"
+            url = upload_artifact(
+                local_path=path,
+                remote_path=remote_path,
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+            if url:
+                self.log(f"  📤 Uploaded to: {url[:80]}", style="cyan")
+                # Return the URL — the caller will store it in resume_path
+                return url
+        except Exception as e:
+            self.log(f"  ⚠️ Upload failed: {e}", style="yellow")
+
         return path
 
     async def _parse_tailoring_brief(self, brief: str, job_title: str, company: str) -> dict:

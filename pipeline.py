@@ -284,6 +284,20 @@ class JobHuntPipeline:
             )
             with open(email_path, "w") as f:
                 f.write(f"# Cover Email: {title} @ {company}\n\n{cover_email}")
+
+            # Upload to Supabase Storage
+            try:
+                from db.client import upload_artifact
+                from pathlib import Path as _Path
+                url = upload_artifact(
+                    local_path=email_path,
+                    remote_path=f"emails/{_Path(email_path).name}",
+                    content_type="text/plain",
+                )
+                if url:
+                    email_path = url
+            except Exception as e:
+                logger.debug(f"Email upload failed: {e}")
             result["email_path"] = email_path
         except Exception as e:
             logger.warning(f"Cover email generation failed for {title} @ {company}: {e}")

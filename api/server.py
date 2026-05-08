@@ -905,14 +905,25 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
     if not rows:
         raise HTTPException(status_code=404, detail="Job not found")
     job = rows[0]
-    # Read text artifacts if they exist
+
+    # Workflow v2: artifacts can be either a remote URL (Supabase Storage,
+    # persistent) OR a local container path (Railway, ephemeral — lost on
+    # redeploy). Detect the kind so the dashboard knows whether to download
+    # via URL or fall back.
     artifacts: dict = {}
     import os
     for k in ("resume_path", "email_path", "interview_path", "report_path"):
         p = job.get(k)
-        if p and os.path.exists(p):
-            artifacts[k] = {"exists": True, "size": os.path.getsize(p)}
-            # For text-based, return content
+        if not p:
+            artifacts[k] = {"exists": False}
+            continue
+        if p.startswith("http"):
+            # Remote URL — assume exists (signed URL)
+            artifacts[k] = {"exists": True, "url": p, "kind": "remote"}
+            continue
+        # Local path — only readable if container hasn't redeployed since
+        if os.path.exists(p):
+            artifacts[k] = {"exists": True, "kind": "local", "size": os.path.getsize(p)}
             if p.endswith((".txt", ".md")):
                 try:
                     with open(p, "r") as f:
@@ -920,7 +931,8 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
                 except Exception:
                     pass
         else:
-            artifacts[k] = {"exists": False, "path": p}
+            artifacts[k] = {"exists": False, "path": p, "kind": "local-missing"}
+
     # Application status (if any)
     apps = db.table("applications").select("*").eq("job_id", job_id).limit(1).execute()
     application = (apps.data or [None])[0]

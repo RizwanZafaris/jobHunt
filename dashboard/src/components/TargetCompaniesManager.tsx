@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   addTargetCompany,
+  reclassifyJobs,
   removeTargetCompany,
   runTargetsPipeline,
   triggerCompanyResearch,
@@ -121,6 +122,20 @@ export default function TargetCompaniesManager({ initial }: Props) {
     }
   }
 
+  async function reclassify() {
+    setRunning(true)
+    setRunMsg('Re-classifying jobs missing archetype + legitimacy...')
+    try {
+      await reclassifyJobs(true)
+      setRunMsg('✅ Reclassification started — refresh job list in ~5 min')
+    } catch (e: any) {
+      setRunMsg(`❌ ${e.message}`)
+    } finally {
+      setRunning(false)
+      setTimeout(() => setRunMsg(''), 8000)
+    }
+  }
+
   const byCat: Record<string, TargetCompany[]> = {}
   for (const c of filtered) {
     const k = c.category || 'Uncategorized'
@@ -177,6 +192,14 @@ export default function TargetCompaniesManager({ initial }: Props) {
             title="Research ALL 68 targets (~60 min, ~$10 in tokens)"
           >
             🔬 Research All
+          </button>
+          <button
+            onClick={reclassify}
+            disabled={running}
+            className="text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-50 border border-gray-700 text-gray-200 px-3 py-1.5 rounded-lg font-medium"
+            title="Re-classify older jobs missing archetype + legitimacy"
+          >
+            🏷️ Reclassify Old Jobs
           </button>
           <button
             onClick={runPipeline}

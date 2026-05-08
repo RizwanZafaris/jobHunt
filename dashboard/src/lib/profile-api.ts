@@ -315,6 +315,17 @@ export async function generateResumeForJob(jobId: number) {
   return res.json()
 }
 
+export async function reclassifyJobs(onlyMissing = true) {
+  const url = `${baseUrl}/jobs/reclassify?only_missing=${onlyMissing}`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) throw new Error(`Failed: ${res.status}`)
+  return res.json()
+}
+
 export async function fetchJobDetail(jobId: number | string): Promise<JobDetail> {
   const res = await fetch(`${baseUrl}/jobs/${jobId}/detail`, { headers, cache: 'no-store' })
   if (!res.ok) throw new Error(`Failed to fetch job detail: ${res.status}`)

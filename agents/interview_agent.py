@@ -98,6 +98,20 @@ class InterviewAgent(BaseAgent):
         output_path = self._save_prep_pack(result, company, job_title)
         result["file_path"] = output_path
 
+        # Upload to Supabase Storage so it survives Railway redeploys
+        try:
+            from db.client import upload_artifact
+            from pathlib import Path as _Path
+            url = upload_artifact(
+                local_path=output_path,
+                remote_path=f"interview_prep/{_Path(output_path).name}",
+                content_type="text/markdown",
+            )
+            if url:
+                result["file_path"] = url
+        except Exception as e:
+            logger.debug(f"Interview prep upload failed: {e}")
+
         self.log(f"✅ Interview prep saved: {output_path}", style="green")
         return result
 
