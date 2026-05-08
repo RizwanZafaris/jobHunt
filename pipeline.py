@@ -145,6 +145,11 @@ class JobHuntPipeline:
         "Generate Resume" on a job (via /jobs/{id}/generate-resume API).
         The pipeline scout no longer calls this automatically — it just
         scores + stores. See `scout_only()` below.
+
+        PHASE 1: when USE_G2_GRAPH=true, the resume-build path is delegated
+        to the G2 LangGraph (resume_agents/g2_run.py). The legacy CompanyAgent
+        + RizwanAgent + ResumeBuilder path remains default and runs unchanged
+        when the flag is unset.
         """
         title = job.get("title", "Unknown Role")
         company = job.get("company", "Unknown Company")
@@ -154,6 +159,30 @@ class JobHuntPipeline:
 
         if progress:
             progress.print(f"  Processing: [cyan]{title}[/cyan] @ [bold]{company}[/bold] (score: {match_score})")
+
+        # ── Feature flag: G2 LangGraph (Phase 1) ────────────────────────────
+        from resume_agents.g2_run import is_enabled as g2_enabled
+        if g2_enabled() and job_id:
+            if progress:
+                progress.print(f"    [magenta]→ USE_G2_GRAPH=true — invoking G2 LangGraph[/magenta]")
+            from resume_agents.g2_run import run_g2_graph
+            try:
+                final_state = await run_g2_graph(job_id=job_id, company_name=company)
+                return {
+                    "job_id": job_id,
+                    "company": company,
+                    "title": title,
+                    "resume_path": final_state.get("resume_docx_url"),
+                    "email_path": None,    # G2 stores cover_email_md inline in resume_builds
+                    "interview_path": None, # interview prep is in G3, not G2
+                    "g2_resume_build_id": final_state.get("resume_build_id"),
+                    "g2_final_score": final_state.get("final_score"),
+                    "g2_iterations": final_state.get("iteration"),
+                    "g2_cost_usd": final_state.get("cost_usd_total"),
+                }
+            except Exception as e:
+                logger.error(f"G2 graph failed for job_id={job_id}: {e} — falling back to legacy path")
+                # fall through to legacy path
 
         result = {"job_id": job_id, "company": company, "title": title}
 
