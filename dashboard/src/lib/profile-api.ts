@@ -194,3 +194,168 @@ export async function regenerateRecommendations() {
   if (!res.ok) throw new Error(`Failed to regenerate: ${res.status}`)
   return res.json()
 }
+
+// ── Phase D: target companies ──────────────────────────────────────────
+
+export interface TargetCompany {
+  id: string
+  name: string
+  category: string
+  priority: 'high' | 'medium' | 'low'
+  is_target: boolean
+  careers_url: string
+  notes: string | null
+  target_added_at: string
+  last_scanned_at: string | null
+}
+
+export interface TargetCompaniesResponse {
+  companies: TargetCompany[]
+  total: number
+  by_category: Record<string, TargetCompany[]>
+}
+
+export async function fetchTargetCompanies(): Promise<TargetCompaniesResponse> {
+  const res = await fetch(`${baseUrl}/companies/targets`, { headers, cache: 'no-store' })
+  if (!res.ok) throw new Error(`Failed to fetch target companies: ${res.status}`)
+  return res.json()
+}
+
+export async function addTargetCompany(payload: {
+  name: string
+  category?: string
+  priority?: string
+  careers_url?: string
+  notes?: string
+}) {
+  const res = await fetch(`${baseUrl}/companies/targets`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(`Failed to add company: ${res.status}`)
+  return res.json()
+}
+
+export async function updateCompany(id: string, updates: Partial<TargetCompany>) {
+  const res = await fetch(`${baseUrl}/companies/${id}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`Failed to update company: ${res.status}`)
+  return res.json()
+}
+
+export async function removeTargetCompany(id: string) {
+  const res = await fetch(`${baseUrl}/companies/${id}`, {
+    method: 'DELETE',
+    headers,
+  })
+  if (!res.ok) throw new Error(`Failed to remove: ${res.status}`)
+  return res.json()
+}
+
+export async function runTargetsPipeline() {
+  const res = await fetch(`${baseUrl}/pipeline/run-targets`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) throw new Error(`Failed to start pipeline: ${res.status}`)
+  return res.json()
+}
+
+// ── Phase D: jobs detail ───────────────────────────────────────────────
+
+export interface JobDetail {
+  job: {
+    id: number
+    title: string
+    company: string
+    location: string
+    description: string
+    url: string
+    source: string
+    match_score: number
+    fit_details: any
+    status: string
+    resume_path: string | null
+    email_path: string | null
+    interview_path: string | null
+    discovered_at: string
+    applied_at: string | null
+  }
+  artifacts: Record<string, { exists: boolean; path?: string; size?: number; content?: string }>
+  application: {
+    id: string
+    status: string
+    notes: string | null
+    applied_date: string | null
+    follow_up_due: string | null
+  } | null
+}
+
+export async function fetchJobDetail(jobId: number | string): Promise<JobDetail> {
+  const res = await fetch(`${baseUrl}/jobs/${jobId}/detail`, { headers, cache: 'no-store' })
+  if (!res.ok) throw new Error(`Failed to fetch job detail: ${res.status}`)
+  return res.json()
+}
+
+// ── Phase D: applications ──────────────────────────────────────────────
+
+export interface Application {
+  id: string
+  job_id: number
+  company: string
+  role: string
+  status: string
+  applied_date: string | null
+  follow_up_due: string | null
+  notes: string | null
+  resume_path: string | null
+  email_path: string | null
+  interview_path: string | null
+  score: number
+  created_at: string
+  job?: {
+    id: number
+    title: string
+    company: string
+    location: string
+    match_score: number
+    url: string
+  }
+}
+
+export interface ApplicationsResponse {
+  applications: Application[]
+  by_status: Record<string, Application[]>
+  total: number
+}
+
+export async function fetchApplications(): Promise<ApplicationsResponse> {
+  const res = await fetch(`${baseUrl}/applications`, { headers, cache: 'no-store' })
+  if (!res.ok) throw new Error(`Failed to fetch applications: ${res.status}`)
+  return res.json()
+}
+
+export async function createApplication(jobId: number, status = 'evaluated', notes?: string) {
+  const res = await fetch(`${baseUrl}/applications`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ job_id: jobId, status, notes }),
+  })
+  if (!res.ok) throw new Error(`Failed to create application: ${res.status}`)
+  return res.json()
+}
+
+export async function updateApplication(id: string, updates: Partial<Application>) {
+  const res = await fetch(`${baseUrl}/applications/${id}`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`Failed to update application: ${res.status}`)
+  return res.json()
+}

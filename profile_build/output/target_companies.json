@@ -1,0 +1,410 @@
+[
+  {
+    "name": "Visa",
+    "category": "Card Networks",
+    "priority": "high",
+    "careers_url": "https://corporate.visa.com/en/careers.html"
+  },
+  {
+    "name": "Mastercard",
+    "category": "Card Networks",
+    "priority": "high",
+    "careers_url": "https://careers.mastercard.com"
+  },
+  {
+    "name": "American Express",
+    "category": "Card Networks",
+    "priority": "high",
+    "careers_url": "https://careers.americanexpress.com"
+  },
+  {
+    "name": "Discover",
+    "category": "Card Networks",
+    "priority": "medium",
+    "careers_url": "https://www.discover.com/company/careers/"
+  },
+  {
+    "name": "UnionPay",
+    "category": "Card Networks",
+    "priority": "low",
+    "careers_url": "https://en.unionpayintl.com"
+  },
+  {
+    "name": "JCB",
+    "category": "Card Networks",
+    "priority": "low",
+    "careers_url": "https://www.global.jcb/en/about-us/recruit/"
+  },
+  {
+    "name": "Stripe",
+    "category": "Payment Processor",
+    "priority": "high",
+    "careers_url": "https://stripe.com/jobs"
+  },
+  {
+    "name": "Adyen",
+    "category": "Payment Processor",
+    "priority": "high",
+    "careers_url": "https://careers.adyen.com"
+  },
+  {
+    "name": "Checkout.com",
+    "category": "Payment Processor",
+    "priority": "high",
+    "careers_url": "https://www.checkout.com/careers"
+  },
+  {
+    "name": "PayPal",
+    "category": "Payment Processor",
+    "priority": "high",
+    "careers_url": "https://careers.pypl.com"
+  },
+  {
+    "name": "Braintree",
+    "category": "Payment Processor",
+    "priority": "medium",
+    "careers_url": "https://www.braintreepayments.com/careers"
+  },
+  {
+    "name": "Worldpay",
+    "category": "Payment Processor",
+    "priority": "medium",
+    "careers_url": "https://www.worldpay.com/careers"
+  },
+  {
+    "name": "Fiserv",
+    "category": "Payment Processor",
+    "priority": "medium",
+    "careers_url": "https://www.fiserv.com/en/about-fiserv/careers.html"
+  },
+  {
+    "name": "FIS Global",
+    "category": "Payment Processor",
+    "priority": "medium",
+    "careers_url": "https://www.fisglobal.com/en/careers"
+  },
+  {
+    "name": "Square (Block)",
+    "category": "Payment Processor",
+    "priority": "high",
+    "careers_url": "https://block.xyz/careers"
+  },
+  {
+    "name": "Razorpay",
+    "category": "Payment Processor",
+    "priority": "medium",
+    "careers_url": "https://razorpay.com/careers/"
+  },
+  {
+    "name": "PayU",
+    "category": "Payment Processor",
+    "priority": "medium",
+    "careers_url": "https://corporate.payu.com/careers/"
+  },
+  {
+    "name": "Verifone",
+    "category": "Payment Processor",
+    "priority": "low",
+    "careers_url": "https://www.verifone.com/en/careers"
+  },
+  {
+    "name": "2Checkout",
+    "category": "Payment Processor",
+    "priority": "low",
+    "careers_url": "https://www.2checkout.com/careers"
+  },
+  {
+    "name": "GoCardless",
+    "category": "Payment Processor",
+    "priority": "medium",
+    "careers_url": "https://gocardless.com/careers/"
+  },
+  {
+    "name": "Worldline",
+    "category": "Payment Processor",
+    "priority": "medium",
+    "careers_url": "https://worldline.com/en/home/careers.html"
+  },
+  {
+    "name": "Wise",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://wise.jobs"
+  },
+  {
+    "name": "Payoneer",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://www.payoneer.com/careers/"
+  },
+  {
+    "name": "Airwallex",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://www.airwallex.com/careers"
+  },
+  {
+    "name": "Nium",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://www.nium.com/careers"
+  },
+  {
+    "name": "Rapyd",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://www.rapyd.net/careers"
+  },
+  {
+    "name": "Remitly",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://careers.remitly.com"
+  },
+  {
+    "name": "Western Union",
+    "category": "Cross-Border / Remittance",
+    "priority": "medium",
+    "careers_url": "https://careers.westernunion.com"
+  },
+  {
+    "name": "MoneyGram",
+    "category": "Cross-Border / Remittance",
+    "priority": "medium",
+    "careers_url": "https://corporate.moneygram.com/careers"
+  },
+  {
+    "name": "Currencycloud",
+    "category": "Cross-Border / Remittance",
+    "priority": "medium",
+    "careers_url": "https://www.currencycloud.com/careers/"
+  },
+  {
+    "name": "Thunes",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://www.thunes.com/careers/"
+  },
+  {
+    "name": "TerraPay",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://www.terrapay.com/careers"
+  },
+  {
+    "name": "dLocal",
+    "category": "Cross-Border / Remittance",
+    "priority": "high",
+    "careers_url": "https://dlocal.com/careers/"
+  },
+  {
+    "name": "Marqeta",
+    "category": "BaaS / Embedded Finance",
+    "priority": "high",
+    "careers_url": "https://www.marqeta.com/about/careers"
+  },
+  {
+    "name": "Plaid",
+    "category": "BaaS / Embedded Finance",
+    "priority": "high",
+    "careers_url": "https://plaid.com/careers/"
+  },
+  {
+    "name": "Synapse Financial Technologies",
+    "category": "BaaS / Embedded Finance",
+    "priority": "medium",
+    "careers_url": "https://synapsefi.com/careers"
+  },
+  {
+    "name": "Solaris",
+    "category": "BaaS / Embedded Finance",
+    "priority": "medium",
+    "careers_url": "https://www.solarisgroup.com/en/career"
+  },
+  {
+    "name": "Unit",
+    "category": "BaaS / Embedded Finance",
+    "priority": "medium",
+    "careers_url": "https://www.unit.co/careers"
+  },
+  {
+    "name": "Treasury Prime",
+    "category": "BaaS / Embedded Finance",
+    "priority": "medium",
+    "careers_url": "https://www.treasuryprime.com/careers"
+  },
+  {
+    "name": "Lithic",
+    "category": "BaaS / Embedded Finance",
+    "priority": "medium",
+    "careers_url": "https://lithic.com/about/careers"
+  },
+  {
+    "name": "Modern Treasury",
+    "category": "BaaS / Embedded Finance",
+    "priority": "medium",
+    "careers_url": "https://www.moderntreasury.com/careers"
+  },
+  {
+    "name": "Revolut",
+    "category": "NeoBank",
+    "priority": "high",
+    "careers_url": "https://www.revolut.com/careers/"
+  },
+  {
+    "name": "N26",
+    "category": "NeoBank",
+    "priority": "medium",
+    "careers_url": "https://n26.com/en/careers"
+  },
+  {
+    "name": "Monzo",
+    "category": "NeoBank",
+    "priority": "medium",
+    "careers_url": "https://monzo.com/careers/"
+  },
+  {
+    "name": "Chime",
+    "category": "NeoBank",
+    "priority": "medium",
+    "careers_url": "https://www.chime.com/careers/"
+  },
+  {
+    "name": "Starling Bank",
+    "category": "NeoBank",
+    "priority": "medium",
+    "careers_url": "https://www.starlingbank.com/careers/"
+  },
+  {
+    "name": "Wio Bank",
+    "category": "NeoBank",
+    "priority": "high",
+    "careers_url": "https://www.wio.io/careers/"
+  },
+  {
+    "name": "Mashreq Neo",
+    "category": "NeoBank",
+    "priority": "high",
+    "careers_url": "https://www.mashreq.com/en/careers"
+  },
+  {
+    "name": "Jupiter Money",
+    "category": "NeoBank",
+    "priority": "low",
+    "careers_url": "https://jupiter.money/careers/"
+  },
+  {
+    "name": "Temenos",
+    "category": "Core Banking / Infra",
+    "priority": "medium",
+    "careers_url": "https://www.temenos.com/about-us/careers/"
+  },
+  {
+    "name": "Finastra",
+    "category": "Core Banking / Infra",
+    "priority": "medium",
+    "careers_url": "https://www.finastra.com/careers"
+  },
+  {
+    "name": "Mambu",
+    "category": "Core Banking / Infra",
+    "priority": "medium",
+    "careers_url": "https://mambu.com/careers"
+  },
+  {
+    "name": "Oracle Financial Services",
+    "category": "Core Banking / Infra",
+    "priority": "low",
+    "careers_url": "https://www.oracle.com/financial-services/"
+  },
+  {
+    "name": "JPMorgan Chase",
+    "category": "Big Bank",
+    "priority": "medium",
+    "careers_url": "https://careers.jpmorgan.com"
+  },
+  {
+    "name": "Goldman Sachs",
+    "category": "Big Bank",
+    "priority": "low",
+    "careers_url": "https://www.goldmansachs.com/careers/"
+  },
+  {
+    "name": "Citibank",
+    "category": "Big Bank",
+    "priority": "medium",
+    "careers_url": "https://jobs.citi.com"
+  },
+  {
+    "name": "HSBC",
+    "category": "Big Bank",
+    "priority": "medium",
+    "careers_url": "https://www.hsbc.com/careers"
+  },
+  {
+    "name": "Standard Chartered",
+    "category": "Big Bank",
+    "priority": "high",
+    "careers_url": "https://scb.taleo.net/careersection/jobsearch.ftl"
+  },
+  {
+    "name": "DBS Bank",
+    "category": "Big Bank",
+    "priority": "medium",
+    "careers_url": "https://www.dbs.com/careers/default.page"
+  },
+  {
+    "name": "Tabby",
+    "category": "MENA Fintech",
+    "priority": "high",
+    "careers_url": "https://tabby.ai/careers"
+  },
+  {
+    "name": "Tamara",
+    "category": "MENA Fintech",
+    "priority": "high",
+    "careers_url": "https://tamara.co/en/careers"
+  },
+  {
+    "name": "STC Pay",
+    "category": "MENA Fintech",
+    "priority": "high",
+    "careers_url": "https://careers.stcpay.com.sa"
+  },
+  {
+    "name": "Careem Pay",
+    "category": "MENA Fintech",
+    "priority": "high",
+    "careers_url": "https://www.careem.com/en/about-us/careers/"
+  },
+  {
+    "name": "Lean Technologies",
+    "category": "MENA Fintech",
+    "priority": "high",
+    "careers_url": "https://www.leantech.me/careers"
+  },
+  {
+    "name": "Foodics",
+    "category": "MENA Fintech",
+    "priority": "high",
+    "careers_url": "https://www.foodics.com/careers"
+  },
+  {
+    "name": "Telr",
+    "category": "MENA Fintech",
+    "priority": "medium",
+    "careers_url": "https://www.telr.com/about/careers/"
+  },
+  {
+    "name": "Network International",
+    "category": "MENA Fintech",
+    "priority": "high",
+    "careers_url": "https://www.network.global/careers"
+  },
+  {
+    "name": "MagnatiPay",
+    "category": "MENA Fintech",
+    "priority": "medium",
+    "careers_url": "https://www.magnati.com/about/careers/"
+  }
+]

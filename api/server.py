@@ -605,3 +605,233 @@ async def regenerate_recommendations(
         await analyzer.run()
     background_tasks.add_task(_run)
     return {"status": "started", "message": "Recommendations refresh running in background"}
+
+
+# ── Target Companies (Phase D) ────────────────────────────────────────────
+
+class TargetCompanyCreate(BaseModel):
+    name: str
+    category: Optional[str] = None
+    priority: str = "medium"
+    careers_url: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class TargetCompanyUpdate(BaseModel):
+    is_target: Optional[bool] = None
+    category: Optional[str] = None
+    priority: Optional[str] = None
+    careers_url: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@app.get("/companies/targets")
+async def list_target_companies(_auth=Depends(verify_secret)):
+    """List all target companies grouped by category."""
+    from db.client import get_supabase
+    db = get_supabase()
+    result = db.table("companies").select("*").eq("is_target", True).order("priority", desc=False).order("name").execute()
+    companies = result.data or []
+    by_cat: dict[str, list] = {}
+    for c in companies:
+        by_cat.setdefault(c.get("category") or "Uncategorized", []).append(c)
+    return {
+        "companies": companies,
+        "total": len(companies),
+        "by_category": by_cat,
+    }
+
+
+@app.post("/companies/targets")
+async def add_target_company(
+    payload: TargetCompanyCreate,
+    _auth=Depends(verify_secret),
+):
+    """Add a new target company."""
+    from db.client import get_supabase
+    from datetime import datetime, timezone
+    db = get_supabase()
+    row = {
+        "name": payload.name,
+        "category": payload.category,
+        "priority": payload.priority,
+        "careers_url": payload.careers_url,
+        "notes": payload.notes,
+        "is_target": True,
+        "target_added_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = db.table("companies").upsert(row, on_conflict="name").execute()
+    return {"created": True, "row": (result.data or [None])[0]}
+
+
+@app.put("/companies/{company_id}")
+async def update_company(
+    company_id: str,
+    payload: TargetCompanyUpdate,
+    _auth=Depends(verify_secret),
+):
+    """Update a company's target/priority/etc."""
+    from db.client import get_supabase
+    db = get_supabase()
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    result = db.table("companies").update(updates).eq("id", company_id).execute()
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return {"updated": True, "row": rows[0]}
+
+
+@app.delete("/companies/{company_id}")
+async def remove_target_company(
+    company_id: str,
+    _auth=Depends(verify_secret),
+):
+    """Remove from targets (soft: just sets is_target=false)."""
+    from db.client import get_supabase
+    db = get_supabase()
+    result = db.table("companies").update({"is_target": False}).eq("id", company_id).execute()
+    return {"removed": True, "row": (result.data or [None])[0]}
+
+
+@app.post("/pipeline/run-targets")
+async def run_pipeline_targets(
+    background_tasks: BackgroundTasks,
+    _auth=Depends(verify_secret),
+):
+    """Run the pipeline ONLY for target companies — no random web search."""
+    async def _run():
+        from pipeline import JobHuntPipeline
+        from db.client import get_supabase
+        db = get_supabase()
+        targets = db.table("companies").select("name").eq("is_target", True).execute()
+        target_names = [t["name"] for t in (targets.data or [])]
+        pipeline = JobHuntPipeline()
+        # Run scout filtered to targets only — pipeline will handle each
+        await pipeline.run_for_targets(target_names=target_names)
+    background_tasks.add_task(_run)
+    return {"status": "started", "message": "Targets-only pipeline running in background"}
+
+
+# ── Job Detail (Phase D) ──────────────────────────────────────────────────
+
+@app.get("/jobs/{job_id}/detail")
+async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
+    """Full job detail including artifacts paths + fit details."""
+    from db.client import get_supabase
+    db = get_supabase()
+    result = db.table("jobs").select("*").eq("id", job_id).limit(1).execute()
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = rows[0]
+    # Read text artifacts if they exist
+    artifacts: dict = {}
+    import os
+    for k in ("resume_path", "email_path", "interview_path", "report_path"):
+        p = job.get(k)
+        if p and os.path.exists(p):
+            artifacts[k] = {"exists": True, "size": os.path.getsize(p)}
+            # For text-based, return content
+            if p.endswith((".txt", ".md")):
+                try:
+                    with open(p, "r") as f:
+                        artifacts[k]["content"] = f.read()
+                except Exception:
+                    pass
+        else:
+            artifacts[k] = {"exists": False, "path": p}
+    # Application status (if any)
+    apps = db.table("applications").select("*").eq("job_id", job_id).limit(1).execute()
+    application = (apps.data or [None])[0]
+    return {"job": job, "artifacts": artifacts, "application": application}
+
+
+# ── Applications (Phase D) ────────────────────────────────────────────────
+
+class ApplicationCreate(BaseModel):
+    job_id: int
+    status: str = "evaluated"
+    notes: Optional[str] = None
+
+
+class ApplicationUpdate(BaseModel):
+    status: Optional[str] = None
+    notes: Optional[str] = None
+    follow_up_due: Optional[str] = None
+    applied_date: Optional[str] = None
+
+
+@app.get("/applications")
+async def list_applications(_auth=Depends(verify_secret)):
+    """List all applications grouped by status (kanban columns)."""
+    from db.client import get_supabase
+    from collections import defaultdict
+    db = get_supabase()
+    apps = db.table("applications").select("*").order("created_at", desc=True).execute()
+    apps_data = apps.data or []
+    by_status: dict[str, list] = defaultdict(list)
+    for a in apps_data:
+        by_status[a.get("status", "evaluated")].append(a)
+    # Also enrich with job info
+    if apps_data:
+        job_ids = list({a["job_id"] for a in apps_data if a.get("job_id")})
+        if job_ids:
+            jobs = db.table("jobs").select("id, title, company, location, match_score, url").in_("id", job_ids).execute()
+            job_map = {j["id"]: j for j in (jobs.data or [])}
+            for a in apps_data:
+                a["job"] = job_map.get(a.get("job_id"))
+    return {"applications": apps_data, "by_status": dict(by_status), "total": len(apps_data)}
+
+
+@app.post("/applications")
+async def create_application(
+    payload: ApplicationCreate,
+    _auth=Depends(verify_secret),
+):
+    """Create application from a job (used when user clicks 'Apply')."""
+    from db.client import get_supabase
+    db = get_supabase()
+    job_result = db.table("jobs").select("*").eq("id", payload.job_id).limit(1).execute()
+    job_rows = job_result.data or []
+    if not job_rows:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = job_rows[0]
+    row = {
+        "job_id": payload.job_id,
+        "company": job.get("company", ""),
+        "role": job.get("title", ""),
+        "status": payload.status,
+        "score": (job.get("match_score") or 0) / 20.0,  # 0-100 → 0-5
+        "resume_path": job.get("resume_path"),
+        "email_path": job.get("email_path"),
+        "interview_path": job.get("interview_path"),
+        "notes": payload.notes,
+        "company_id": job.get("company_id"),
+    }
+    result = db.table("applications").insert(row).execute()
+    return {"created": True, "row": (result.data or [None])[0]}
+
+
+@app.put("/applications/{app_id}")
+async def update_application(
+    app_id: str,
+    payload: ApplicationUpdate,
+    _auth=Depends(verify_secret),
+):
+    """Update application status/notes/dates."""
+    from db.client import get_supabase
+    db = get_supabase()
+    updates = {k: v for k, v in payload.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    # If status is moving to 'applied' and applied_date not set, set it
+    if updates.get("status") == "applied" and "applied_date" not in updates:
+        from datetime import date
+        updates["applied_date"] = date.today().isoformat()
+    result = db.table("applications").update(updates).eq("id", app_id).execute()
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return {"updated": True, "row": rows[0]}

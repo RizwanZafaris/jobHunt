@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useState } from 'react'
 import { getScoreGrade, getScoreClass, getStatusClass } from '@/lib/api'
 
@@ -99,7 +100,9 @@ export default function JobsTable({ jobs }: Props) {
               filtered.map((job) => (
                 <tr key={job.id} className="hover:bg-gray-800/50 transition-colors">
                   <td className="px-6 py-3">
-                    <span className="text-white font-medium text-sm">{job.title}</span>
+                    <Link href={`/jobs/${job.id}`} className="text-white font-medium text-sm hover:text-blue-400">
+                      {job.title}
+                    </Link>
                   </td>
                   <td className="px-4 py-3 text-gray-300 text-sm">{job.company}</td>
                   <td className="px-4 py-3 text-gray-400 text-xs">{job.location || '—'}</td>

@@ -298,6 +298,63 @@ class JobHuntPipeline:
 
         return result
 
+    async def run_for_targets(self, target_names: list[str]) -> dict:
+        """
+        Run the pipeline ONLY against a curated target-company list.
+        Skips random Serper search; only scans target companies' careers
+        pages via the existing JobScout ATS infrastructure.
+        """
+        console.print("\n" + "="*70)
+        console.print(f"[bold cyan]🎯 TARGETS-ONLY PIPELINE[/bold cyan]")
+        console.print(f"   Companies: {len(target_names)}")
+        console.print("="*70 + "\n")
+
+        results: dict = {
+            "jobs_discovered": 0,
+            "jobs_processed": 0,
+            "resumes_built": [],
+            "emails_drafted": [],
+            "interview_packs": [],
+            "errors": [],
+        }
+        await self.rizwan_agent.seed_supabase_profile()
+
+        from datetime import datetime, timezone
+        for target in target_names:
+            try:
+                jobs = await self.job_scout.run(target_company=target)
+                if not jobs:
+                    continue
+                results["jobs_discovered"] += len(jobs)
+                remaining = self.settings.max_jobs_per_run - results["jobs_processed"]
+                if remaining <= 0:
+                    break
+                for job in jobs[:remaining]:
+                    try:
+                        job_results = await self._process_single_job(job)
+                        if job_results.get("resume_path"):
+                            results["resumes_built"].append(job_results["resume_path"])
+                        if job_results.get("email_path"):
+                            results["emails_drafted"].append(job_results["email_path"])
+                        if job_results.get("interview_path"):
+                            results["interview_packs"].append(job_results["interview_path"])
+                        results["jobs_processed"] += 1
+                    except Exception as e:
+                        results["errors"].append(f"{job.get('title')} @ {target}: {e}")
+                # Mark target as scanned
+                try:
+                    get_supabase().table("companies").update(
+                        {"last_scanned_at": datetime.now(timezone.utc).isoformat()}
+                    ).eq("name", target).execute()
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"Target {target} failed: {e}")
+                results["errors"].append(f"target {target}: {e}")
+
+        self._print_summary(results)
+        return results
+
     def _load_jobs_by_ids(self, job_ids: list[int]) -> list[dict]:
         db = get_supabase()
         result = db.table("jobs").select("*").in_("id", job_ids).execute()
