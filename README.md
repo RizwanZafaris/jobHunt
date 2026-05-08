@@ -24,6 +24,7 @@ Built on top of [career-ops](https://github.com/santifer/career-ops) with:
 | 1.12 | Persona quality gate (refuses low-quality personas without `force=true`) | merged |
 | 1.13 | Persona bulk-regenerate by quality tier on `/personas` | merged |
 | 1.14 | Cost-alerter audit history table on `/costs` | merged |
+| 2 | G3 Interview Prep LangGraph (7 logical / 9 actual nodes, behind `USE_G3_GRAPH` flag) | branch |
 
 Deeper docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/G2_RESUME_BUILDER_GRAPH.md`](docs/G2_RESUME_BUILDER_GRAPH.md) · [`docs/PERF.md`](docs/PERF.md) · [`docs/LIVE_DB_AUDIT.md`](docs/LIVE_DB_AUDIT.md) · [`docs/SECURITY.md`](docs/SECURITY.md)
 

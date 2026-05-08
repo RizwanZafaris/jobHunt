@@ -73,6 +73,51 @@ class Settings(BaseSettings):
     #   Override per-build via POST /jobs/{id}/generate-resume?force=true.
     g2_min_persona_quality: str = Field("medium", env="G2_MIN_PERSONA_QUALITY")
 
+    # ── G3 Interview Prep Graph (Phase 2) ─────────────────────────────────
+    # Multi-LLM graph that builds a persona-aware interview prep pack per
+    # application/round. 7 logical nodes / 9 actual functions across 5
+    # providers. Triggered manually from the dashboard once the user moves
+    # the application to interview status.
+    #
+    # See docs/G3_INTERVIEW_PREP_GRAPH.md for the full design.
+    g3_behavioral_predictor_model: str = Field(
+        "claude-opus-4-5-20251101", env="G3_BEHAVIORAL_PREDICTOR_MODEL"
+    )
+    g3_technical_predictor_model: str = Field(
+        "gemini-2.5-pro", env="G3_TECHNICAL_PREDICTOR_MODEL"
+    )
+    g3_domain_predictor_model: str = Field(
+        "claude-opus-4-5-20251101", env="G3_DOMAIN_PREDICTOR_MODEL"
+    )
+    g3_star_matcher_model: str = Field(
+        "claude-opus-4-5-20251101", env="G3_STAR_MATCHER_MODEL"
+    )
+    g3_mock_interviewer_model: str = Field(
+        "claude-opus-4-5-20251101", env="G3_MOCK_INTERVIEWER_MODEL"
+    )
+    g3_mock_critic_model: str = Field(
+        "deepseek-reasoner", env="G3_MOCK_CRITIC_MODEL"
+    )
+
+    # G3 graph control
+    g3_max_iterations: int = 2              # Mock interviewer ↔ critic loops
+    g3_target_answer_score: int = 80        # Mock answer convergence gate
+
+    # Phase 2: per-prep cost cap (mirrors G2 Phase 1.11 design).
+    #   Hard cap that forces the mock_interview_loop to terminate early if
+    #   cumulative LLM spend exceeds this. Designed for "production safety"
+    #   — the worst-case cost when iterations run away should still be bounded.
+    #   Override per-prep via POST /jobs/{id}/prep-interview?max_cost_usd=X.
+    g3_max_cost_usd: float = Field(3.0, env="G3_MAX_COST_USD")
+
+    # Phase 2: persona quality gate (reuses resume_agents.g2_run.check_persona_quality_gate).
+    #   Refuses to invoke G3 for a company whose persona quality is below
+    #   this threshold. Same three tiers as G2's gate. Default 'medium'
+    #   blocks the same low-quality personas (Visa, Thunes, ...). The gate
+    #   logic is in resume_agents.g2_run — we just pass this slot as
+    #   min_quality= to that function.
+    g3_min_persona_quality: str = Field("medium", env="G3_MIN_PERSONA_QUALITY")
+
     # Phase 1.10: cost alerts (daily check + weekly digest).
     #   Daily check fires after the boss audit at 22:00 GST. Compares
     #   today's cumulative spend (from agent_call_log) against
