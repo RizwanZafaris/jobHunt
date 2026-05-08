@@ -73,19 +73,30 @@ class CompanyAgent(BaseAgent):
     async def build_or_refresh(self, force: bool = False) -> dict:
         """
         Build (or refresh) company knowledge base.
-        Idempotent — if knowledge is fresh and force=False, skips.
+        Idempotent — if knowledge has ALL expected sections and force=False, skips.
         Returns a summary of what was loaded.
         """
         self.log(f"Building knowledge for {self.company_name}...")
-        # Check if we have fresh knowledge
+        # Check if we have ALL expected sections cached
         if not force:
-            existing = await search_company_knowledge(
-                self.company_name, "company overview", match_count=1
-            )
-            if existing and existing[0].get("similarity", 0) > 0.9:
-                self.log("  Knowledge is fresh, skipping re-scrape.")
+            from db.client import get_supabase
+            existing_rows = (
+                get_supabase()
+                .table("company_knowledge")
+                .select("section")
+                .eq("company_name", self.company_name)
+                .execute()
+                .data
+            ) or []
+            existing_sections = {r["section"] for r in existing_rows}
+            expected = set(COMPANY_RESEARCH_SECTIONS)
+            missing = expected - existing_sections
+            if not missing:
+                self.log(f"  Knowledge complete ({len(existing_sections)} sections), skipping re-scrape.")
                 self.knowledge_loaded = True
                 return {"status": "fresh", "company": self.company_name}
+            else:
+                self.log(f"  Missing {len(missing)} sections: {sorted(missing)} — refreshing.")
 
         # Scrape company intelligence
         intelligence = await self._research_company()
