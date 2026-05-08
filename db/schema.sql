@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS company_knowledge (
     embedding       vector(1536),   -- text-embedding-3-small dimensions
     source_url      TEXT,
     scraped_at      TIMESTAMPTZ DEFAULT NOW(),
-    metadata        JSONB DEFAULT '{}'::jsonb
+    metadata        JSONB DEFAULT '{}'::jsonb,
+    UNIQUE (company_name, section)
 );
 
 CREATE INDEX IF NOT EXISTS idx_company_knowledge_company_id
@@ -96,7 +97,7 @@ CREATE TABLE IF NOT EXISTS applications (
 -- Rizwan's profile stored as embeddings for semantic retrieval
 CREATE TABLE IF NOT EXISTS rizwan_profile (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    section         TEXT NOT NULL,  -- summary | experience | skills | certifications | education | achievements
+    section         TEXT NOT NULL UNIQUE,  -- summary | experience | skills | certifications | education | achievements
     content         TEXT NOT NULL,
     embedding       vector(1536),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
