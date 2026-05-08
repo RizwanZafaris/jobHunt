@@ -953,6 +953,138 @@ async def generate_resume_for_job(
     }
 
 
+# ── G3 Interview Prep Graph (Phase 2) ─────────────────────────────────────
+
+@app.post("/jobs/{job_id}/prep-interview")
+async def prep_interview_for_job(
+    job_id: int,
+    background_tasks: BackgroundTasks,
+    application_id: Optional[str] = None,
+    round_type: str = "hm",
+    round_number: int = 1,
+    max_cost_usd: Optional[float] = None,
+    force: bool = False,
+    _auth=Depends(verify_secret),
+):
+    """
+    Phase 2: manual trigger to build a persona-aware interview prep pack
+    for ONE application/round. Runs the G3 LangGraph in background.
+
+    Required: an `applications` row must exist for this job (the kanban
+    transition to 'interview' creates it). Pass `application_id` explicitly
+    OR rely on auto-resolution: we look up applications by job_id and
+    pick the most recent.
+
+    `round_type` is one of: recruiter | hm | panel | exec | technical | take_home
+    `round_number` is 1-based.
+
+    Phase 2 cost cap: pass max_cost_usd to override settings.g3_max_cost_usd
+    (default $3). Refused if max_cost_usd < $0.30 (would always cost-cap
+    before any work). Worst-case cost is capped at the value + ~$0 fixed
+    overhead since the only unbounded loop is the mock interview loop.
+
+    Phase 2 persona quality gate: reuses G2's check_persona_quality_gate.
+    Refuses preps for companies whose persona quality is below
+    g3_min_persona_quality (default 'medium') unless force=true. Returns
+    HTTP 400 with structured detail so the dashboard can show a confirm
+    dialog and retry with force=true.
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+    job_result = db.table("jobs").select("*").eq("id", job_id).limit(1).execute()
+    job_rows = job_result.data or []
+    if not job_rows:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = job_rows[0]
+
+    # Resolve application_id if not provided
+    resolved_application_id = application_id
+    if not resolved_application_id:
+        apps = (
+            db.table("applications")
+            .select("id, status, created_at")
+            .eq("job_id", job_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not apps.data:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No application row exists for job {job_id}. "
+                    f"POST /applications with job_id first, or pass "
+                    f"application_id= explicitly."
+                ),
+            )
+        resolved_application_id = apps.data[0]["id"]
+
+    if max_cost_usd is not None and max_cost_usd < 0.30:
+        raise HTTPException(
+            status_code=400,
+            detail=f"max_cost_usd={max_cost_usd} too low — minimum is $0.30 to avoid no-op preps.",
+        )
+
+    # ── Persona quality gate (reuses G2's check_persona_quality_gate) ─────
+    from resume_agents.g2_run import check_persona_quality_gate
+    company_name = job.get("company") or ""
+    gate = check_persona_quality_gate(
+        company_name,
+        force=force,
+        min_quality=settings.g3_min_persona_quality,
+    )
+    if gate.verdict == "blocked":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "persona_quality_too_low",
+                "message": gate.message,
+                "company_name": company_name,
+                "persona_quality": gate.quality,
+                "persona_version": gate.persona_version,
+                "unknown_sections": gate.unknown_sections,
+                "min_quality": settings.g3_min_persona_quality,
+                "retry_with_force": True,
+            },
+        )
+
+    async def _run():
+        from interview_agents.g3_run import run_g3_graph
+        try:
+            await run_g3_graph(
+                application_id=resolved_application_id,
+                round_type=round_type,
+                round_number=round_number,
+                company_name=company_name,
+                max_cost_usd=max_cost_usd,
+            )
+        except Exception as e:
+            logger.error(
+                f"G3 prep-interview failed for application {resolved_application_id}: {e}"
+            )
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "message": (
+            f"Generating interview prep pack for {job.get('title')} @ "
+            f"{company_name} (round {round_type}#{round_number}). Refresh in ~60s."
+        ),
+        "job_id": job_id,
+        "application_id": resolved_application_id,
+        "round_type": round_type,
+        "round_number": round_number,
+        "max_cost_usd": max_cost_usd,
+        "force": force,
+        "persona_gate": {
+            "verdict": gate.verdict,
+            "quality": gate.quality,
+            "persona_version": gate.persona_version,
+            "message": gate.message,
+        },
+    }
+
+
 # ── Job Detail (Phase D) ──────────────────────────────────────────────────
 
 @app.get("/jobs/{job_id}/detail")
