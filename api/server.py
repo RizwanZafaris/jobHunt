@@ -695,6 +695,80 @@ async def remove_target_company(
     return {"removed": True, "row": (result.data or [None])[0]}
 
 
+@app.get("/companies/{company_name}/knowledge")
+async def get_company_knowledge(
+    company_name: str,
+    _auth=Depends(verify_secret),
+):
+    """Return full research intel for a company (overview, news, culture, recruitment process, etc.)."""
+    from db.client import get_supabase
+    db = get_supabase()
+    # Look up company record
+    company = db.table("companies").select("*").eq("name", company_name).limit(1).execute()
+    company_row = (company.data or [None])[0]
+    # Pull all knowledge sections
+    knowledge = db.table("company_knowledge").select(
+        "section, content, source_url, scraped_at"
+    ).eq("company_name", company_name).execute()
+    return {
+        "company": company_row,
+        "knowledge": knowledge.data or [],
+        "section_count": len(knowledge.data or []),
+    }
+
+
+class CompanyResearchRequest(BaseModel):
+    company_name: Optional[str] = None
+    priority: Optional[str] = None  # high | medium | low — research only this tier
+    force: bool = False
+
+
+@app.post("/companies/research")
+async def trigger_company_research(
+    request: CompanyResearchRequest,
+    background_tasks: BackgroundTasks,
+    _auth=Depends(verify_secret),
+):
+    """
+    Trigger CompanyAgent research on one company or a tier of targets.
+    Runs in background; results stored in company_knowledge.
+    """
+    async def _run():
+        from agents.company_agent import CompanyAgent
+        from db.client import get_supabase as _sb
+        names: list[str] = []
+        if request.company_name:
+            names = [request.company_name]
+        else:
+            db = _sb()
+            q = db.table("companies").select("name").eq("is_target", True)
+            if request.priority:
+                q = q.eq("priority", request.priority)
+            names = [c["name"] for c in (q.execute().data or [])]
+
+        # Run with concurrency limit
+        sem = asyncio.Semaphore(3)
+        async def _one(name: str):
+            async with sem:
+                try:
+                    agent = CompanyAgent(name)
+                    await agent.build_or_refresh(force=request.force)
+                except Exception as e:
+                    logger.warning(f"Research failed for {name}: {e}")
+
+        await asyncio.gather(*[_one(n) for n in names])
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "scope": (
+            request.company_name
+            or (f"all {request.priority}-priority targets" if request.priority else "all targets")
+        ),
+        "message": "Research running in background. Check /companies/{name}/knowledge for results.",
+    }
+
+
 @app.post("/pipeline/run-targets")
 async def run_pipeline_targets(
     background_tasks: BackgroundTasks,

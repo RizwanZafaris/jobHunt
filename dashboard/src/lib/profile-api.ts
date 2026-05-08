@@ -359,3 +359,41 @@ export async function updateApplication(id: string, updates: Partial<Application
   if (!res.ok) throw new Error(`Failed to update application: ${res.status}`)
   return res.json()
 }
+
+// ── Company knowledge / research ───────────────────────────────────────
+
+export interface CompanyKnowledgeSection {
+  section: string
+  content: string
+  source_url: string | null
+  scraped_at: string
+}
+
+export interface CompanyKnowledgeResponse {
+  company: TargetCompany | null
+  knowledge: CompanyKnowledgeSection[]
+  section_count: number
+}
+
+export async function fetchCompanyKnowledge(name: string): Promise<CompanyKnowledgeResponse> {
+  const res = await fetch(`${baseUrl}/companies/${encodeURIComponent(name)}/knowledge`, {
+    headers,
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`Failed to fetch company knowledge: ${res.status}`)
+  return res.json()
+}
+
+export async function triggerCompanyResearch(opts: {
+  company_name?: string
+  priority?: string
+  force?: boolean
+}) {
+  const res = await fetch(`${baseUrl}/companies/research`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(opts),
+  })
+  if (!res.ok) throw new Error(`Failed to start research: ${res.status}`)
+  return res.json()
+}

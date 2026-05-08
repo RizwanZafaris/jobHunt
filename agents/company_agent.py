@@ -45,6 +45,12 @@ COMPANY_RESEARCH_SECTIONS = [
     "strategy",    # roadmap, expansion plans, market position
     "challenges",  # known problems, market headwinds
     "competitors", # who they compete with
+    # Recruitment intelligence (Phase D extension)
+    "recruitment_process",  # interview stages, timeline, recruiter touch points
+    "resume_dos_donts",     # what to highlight, what to drop, length, formatting
+    "ats_signals",          # exact keywords/phrases their parser/screener favors
+    "interview_format",     # behavioral / case / technical / panels
+    "hiring_signals",       # what they value: pedigree, results, builder mindset, etc.
 ]
 
 
@@ -154,7 +160,12 @@ Return JSON with these keys:
     "tech_stack": "Technologies used, engineering practices, product tech stack",
     "strategy": "Strategic direction, expansion plans, product roadmap signals, market position",
     "challenges": "Known challenges, market headwinds, competitive threats, what they're trying to solve",
-    "competitors": "Main competitors and how {self.company_name} differentiates"
+    "competitors": "Main competitors and how {self.company_name} differentiates",
+    "recruitment_process": "What does the typical recruitment funnel look like at {self.company_name}? Be specific: # of interview rounds, recruiter screen, hiring manager screen, panel/loop, take-home, executive review, offer. Include timeline (e.g. 4-6 weeks). Cite Glassdoor / employee reports if available.",
+    "resume_dos_donts": "Concrete do's and don'ts when applying to {self.company_name}: what to emphasize on resume (e.g. quantified outcomes, specific tech, scale metrics), what to drop or de-emphasize, ideal resume length, formatting style (ATS-friendly vs. designed), cover letter expectations.",
+    "ats_signals": "Exact keywords + phrases that their ATS parser or first-pass screener favors. Be specific to {self.company_name}'s language: copy phrasing from their JDs and About page (e.g. 'merchant of record', 'card-on-file', 'real-time payments', 'embedded finance'). List 15-25 distinct keywords.",
+    "interview_format": "Format breakdown: behavioral interviews (which competencies?), case interviews (which scenarios?), technical assessment (live coding, take-home, system design?), panels (who attends?), executive round expectations.",
+    "hiring_signals": "What does {self.company_name} actually value in candidates beyond the JD? Pedigree (FAANG / consulting / specific schools)? Results-driven track record (specific metrics they care about)? Founder/builder mindset? Domain expertise? Cultural alignment? Be candid and concrete."
   }},
   "sources": {{
     "overview": "URL or source",
@@ -198,8 +209,14 @@ If data is unavailable for a section, write "Unknown — insufficient data." """
             "website": f"{self.company_name} official website careers",
             "news": f"{self.company_name} funding news 2025 2026",
             "glassdoor": f"{self.company_name} site:glassdoor.com reviews",
+            "glassdoor_interviews": f"{self.company_name} site:glassdoor.com interviews",
             "linkedin": f"{self.company_name} site:linkedin.com/company",
             "blog": f"{self.company_name} engineering blog product blog",
+            # Recruitment-intel sources
+            "interview_reports": f"{self.company_name} interview process site:reddit.com OR site:blind.teamblind.com",
+            "levels": f"{self.company_name} site:levels.fyi compensation",
+            "ats_signals": f"{self.company_name} job description product manager payments",
+            "hiring_bar": f"{self.company_name} hiring bar interview tips",
         }
 
         urls = {}

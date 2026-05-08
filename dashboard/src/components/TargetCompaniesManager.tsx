@@ -1,11 +1,13 @@
 'use client'
 
+import Link from 'next/link'
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   addTargetCompany,
   removeTargetCompany,
   runTargetsPipeline,
+  triggerCompanyResearch,
   updateCompany,
   type TargetCompaniesResponse,
   type TargetCompany,
@@ -105,6 +107,20 @@ export default function TargetCompaniesManager({ initial }: Props) {
     }
   }
 
+  async function researchAll(priority?: string) {
+    setRunning(true)
+    setRunMsg(`Researching ${priority || 'all'} targets — runs ~30-90s per company...`)
+    try {
+      await triggerCompanyResearch({ priority })
+      setRunMsg('✅ Research started in background — refresh in a few minutes')
+    } catch (e: any) {
+      setRunMsg(`❌ ${e.message}`)
+    } finally {
+      setRunning(false)
+      setTimeout(() => setRunMsg(''), 8000)
+    }
+  }
+
   const byCat: Record<string, TargetCompany[]> = {}
   for (const c of filtered) {
     const k = c.category || 'Uncategorized'
@@ -138,13 +154,29 @@ export default function TargetCompaniesManager({ initial }: Props) {
             {filtered.length} of {companies.length} shown
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {runMsg && <span className="text-xs text-gray-400">{runMsg}</span>}
           <button
             onClick={() => setAddOpen(true)}
             className="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-200 px-3 py-1.5 rounded-lg font-medium"
           >
             + Add
+          </button>
+          <button
+            onClick={() => researchAll('high')}
+            disabled={running}
+            className="text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-50 border border-gray-700 text-gray-200 px-3 py-1.5 rounded-lg font-medium"
+            title="Research only high-priority targets (~30 companies, ~30 min)"
+          >
+            🔬 Research High-Priority
+          </button>
+          <button
+            onClick={() => researchAll()}
+            disabled={running}
+            className="text-xs bg-gray-800 hover:bg-gray-700 disabled:opacity-50 border border-gray-700 text-gray-200 px-3 py-1.5 rounded-lg font-medium"
+            title="Research ALL 68 targets (~60 min, ~$10 in tokens)"
+          >
+            🔬 Research All
           </button>
           <button
             onClick={runPipeline}
@@ -221,7 +253,13 @@ export default function TargetCompaniesManager({ initial }: Props) {
                     className="bg-gray-800/50 border border-gray-800 rounded-lg p-3 hover:border-gray-700 transition-colors group"
                   >
                     <div className="flex items-center justify-between mb-1">
-                      <h4 className="text-sm font-medium text-white truncate">{c.name}</h4>
+                      <Link
+                        href={`/companies/${encodeURIComponent(c.name)}`}
+                        className="text-sm font-medium text-white truncate hover:text-blue-400 flex-1"
+                        title="Open research intel"
+                      >
+                        {c.name}
+                      </Link>
                       <button
                         onClick={() => remove(c)}
                         className="opacity-0 group-hover:opacity-100 text-xs text-red-400 hover:text-red-300"
@@ -240,12 +278,20 @@ export default function TargetCompaniesManager({ initial }: Props) {
                         <option value="medium">medium</option>
                         <option value="low">low</option>
                       </select>
+                      <Link
+                        href={`/companies/${encodeURIComponent(c.name)}`}
+                        className="text-[10px] text-blue-400 hover:text-blue-300"
+                        title="View research"
+                      >
+                        intel →
+                      </Link>
                       {c.careers_url && (
                         <a
                           href={c.careers_url}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-[10px] text-blue-400 hover:text-blue-300 truncate flex-1"
+                          onClick={(e) => e.stopPropagation()}
                         >
                           careers ↗
                         </a>
