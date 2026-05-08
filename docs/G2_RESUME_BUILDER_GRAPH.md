@@ -330,6 +330,95 @@ This design assumes:
 
 ---
 
+## 8.5. Cost cap (Phase 1.11)
+
+The orchestrator enforces a per-build hard cap on cumulative LLM spend.
+This is the production-safety guarantee that lets us run G2 in
+`USE_G2_GRAPH=true` mode without an unbounded worst-case.
+
+### Configuration
+
+| Setting | Default | Source |
+|---|---|---|
+| `settings.g2_max_cost_usd` | `5.0` | `config/settings.py` (env: `G2_MAX_COST_USD`) |
+| Per-build override | `None` | API: `POST /jobs/{id}/generate-resume?max_cost_usd=10` |
+
+### Mechanism
+
+The `orchestrator_node` performs two cost checks per iteration:
+
+1. **Pre-call short-circuit** — if `state.cost_usd_total >= state.cost_cap_usd`
+   *before* the orchestrator runs, skip the LLM call entirely (saves the
+   orchestrator's ~$0.30) and force `converged=True, cost_capped=True`.
+2. **Post-call check** — after the orchestrator's own LLM call, if its
+   cost pushes the cumulative total over the cap, force converge with
+   `cost_capped=True`.
+
+The `polisher` and `cover_email` nodes still run after a cost-capped
+converge — they're the cheap "save what we have" path. The cap applies
+to the writer ↔ critic loop, which is where iterations explode.
+
+### Status lifecycle
+
+`resume_builds.status` now takes one of four values:
+
+| Status | When it's set |
+|---|---|
+| `running` | At entry_node, before any agent has run |
+| `converged` | Polisher ran, ATS score met threshold or orchestrator agreed |
+| `exhausted` | Hit `g2_max_iterations` without converging on quality |
+| `cost_capped` | Hit `g2_max_cost_usd` mid-build *(Phase 1.11)* |
+
+Hierarchy in `export_node`: cost_capped beats exhausted beats converged.
+That means a build that runs out of budget at iteration 3 (which is also
+the max) reports `cost_capped` rather than `exhausted` — the cap is the
+*reason* iteration stopped.
+
+### Worst-case spend bounds
+
+With the default `g2_max_cost_usd=5.0`:
+
+```
+  insider_expert  Gemini   ≤ $0.20
+  advocate        Claude   ≤ $0.18
+  meta_critic     Gemini   ≤ $0.30
+  writer × N iters Claude   ≤ $0.85 × N
+  ats_critic_a/b × N iters  ≤ $0.06 × N
+  orchestrator × N iters   ≤ $0.20 × N
+   ────── (cumulative ≥ $5 forces converge here) ──────
+  polisher        Claude   ≤ $0.42
+  cover_email     Claude   ≤ $0.24
+                           ─────
+                           ≤ ~$5.00 + ~$0.66 polish/email = ~$5.66 worst case
+```
+
+The polisher + cover_email overshoot is bounded (~$0.66 fixed) because
+they run exactly once each and don't loop. So the actual worst-case is
+~$0.66 above the cap, which is acceptable — it ensures the user always
+gets a final artifact rather than a half-built one.
+
+### Telemetry
+
+The cost-capped event is captured in three places:
+- `agent_call_log` rows for every call up to the cap
+- `resume_builds.status='cost_capped'` + `cost_usd_total`
+- `resume_builds.agent_transcript` orchestrator turn with
+  `output.rationale = "cost cap hit ($X.XX >= $Y.YY)"`
+
+The `/costs` dashboard's "Top Resume Builds by Cost" table shows the
+status badge — cost_capped builds appear in red.
+
+### Tuning guidance
+
+- **For top-tier targets** (PayPal, Plaid, Stripe): override per-build to
+  `max_cost_usd=10` if you genuinely want more iterations.
+- **For exploratory budgets**: drop `g2_max_cost_usd=2.0` in env; the
+  orchestrator will converge faster on cheaper drafts.
+- **For zero-budget testing**: minimum is `$0.50` (refused below by API)
+  — at that level only the entry + 1 round of agents run, then cap fires.
+
+---
+
 ## 9. Live-data validation (2026-05-09 snapshot)
 
 Before committing to this design we ran an inventory against the live

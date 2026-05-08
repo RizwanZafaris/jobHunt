@@ -166,8 +166,16 @@ class JobHuntPipeline:
             if progress:
                 progress.print(f"    [magenta]→ USE_G2_GRAPH=true — invoking G2 LangGraph[/magenta]")
             from resume_agents.g2_run import run_g2_graph
+            # Phase 1.11: per-build cost-cap override flows from
+            # api/server.py /jobs/{id}/generate-resume?max_cost_usd=X via
+            # job._g2_max_cost_usd. None falls back to settings default.
+            max_cost_usd = job.get("_g2_max_cost_usd")
             try:
-                final_state = await run_g2_graph(job_id=job_id, company_name=company)
+                final_state = await run_g2_graph(
+                    job_id=job_id,
+                    company_name=company,
+                    max_cost_usd=max_cost_usd,
+                )
                 return {
                     "job_id": job_id,
                     "company": company,
@@ -179,6 +187,7 @@ class JobHuntPipeline:
                     "g2_final_score": final_state.get("final_score"),
                     "g2_iterations": final_state.get("iteration"),
                     "g2_cost_usd": final_state.get("cost_usd_total"),
+                    "g2_cost_capped": final_state.get("cost_capped", False),
                 }
             except Exception as e:
                 logger.error(f"G2 graph failed for job_id={job_id}: {e} — falling back to legacy path")

@@ -70,6 +70,13 @@ class ResumeState(TypedDict, total=False):
     converged: bool                                     # orchestrator decision
     error: Optional[str]                                # set if a node fails fatally
 
+    # Phase 1.11: cost cap control
+    cost_cap_usd: float                                 # per-build hard cap (USD)
+    cost_capped: bool                                   # True if orchestrator forced
+                                                        # converge because cost >= cap.
+                                                        # export_node uses this to mark
+                                                        # resume_builds.status='cost_capped'
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 def make_turn(

@@ -611,9 +611,50 @@ Output strict JSON:
 
 
 async def orchestrator_node(state: ResumeState) -> dict:
+    """
+    Decides whether to loop back to writer or proceed to polisher.
+
+    Phase 1.11: also enforces the per-build cost cap. If cumulative
+    cost_usd_total has reached `state.cost_cap_usd` (set at entry from
+    settings.g2_max_cost_usd, optionally overridden per-build), force
+    converge with `cost_capped=True` so export_node can mark the build's
+    status correctly. Worst-case spend is bounded — runaway iterations
+    can't burn more than the cap.
+    """
     settings = get_settings()
     iteration = state.get("iteration", 0) + 1
     merged = state.get("merged_critique", {})
+    cost_so_far = state.get("cost_usd_total", 0.0) or 0.0
+    cost_cap = state.get("cost_cap_usd") or settings.g2_max_cost_usd
+
+    # ── Phase 1.11: cost cap pre-check ─────────────────────────────────
+    # If we're already at/over budget BEFORE asking the LLM what to do,
+    # force converge immediately. Saves the orchestrator's ~$0.30 call too.
+    if cost_so_far >= cost_cap:
+        logger.warning(
+            f"G2 orchestrator: cost cap hit before LLM call "
+            f"(${cost_so_far:.2f} >= ${cost_cap:.2f}) — forcing converge"
+        )
+        score = (merged or {}).get("ats_score", 0) or 0
+        fixes_n = len((merged or {}).get("specific_fixes", []))
+        return {
+            "iteration": iteration,
+            "converged": True,
+            "cost_capped": True,
+            "transcript": [
+                make_turn(
+                    node="orchestrator",
+                    iteration=iteration,
+                    output={
+                        "converged": True,
+                        "cost_capped": True,
+                        "rationale": f"cost cap hit (${cost_so_far:.2f} >= ${cost_cap:.2f})",
+                        "score": score,
+                        "outstanding_fixes": fixes_n,
+                    },
+                )
+            ],
+        }
 
     user = f"""ITERATION: {iteration}
 MAX ITERATIONS: {settings.g2_max_iterations}
@@ -648,7 +689,21 @@ Decide. Output strict JSON only."""
     if iteration >= settings.g2_max_iterations:
         converged = True
 
-    return {
+    # ── Phase 1.11: post-LLM cost-cap check ────────────────────────────
+    # Account for the orchestrator's own cost (just incurred) when deciding.
+    # If THIS turn would push us over the cap, force converge so we don't
+    # loop back into another expensive writer pass.
+    cost_capped = False
+    cost_after_this = cost_so_far + float(result.cost_usd or 0)
+    if cost_after_this >= cost_cap:
+        logger.warning(
+            f"G2 orchestrator: cost cap hit post-call "
+            f"(${cost_after_this:.2f} >= ${cost_cap:.2f}) — forcing converge"
+        )
+        converged = True
+        cost_capped = True
+
+    patch: dict = {
         "iteration": iteration,
         "converged": converged,
         "cost_usd_total": result.cost_usd,
@@ -661,6 +716,7 @@ Decide. Output strict JSON only."""
                 model=result.model,
                 output={
                     "converged": converged,
+                    "cost_capped": cost_capped,
                     "decision_raw": decision,
                     "score": score,
                     "outstanding_fixes": fixes,
@@ -670,6 +726,9 @@ Decide. Output strict JSON only."""
             )
         ],
     }
+    if cost_capped:
+        patch["cost_capped"] = True
+    return patch
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -816,7 +875,15 @@ async def export_node(state: ResumeState) -> dict:
     resume_build_id = state["resume_build_id"]
     iteration = state.get("iteration", 0)
     max_iter = get_settings().g2_max_iterations
-    status = "converged" if iteration < max_iter or state.get("converged") else "exhausted"
+
+    # Phase 1.11: status hierarchy
+    #   cost_capped beats exhausted beats converged
+    if state.get("cost_capped"):
+        status = "cost_capped"
+    elif iteration >= max_iter and not state.get("converged"):
+        status = "exhausted"
+    else:
+        status = "converged"
 
     # ─── Render DOCX (via existing helper if present) ────────────────
     docx_url = None
