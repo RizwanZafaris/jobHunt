@@ -806,6 +806,28 @@ export async function cleanupCallLog(daysToKeep: number = 365): Promise<{
   return res.json()
 }
 
+// ── Phase 1.14: cost-alerter audit history ────────────────────────────
+
+export interface AlertHistoryEntry {
+  id: string
+  run_date: string
+  digest_content: string
+  digest_sent: boolean
+  created_at: string
+}
+
+export async function fetchLastAlerts(): Promise<{
+  alerts: AlertHistoryEntry[]
+  warning?: string
+}> {
+  const res = await fetch(`${baseUrl}/alerts/last`, {
+    headers,
+    next: { revalidate: 120 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch alerts: ${res.status}`)
+  return res.json()
+}
+
 // ── Company knowledge / research ───────────────────────────────────────
 
 export interface CompanyKnowledgeSection {
