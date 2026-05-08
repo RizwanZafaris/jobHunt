@@ -1591,6 +1591,66 @@ async def costs_cleanup(
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {msg}")
 
 
+# ── Cost Alerts (Phase 1.10) ──────────────────────────────────────────
+# Manual triggers for the daily threshold check + weekly digest. The
+# scheduler in main.py also fires these on cron (22:00 daily / Sunday 09:00).
+
+@app.post("/alerts/check")
+async def trigger_daily_alert_check(
+    background_tasks: BackgroundTasks,
+    _auth=Depends(verify_secret),
+):
+    """
+    Manually trigger the daily-spend alert check. Idempotent — won't
+    double-fire if the cron already ran today (boss_audit_log dedup).
+    Use to test alerting wiring or re-run after fixing config.
+    """
+    async def _run():
+        from agents.cost_alerter import CostAlerter
+        await CostAlerter().check_daily_spend()
+    background_tasks.add_task(_run)
+    return {"status": "started", "kind": "daily"}
+
+
+@app.post("/alerts/weekly-digest")
+async def trigger_weekly_digest(
+    background_tasks: BackgroundTasks,
+    _auth=Depends(verify_secret),
+):
+    """
+    Manually trigger the weekly cost digest. Useful for previewing the
+    digest format before the Sunday cron fires it for real.
+    """
+    async def _run():
+        from agents.cost_alerter import CostAlerter
+        await CostAlerter().send_weekly_digest()
+    background_tasks.add_task(_run)
+    return {"status": "started", "kind": "weekly_digest"}
+
+
+@app.get("/alerts/last")
+async def get_last_alerts(_auth=Depends(verify_secret)):
+    """
+    Return the last 10 cost-alerter audit log entries — useful for the
+    dashboard's audit-trail view to confirm alerts are firing as expected.
+    """
+    from db.client import get_supabase
+    try:
+        result = (
+            get_supabase()
+            .table("boss_audit_log")
+            .select("id, run_date, digest_content, digest_sent, created_at")
+            .ilike("digest_content", "%cost-alerter:%")
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        )
+        return {"alerts": result.data or []}
+    except Exception as e:
+        logger.warning(f"get_last_alerts failed: {e}")
+        return {"alerts": [], "warning": str(e)[:200]}
+
+
 @app.get("/costs/by-resume-build")
 async def costs_by_resume_build(limit: int = 20, _auth=Depends(verify_secret)):
     """

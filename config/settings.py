@@ -63,6 +63,20 @@ class Settings(BaseSettings):
     #   Override per-build via POST /jobs/{id}/generate-resume?max_cost_usd=X.
     g2_max_cost_usd: float = Field(5.0, env="G2_MAX_COST_USD")
 
+    # Phase 1.10: cost alerts (daily check + weekly digest).
+    #   Daily check fires after the boss audit at 22:00 GST. Compares
+    #   today's cumulative spend (from agent_call_log) against
+    #   daily_cost_alert_usd; if exceeded, dispatches via Slack webhook
+    #   (preferred — faster) or SendGrid email (fallback).
+    #   Weekly digest fires Sundays 09:00 GST: provider conversion rates,
+    #   top spenders, error rate trends, recent cost-capped builds.
+    daily_cost_alert_usd: float = Field(20.0, env="DAILY_COST_ALERT_USD")
+    weekly_cost_digest: bool    = Field(True, env="WEEKLY_COST_DIGEST")
+    slack_webhook_url: Optional[str] = Field(None, env="SLACK_WEBHOOK_URL")
+    alert_email_to: Optional[str]    = Field(None, env="ALERT_EMAIL_TO")
+    daily_alert_time: str            = Field("22:00", env="DAILY_ALERT_TIME")
+    weekly_digest_time: str          = Field("09:00", env="WEEKLY_DIGEST_TIME")
+
     # ── Supabase ────────────────────────────────────────────────────────────
     supabase_url: str = Field(..., env="SUPABASE_URL")
     supabase_service_key: str = Field(..., env="SUPABASE_SERVICE_KEY")
