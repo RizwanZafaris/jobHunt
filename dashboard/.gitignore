@@ -1,2 +1,11 @@
 .vercel
 .env*.local
+
+# storybook
+*storybook.log
+storybook-static
+
+# build artifacts
+*.tsbuildinfo
+.next
+out

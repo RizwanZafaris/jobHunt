@@ -3,6 +3,9 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { triggerCompanyResearch } from '@/lib/profile-api'
+import { Button } from '@/components/ui/Button'
+import { Icon } from '@/components/ui/Icon'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 
 interface Props {
   companyName?: string
@@ -18,36 +21,35 @@ export default function CompanyResearchButton({ companyName, priority, label, va
 
   async function trigger() {
     setRunning(true)
-    setMsg('Triggering CompanyAgent...')
+    setMsg('Triggering CompanyAgent…')
     try {
       await triggerCompanyResearch({ company_name: companyName, priority, force: false })
-      setMsg('✅ Research started in background — refreshes in ~60-90s')
+      setMsg('Research started — refreshes in ~60–90 s')
       setTimeout(() => {
         router.refresh()
         setMsg('')
-      }, 90000)
-    } catch (e: any) {
-      setMsg(`❌ ${e.message}`)
+      }, 90_000)
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : 'Failed')
     } finally {
       setRunning(false)
     }
   }
 
-  const cls =
-    variant === 'primary'
-      ? 'bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white'
-      : 'bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 border border-gray-700'
-
   return (
     <div className="flex items-center gap-2">
-      <button
+      <Button
+        variant={variant === 'primary' ? 'primary' : 'secondary'}
+        size="sm"
         onClick={trigger}
-        disabled={running}
-        className={`text-xs ${cls} px-3 py-1.5 rounded-lg font-medium whitespace-nowrap`}
+        loading={running}
       >
-        {running ? '⏳ Running...' : label || (companyName ? '🔬 Research' : '🔬 Research All')}
-      </button>
-      {msg && <span className="text-xs text-gray-400">{msg}</span>}
+        <Icon name="search" size={12} />
+        {label || (companyName ? 'Research' : 'Research all')}
+      </Button>
+      <LiveRegion>
+        {msg && <span className="text-2xs text-fg-muted">{msg}</span>}
+      </LiveRegion>
     </div>
   )
 }

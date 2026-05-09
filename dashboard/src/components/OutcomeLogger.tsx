@@ -1,37 +1,35 @@
 'use client'
 
 /**
- * OutcomeLogger — the dashboard form that closes the learning loop.
+ * OutcomeLogger — closes the learning loop after a resume submission.
  *
- * Renders on /jobs/[id]. User logs:
- *   - Did the recruiter respond?
- *   - Did you get an interview? (and how many rounds)
- *   - Did you get an offer?
- *   - Self-rated resume quality 1–5
- *   - Notes / rejection reason
- *
- * Persists to public.resume_outcomes via /resumes/outcomes (upsert by
- * job_id when no resume_build_id exists yet — supports legacy resumes
- * built by the pre-G2 path).
- *
- * Auto-saves on each field change so the user never loses partial logs.
+ * a11y rewrite:
+ *   - Yes/No/? toggles are <Pill as="button" aria-pressed>
+ *   - Star rating is a real role="radiogroup" with arrow-key nav
+ *   - Save status announced via aria-live polite region
+ *   - All inputs have <label htmlFor>
  */
-import { useEffect, useState, useTransition } from 'react'
+import { useEffect, useId, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   fetchOutcomeByJob,
   saveOutcome,
   ResumeOutcome,
 } from '@/lib/profile-api'
+import { Card } from '@/components/ui/Card'
+import { Pill } from '@/components/ui/Pill'
+import { Button } from '@/components/ui/Button'
+import { Icon } from '@/components/ui/Icon'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 
 interface Props {
   jobId: number
-  resumeBuildId?: string | null   // present after G2 has run; null for legacy
+  resumeBuildId?: string | null
   applicationId?: string | null
   companyName?: string | null
 }
 
-type Tri = boolean | null   // Yes / No / Unknown (null)
+type Tri = boolean | null
 
 export default function OutcomeLogger({
   jobId,
@@ -46,15 +44,14 @@ export default function OutcomeLogger({
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
 
-  // ── Load existing outcome on mount ──────────────────────────────────
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
         const r = await fetchOutcomeByJob(jobId)
         if (!cancelled) setOutcome(r.outcome)
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || 'Failed to load')
+      } catch (e: unknown) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load')
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -64,22 +61,20 @@ export default function OutcomeLogger({
     }
   }, [jobId])
 
-  // ── Save handler — auto-saves on each field change ──────────────────
-  async function patch(field: string, value: any) {
+  async function patch(field: string, value: unknown) {
     setSavingField(field)
     setError(null)
     try {
-      const payload: any = { job_id: jobId, [field]: value }
+      const payload: Record<string, unknown> = { job_id: jobId, [field]: value }
       if (resumeBuildId) payload.resume_build_id = resumeBuildId
       if (applicationId) payload.application_id = applicationId
       if (companyName) payload.company_name = companyName
 
       const r = await saveOutcome(payload)
       setOutcome(r.row)
-      // Reload SSR so the conversion funnel chart refreshes
       startTransition(() => router.refresh())
-    } catch (e: any) {
-      setError(e?.message || 'Save failed')
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Save failed')
     } finally {
       setSavingField(null)
     }
@@ -87,50 +82,38 @@ export default function OutcomeLogger({
 
   if (loading) {
     return (
-      <section className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-white mb-2">📊 Outcome</h3>
-        <p className="text-xs text-gray-500 italic">Loading…</p>
-      </section>
+      <Card title="Outcome">
+        <p className="text-2xs text-fg-subtle italic">Loading…</p>
+      </Card>
     )
   }
 
-  // Pre-G2 + no logging started yet — show CTA
   if (!outcome) {
     return (
-      <section className="bg-gray-900 border border-amber-900/50 rounded-xl p-4">
-        <h3 className="text-sm font-semibold text-amber-300 mb-2">
-          📊 Log Outcome
-        </h3>
-        <p className="text-[11px] text-gray-400 mb-3 leading-relaxed">
-          Did this resume get a response? Logging outcomes is what makes the
-          system learn — the persona synthesizer reads these weekly.
+      <Card tone="warning" title="Log outcome">
+        <p className="text-2xs text-fg-muted mb-3 leading-relaxed">
+          Did this resume get a response? Logging outcomes is what makes the system learn — the persona synthesizer reads these weekly.
         </p>
-        <button
-          onClick={() =>
-            patch('submitted_at', new Date().toISOString())
-          }
-          disabled={savingField === 'submitted_at'}
-          className="w-full text-xs bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg font-medium"
+        <Button
+          variant="warning"
+          size="sm"
+          block
+          onClick={() => patch('submitted_at', new Date().toISOString())}
+          loading={savingField === 'submitted_at'}
         >
-          {savingField === 'submitted_at'
-            ? 'Starting…'
-            : 'Start Tracking Outcome'}
-        </button>
-        {error && <p className="mt-2 text-[11px] text-red-400">{error}</p>}
-      </section>
+          Start tracking outcome
+        </Button>
+        {error && <p className="mt-2 text-2xs text-danger" role="alert">{error}</p>}
+      </Card>
     )
   }
 
   return (
-    <section className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h3 className="text-sm font-semibold text-white">📊 Outcome</h3>
-        {pending && (
-          <span className="text-[10px] text-gray-500">syncing…</span>
-        )}
-      </div>
-
-      <div className="space-y-3">
+    <Card
+      title="Outcome"
+      actions={pending ? <span className="text-2xs text-fg-subtle">syncing…</span> : null}
+    >
+      <div className="space-y-4">
         <TriField
           label="Recruiter responded?"
           value={outcome.recruiter_responded}
@@ -187,7 +170,7 @@ export default function OutcomeLogger({
           multiline
         />
 
-        <div className="text-[10px] text-gray-500 pt-2 border-t border-gray-800">
+        <div className="text-2xs text-fg-subtle pt-3 border-t border-border">
           {outcome.logged_at && (
             <>Started {new Date(outcome.logged_at).toLocaleDateString()}</>
           )}
@@ -199,9 +182,13 @@ export default function OutcomeLogger({
           )}
         </div>
 
-        {error && <p className="text-[11px] text-red-400">{error}</p>}
+        <LiveRegion visible={false}>
+          {savingField ? `Saving ${savingField}` : ''}
+        </LiveRegion>
+
+        {error && <p className="text-2xs text-danger" role="alert">{error}</p>}
       </div>
-    </section>
+    </Card>
   )
 }
 
@@ -218,31 +205,39 @@ function TriField({
   onChange: (v: Tri) => void
   saving: boolean
 }) {
+  const groupId = useId()
   return (
-    <div>
-      <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+    <div role="group" aria-labelledby={`${groupId}-label`}>
+      <div id={`${groupId}-label`} className="block text-2xs uppercase tracking-wider text-fg-subtle font-semibold mb-1.5">
         {label}
-        {saving && <span className="ml-1 text-blue-400">syncing…</span>}
-      </label>
+        {saving && <span className="ml-1.5 text-info normal-case font-normal">syncing…</span>}
+      </div>
       <div className="flex gap-1">
         <Pill
-          active={value === true}
-          color="emerald"
+          as="button"
+          tone="success"
+          pressed={value === true}
           onClick={() => onChange(value === true ? null : true)}
+          size="sm"
         >
           Yes
         </Pill>
         <Pill
-          active={value === false}
-          color="red"
+          as="button"
+          tone="danger"
+          pressed={value === false}
           onClick={() => onChange(value === false ? null : false)}
+          size="sm"
         >
           No
         </Pill>
         <Pill
-          active={value === null || value === undefined}
-          color="gray"
+          as="button"
+          tone="neutral"
+          pressed={value === null || value === undefined}
           onClick={() => onChange(null)}
+          size="sm"
+          aria-label="Unknown"
         >
           ?
         </Pill>
@@ -263,28 +258,35 @@ function NumberField({
   saving: boolean
 }) {
   const v = value ?? 0
+  const id = useId()
   return (
     <div>
-      <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+      <label htmlFor={id} className="block text-2xs uppercase tracking-wider text-fg-subtle font-semibold mb-1.5">
         {label}
-        {saving && <span className="ml-1 text-blue-400">syncing…</span>}
+        {saving && <span className="ml-1.5 text-info normal-case font-normal">syncing…</span>}
       </label>
       <div className="flex items-center gap-2">
-        <button
+        <Button
+          type="button"
+          size="xs"
+          variant="secondary"
           onClick={() => onChange(Math.max(0, v - 1))}
-          className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 w-7 h-7 rounded text-sm"
+          aria-label="Decrement"
         >
-          −
-        </button>
-        <span className="text-base font-bold text-white min-w-[2ch] text-center">
+          <Icon name="minus" size={12} />
+        </Button>
+        <span id={id} className="text-base font-semibold text-fg min-w-[2ch] text-center tnum tabular-nums" aria-live="polite">
           {v}
         </span>
-        <button
+        <Button
+          type="button"
+          size="xs"
+          variant="secondary"
           onClick={() => onChange(v + 1)}
-          className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 w-7 h-7 rounded text-sm"
+          aria-label="Increment"
         >
-          +
-        </button>
+          <Icon name="plus" size={12} />
+        </Button>
       </div>
     </div>
   )
@@ -301,27 +303,63 @@ function StarField({
   onChange: (v: number | null) => void
   saving: boolean
 }) {
+  const groupId = useId()
+  const refs = useRef<(HTMLButtonElement | null)[]>([])
+
+  function onKey(e: React.KeyboardEvent, n: number) {
+    if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      e.preventDefault()
+      const next = Math.min(5, n + 1)
+      refs.current[next - 1]?.focus()
+      onChange(next)
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      e.preventDefault()
+      const prev = Math.max(1, n - 1)
+      refs.current[prev - 1]?.focus()
+      onChange(prev)
+    } else if (e.key === 'Home') {
+      e.preventDefault()
+      refs.current[0]?.focus()
+      onChange(1)
+    } else if (e.key === 'End') {
+      e.preventDefault()
+      refs.current[4]?.focus()
+      onChange(5)
+    }
+  }
+
   return (
-    <div>
-      <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+    <div role="radiogroup" aria-labelledby={`${groupId}-label`}>
+      <div id={`${groupId}-label`} className="block text-2xs uppercase tracking-wider text-fg-subtle font-semibold mb-1.5">
         {label}
-        {saving && <span className="ml-1 text-blue-400">syncing…</span>}
-      </label>
+        {saving && <span className="ml-1.5 text-info normal-case font-normal">syncing…</span>}
+      </div>
       <div className="flex gap-0.5">
-        {[1, 2, 3, 4, 5].map((n) => (
-          <button
-            key={n}
-            onClick={() => onChange(value === n ? null : n)}
-            className={`text-lg ${
-              value && n <= value
-                ? 'text-amber-400 hover:text-amber-300'
-                : 'text-gray-600 hover:text-gray-500'
-            }`}
-            title={`${n}/5`}
-          >
-            ★
-          </button>
-        ))}
+        {[1, 2, 3, 4, 5].map((n, i) => {
+          const filled = !!value && n <= value
+          const isCurrent = value === n
+          return (
+            <button
+              key={n}
+              type="button"
+              ref={(el) => { refs.current[i] = el }}
+              role="radio"
+              aria-checked={isCurrent}
+              tabIndex={isCurrent || (!value && n === 1) ? 0 : -1}
+              onClick={() => onChange(value === n ? null : n)}
+              onKeyDown={(e) => onKey(e, n)}
+              aria-label={`${n} of 5 stars`}
+              className="p-1 rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+            >
+              <Icon
+                name="star"
+                size={18}
+                className={filled ? 'text-warning fill-warning' : 'text-fg-subtle'}
+                style={filled ? { fill: 'currentColor' } : undefined}
+              />
+            </button>
+          )
+        })}
       </div>
     </div>
   )
@@ -343,69 +381,55 @@ function TextField({
   multiline?: boolean
 }) {
   const [draft, setDraft] = useState(value)
+  const id = useId()
   useEffect(() => setDraft(value), [value])
 
   function commit() {
     if (draft !== value) onChange(draft)
   }
 
-  const Tag = multiline ? 'textarea' : 'input'
+  const baseCls =
+    'w-full bg-surface text-fg placeholder:text-fg-subtle border border-border-strong rounded-md px-2.5 py-2 text-xs focus-visible:outline-none focus-visible:border-accent focus-visible:ring-2 focus-visible:ring-accent/30'
+
   return (
     <div>
-      <label className="block text-[10px] uppercase tracking-wider text-gray-500 mb-1">
+      <label htmlFor={id} className="block text-2xs uppercase tracking-wider text-fg-subtle font-semibold mb-1.5">
         {label}
-        {saving && <span className="ml-1 text-blue-400">syncing…</span>}
+        {saving && <span className="ml-1.5 text-info normal-case font-normal">syncing…</span>}
       </label>
-      <Tag
-        value={draft}
-        onChange={(e: any) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e: any) => {
-          if (!multiline && e.key === 'Enter') {
-            e.preventDefault()
-            commit()
-          }
-          if (multiline && e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault()
-            commit()
-          }
-        }}
-        placeholder={placeholder}
-        rows={multiline ? 2 : undefined}
-        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-      />
+      {multiline ? (
+        <textarea
+          id={id}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault()
+              commit()
+            }
+          }}
+          placeholder={placeholder}
+          rows={2}
+          className={`${baseCls} resize-y`}
+        />
+      ) : (
+        <input
+          id={id}
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              commit()
+            }
+          }}
+          placeholder={placeholder}
+          className={baseCls}
+        />
+      )}
     </div>
-  )
-}
-
-function Pill({
-  active,
-  color,
-  children,
-  onClick,
-}: {
-  active: boolean
-  color: 'emerald' | 'red' | 'gray'
-  children: React.ReactNode
-  onClick: () => void
-}) {
-  const colorMap = {
-    emerald: active
-      ? 'bg-emerald-700 border-emerald-600 text-white'
-      : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-emerald-700',
-    red: active
-      ? 'bg-red-700 border-red-600 text-white'
-      : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-red-700',
-    gray: active
-      ? 'bg-gray-700 border-gray-600 text-white'
-      : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600',
-  }
-  return (
-    <button
-      onClick={onClick}
-      className={`text-xs border px-2.5 py-1 rounded-md font-medium transition ${colorMap[color]}`}
-    >
-      {children}
-    </button>
   )
 }

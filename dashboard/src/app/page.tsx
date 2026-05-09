@@ -4,12 +4,13 @@ import StatsCards from '@/components/StatsCards'
 import DigestPanel from '@/components/DigestPanel'
 import PipelineActions from '@/components/PipelineActions'
 import ScoreChart from '@/components/ScoreChart'
-import ProfileNav from '@/components/ProfileNav'
+import { AppShell } from '@/components/layout/AppShell'
+import { PageHeader } from '@/components/ui/PageHeader'
 
 export const revalidate = 60
 
 export default async function Dashboard() {
-  // Fetch all data in parallel
+  // Fetch all data in parallel; allSettled so one failure doesn't blank the page.
   const [stats, jobsData, digest, companiesData] = await Promise.allSettled([
     fetchStats(),
     fetchJobs({ limit: 50, min_score: 0 }),
@@ -23,35 +24,25 @@ export default async function Dashboard() {
   const companies = companiesData.status === 'fulfilled' ? companiesData.value.companies : []
 
   return (
-    <div className="min-h-screen bg-gray-950">
-      {/* Header */}
-      <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-6">
-            <h1 className="text-xl font-bold text-white whitespace-nowrap">🤖 Job Hunt AI</h1>
-            <ProfileNav />
-          </div>
-          <PipelineActions />
+    <AppShell wide actions={<PipelineActions />}>
+      <PageHeader
+        eyebrow="Pipeline"
+        title="Today's job hunt"
+        description="Live view of every job the agent network has discovered, scored, and prioritized."
+      />
+
+      <StatsCards stats={statsValue} companiesCount={companies.length} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2">
+          <ScoreChart stats={statsValue} />
         </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-        {/* Stats row */}
-        <StatsCards stats={statsValue} companiesCount={companies.length} />
-
-        {/* Charts + Digest row */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2">
-            <ScoreChart stats={statsValue} />
-          </div>
-          <div>
-            <DigestPanel digest={digestValue} />
-          </div>
+        <div>
+          <DigestPanel digest={digestValue} />
         </div>
+      </div>
 
-        {/* Jobs table */}
-        <JobsTable jobs={jobs} />
-      </main>
-    </div>
+      <JobsTable jobs={jobs} />
+    </AppShell>
   )
 }

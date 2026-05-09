@@ -1,21 +1,35 @@
 'use client'
 
+import { Card } from '@/components/ui/Card'
+import { Stat } from '@/components/ui/Stat'
+import { Icon } from '@/components/ui/Icon'
+
+interface Digest {
+  message?: string
+  digest_content?: string
+  run_date?: string
+  created_at?: string
+  jobs_found_today?: number
+  jobs_scored_high?: number
+  applications_sent?: number
+  stale_companies?: number
+  digest_sent?: boolean
+}
+
 interface Props {
-  digest: any
+  digest: Digest | null
 }
 
 export default function DigestPanel({ digest }: Props) {
   if (!digest || digest.message) {
     return (
-      <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 h-full flex flex-col">
-        <h2 className="text-base font-semibold text-white mb-4">Daily Digest</h2>
-        <div className="flex-1 flex items-center justify-center">
-          <p className="text-gray-500 text-sm text-center">
-            No digest yet.<br />
-            <span className="text-xs">Run the boss agent to generate one.</span>
-          </p>
+      <Card title="Daily digest" className="h-full">
+        <div className="flex flex-col items-center justify-center py-8 text-center gap-1">
+          <Icon name="sparkles" size={20} className="text-fg-subtle mb-1" />
+          <p className="text-fg-muted text-xs">No digest yet.</p>
+          <p className="text-2xs text-fg-subtle">Run the boss agent to generate one.</p>
         </div>
-      </div>
+      </Card>
     )
   }
 
@@ -23,49 +37,34 @@ export default function DigestPanel({ digest }: Props) {
   const runDate = digest.run_date || digest.created_at?.split('T')[0]
 
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-800 p-6 h-full flex flex-col">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-base font-semibold text-white">Daily Digest</h2>
-        {runDate && (
-          <span className="text-xs text-gray-500">
+    <Card
+      title="Daily digest"
+      actions={
+        runDate ? (
+          <span className="text-2xs text-fg-subtle">
             {new Date(runDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
           </span>
-        )}
-      </div>
+        ) : null
+      }
+      className="h-full"
+    >
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-4 mb-4 pb-4 border-b border-border">
+        <Stat label="Jobs today" value={digest.jobs_found_today ?? 0} />
+        <Stat label="High match" value={digest.jobs_scored_high ?? 0} tone={digest.jobs_scored_high ? 'success' : 'default'} />
+        <Stat label="Applied" value={digest.applications_sent ?? 0} />
+        <Stat label="Stale companies" value={digest.stale_companies ?? 0} tone={digest.stale_companies ? 'warning' : 'default'} />
+      </dl>
 
-      {/* Quick stats from digest */}
-      <div className="grid grid-cols-2 gap-2 mb-4">
-        <div className="bg-gray-800 rounded-lg p-2 text-center">
-          <div className="text-lg font-bold text-blue-400">{digest.jobs_found_today ?? 0}</div>
-          <div className="text-xs text-gray-400">Jobs today</div>
-        </div>
-        <div className="bg-gray-800 rounded-lg p-2 text-center">
-          <div className="text-lg font-bold text-emerald-400">{digest.jobs_scored_high ?? 0}</div>
-          <div className="text-xs text-gray-400">High match</div>
-        </div>
-        <div className="bg-gray-800 rounded-lg p-2 text-center">
-          <div className="text-lg font-bold text-purple-400">{digest.applications_sent ?? 0}</div>
-          <div className="text-xs text-gray-400">Applied</div>
-        </div>
-        <div className="bg-gray-800 rounded-lg p-2 text-center">
-          <div className="text-lg font-bold text-amber-400">{digest.stale_companies ?? 0}</div>
-          <div className="text-xs text-gray-400">Stale co.</div>
-        </div>
-      </div>
-
-      {/* Digest text */}
-      <div className="flex-1 overflow-y-auto">
-        <pre className="text-xs text-gray-300 whitespace-pre-wrap font-sans leading-relaxed">
-          {content.length > 600 ? content.slice(0, 600) + '...' : content}
-        </pre>
+      <div className="text-xs text-fg-muted whitespace-pre-wrap leading-relaxed font-sans">
+        {content.length > 600 ? content.slice(0, 600) + '…' : content}
       </div>
 
       {digest.digest_sent && (
-        <div className="mt-3 flex items-center gap-1 text-xs text-emerald-500">
-          <span>✅</span>
-          <span>Email delivered</span>
+        <div className="mt-3 flex items-center gap-1.5 text-2xs text-success">
+          <Icon name="check" size={12} />
+          Email delivered
         </div>
       )}
-    </div>
+    </Card>
   )
 }

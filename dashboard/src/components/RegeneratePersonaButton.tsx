@@ -3,6 +3,9 @@
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { triggerPersonaSynthesis } from '@/lib/profile-api'
+import { Button } from '@/components/ui/Button'
+import { Icon } from '@/components/ui/Icon'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 
 interface Props {
   /**
@@ -14,14 +17,12 @@ interface Props {
    */
   companyName: string
   size?: 'sm' | 'md'
-  /** Override the button label (defaults: "Regenerate" / "Regenerate All") */
+  /** Override the button label (defaults: "Regenerate" / "Regenerate all") */
   label?: string
   /** Force re-synthesis even if no new data since last run */
   showForce?: boolean
   /**
    * Phase 1.13: bulk-regenerate only personas at this quality tier.
-   * When set, `companyName` should be the empty string. Default label
-   * becomes "Regenerate {qualityFilter}" — pass `label` to override.
    */
   qualityFilter?: 'low' | 'medium' | 'high' | 'unknown'
 }
@@ -47,30 +48,23 @@ export default function RegeneratePersonaButton({
         force,
         quality_filter: qualityFilter,
       })
-      setMsg('✅ Started — refresh in ~30s')
-      // Auto-refresh SSR data after a short delay so the user sees the new
-      // last_synthesized_at when the synth completes
+      setMsg('Started — refresh in ~30 s')
       setTimeout(() => {
         startTransition(() => router.refresh())
       }, 25_000)
-    } catch (e: any) {
-      setMsg(`❌ ${e.message || 'Failed'}`)
+    } catch (e: unknown) {
+      setMsg(e instanceof Error ? e.message : 'Failed')
     } finally {
       setRunning(false)
       setTimeout(() => setMsg(null), 30_000)
     }
   }
 
-  const cls =
-    size === 'md'
-      ? 'text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg font-medium'
-      : 'text-[11px] bg-gray-800 hover:bg-violet-800 border border-gray-700 hover:border-violet-700 disabled:opacity-50 text-gray-300 hover:text-violet-200 px-2 py-0.5 rounded'
-
   const defaultLabel = qualityFilter
     ? `Regenerate ${qualityFilter}`
     : companyName
     ? 'Regenerate'
-    : 'Regenerate All'
+    : 'Regenerate all'
 
   const titleText = qualityFilter
     ? `Re-synthesize all '${qualityFilter}'-quality personas in one shot (skips any with no new data)`
@@ -79,31 +73,35 @@ export default function RegeneratePersonaButton({
     : 'Re-synthesize ALL personas (companies with no new data are skipped automatically)'
 
   return (
-    <span className="inline-flex items-center gap-1.5">
-      <button
+    <span className="inline-flex items-center gap-2">
+      <Button
+        variant="secondary"
+        size={size === 'md' ? 'sm' : 'xs'}
         onClick={() => go(false)}
-        disabled={running}
-        className={cls}
+        loading={running}
         title={titleText}
       >
-        {running ? '⏳' : '↻'} {label || defaultLabel}
-      </button>
+        <Icon name="refresh" size={size === 'md' ? 12 : 10} />
+        {label || defaultLabel}
+      </Button>
       {showForce && (
-        <button
+        <Button
+          variant="ghost"
+          size={size === 'md' ? 'sm' : 'xs'}
           onClick={() => go(true)}
-          disabled={running}
-          className={cls}
+          loading={running}
           title="Force re-synthesis even if no new data — useful after editing the seed prompt"
         >
           force
-        </button>
+        </Button>
       )}
-      {msg && (
-        <span className="text-[10px] text-gray-400">
-          {msg}
-          {pending && ' (refreshing…)'}
-        </span>
-      )}
+      <LiveRegion>
+        {msg && (
+          <span className="text-2xs text-fg-muted">
+            {msg}{pending && ' (refreshing…)'}
+          </span>
+        )}
+      </LiveRegion>
     </span>
   )
 }

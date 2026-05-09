@@ -2,38 +2,245 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  --foreground-rgb: 229, 231, 235;
-  --background-start-rgb: 3, 7, 18;
-  --background-end-rgb: 9, 9, 11;
+/* ──────────────────────────────────────────────────────────────────────
+   Design tokens — semantic CSS variables.
+   Light is the default; dark theme activates via [data-theme="dark"]
+   on <html> or .dark class.
+   ──────────────────────────────────────────────────────────────────── */
+@layer base {
+  :root {
+    /* Surface stack — layered from page → card → raised */
+    --bg: 250 250 249;
+    --surface: 255 255 255;
+    --surface-raised: 245 245 244;
+    --surface-overlay: 255 255 255;
+
+    /* Foreground stack */
+    --fg: 24 24 27;
+    --fg-muted: 82 82 91;
+    --fg-subtle: 113 113 122;
+    --fg-inverse: 250 250 250;
+
+    /* Borders */
+    --border: 228 228 231;
+    --border-strong: 212 212 216;
+
+    /* Single near-black accent — distinctive vs. typical AI blue */
+    --accent: 24 24 27;
+    --accent-fg: 250 250 250;
+    --accent-hover: 39 39 42;
+
+    /* Semantic state colors */
+    --success: 21 128 61;
+    --success-bg: 240 253 244;
+    --success-border: 187 247 208;
+
+    --warning: 161 98 7;
+    --warning-bg: 254 252 232;
+    --warning-border: 254 240 138;
+
+    --danger: 153 27 27;
+    --danger-bg: 254 242 242;
+    --danger-border: 254 202 202;
+
+    --info: 29 78 216;
+    --info-bg: 239 246 255;
+    --info-border: 191 219 254;
+
+    /* Score buckets (semantic, reused in charts + badges) */
+    --score-a: 21 128 61;
+    --score-b: 29 78 216;
+    --score-c: 161 98 7;
+    --score-d: 154 52 18;
+    --score-f: 153 27 27;
+
+    /* Focus ring */
+    --ring: 24 24 27;
+    --ring-offset: 250 250 249;
+
+    /* Type scale (rem) */
+    --text-2xs: 0.75rem;   /* 12px — floor */
+    --text-xs: 0.8125rem;  /* 13px */
+    --text-sm: 0.9375rem;  /* 15px */
+    --text-base: 1rem;     /* 16px */
+    --text-lg: 1.125rem;   /* 18px */
+    --text-xl: 1.375rem;   /* 22px */
+    --text-2xl: 1.75rem;   /* 28px */
+    --text-3xl: 2.25rem;   /* 36px */
+
+    /* Radii */
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0.75rem;
+    --radius-xl: 1rem;
+
+    /* Shadows — subtle, neutral */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+    --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.06), 0 2px 4px -2px rgb(0 0 0 / 0.04);
+    --shadow-lg: 0 12px 24px -4px rgb(0 0 0 / 0.08);
+  }
+
+  [data-theme='dark'],
+  .dark {
+    --bg: 9 9 11;
+    --surface: 24 24 27;
+    --surface-raised: 39 39 42;
+    --surface-overlay: 39 39 42;
+
+    --fg: 250 250 250;
+    --fg-muted: 161 161 170;
+    --fg-subtle: 113 113 122;
+    --fg-inverse: 24 24 27;
+
+    --border: 39 39 42;
+    --border-strong: 63 63 70;
+
+    --accent: 250 250 250;
+    --accent-fg: 24 24 27;
+    --accent-hover: 244 244 245;
+
+    --success: 134 239 172;
+    --success-bg: 6 78 59;
+    --success-border: 6 95 70;
+
+    --warning: 252 211 77;
+    --warning-bg: 113 63 18;
+    --warning-border: 133 77 14;
+
+    --danger: 252 165 165;
+    --danger-bg: 127 29 29;
+    --danger-border: 153 27 27;
+
+    --info: 147 197 253;
+    --info-bg: 30 58 138;
+    --info-border: 30 64 175;
+
+    --score-a: 134 239 172;
+    --score-b: 147 197 253;
+    --score-c: 252 211 77;
+    --score-d: 253 186 116;
+    --score-f: 252 165 165;
+
+    --ring: 250 250 250;
+    --ring-offset: 9 9 11;
+
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+    --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.3), 0 2px 4px -2px rgb(0 0 0 / 0.4);
+    --shadow-lg: 0 12px 24px -4px rgb(0 0 0 / 0.5);
+  }
+
+  html {
+    color-scheme: light dark;
+    scroll-behavior: smooth;
+  }
+
+  [data-theme='dark'] {
+    color-scheme: dark;
+  }
+
+  body {
+    background-color: rgb(var(--bg));
+    color: rgb(var(--fg));
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Reset focus outline; rely on focus-visible for keyboard users only */
+  :focus {
+    outline: none;
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--ring));
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Typography defaults */
+  h1, h2, h3, h4 {
+    font-family: var(--font-display, var(--font-sans));
+    letter-spacing: -0.015em;
+    line-height: 1.15;
+  }
+
+  ::selection {
+    background-color: rgb(var(--accent) / 0.2);
+    color: rgb(var(--fg));
+  }
+
+  /* Reduce motion preference */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-    to bottom,
-    rgb(var(--background-start-rgb)),
-    rgb(var(--background-end-rgb))
-  );
-}
+@layer components {
+  /* Skip link — visible only on keyboard focus */
+  .skip-link {
+    position: absolute;
+    left: 0.5rem;
+    top: -3rem;
+    z-index: 100;
+    padding: 0.5rem 0.75rem;
+    background-color: rgb(var(--surface));
+    color: rgb(var(--fg));
+    border: 1px solid rgb(var(--border-strong));
+    border-radius: var(--radius-md);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    transition: top 150ms ease;
+  }
+  .skip-link:focus {
+    top: 0.5rem;
+  }
 
-.score-badge {
-  @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
-}
+  /* Score badges — semantic + theme-aware */
+  .score-badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-2xs font-semibold tabular-nums;
+  }
+  .score-a {
+    background-color: rgb(var(--success-bg));
+    color: rgb(var(--success));
+    border: 1px solid rgb(var(--success-border));
+  }
+  .score-b {
+    background-color: rgb(var(--info-bg));
+    color: rgb(var(--info));
+    border: 1px solid rgb(var(--info-border));
+  }
+  .score-c {
+    background-color: rgb(var(--warning-bg));
+    color: rgb(var(--warning));
+    border: 1px solid rgb(var(--warning-border));
+  }
+  .score-d {
+    background-color: rgb(var(--warning-bg));
+    color: rgb(var(--warning));
+    border: 1px solid rgb(var(--warning-border));
+  }
+  .score-f {
+    background-color: rgb(var(--danger-bg));
+    color: rgb(var(--danger));
+    border: 1px solid rgb(var(--danger-border));
+  }
 
-.score-a { @apply bg-emerald-900 text-emerald-300; }
-.score-b { @apply bg-blue-900 text-blue-300; }
-.score-c { @apply bg-yellow-900 text-yellow-300; }
-.score-d { @apply bg-orange-900 text-orange-300; }
-.score-f { @apply bg-red-900 text-red-300; }
+  /* Status badges */
+  .status-badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-2xs font-medium;
+  }
+  .status-new      { background-color: rgb(var(--info-bg)); color: rgb(var(--info)); border: 1px solid rgb(var(--info-border)); }
+  .status-evaluated { background-color: rgb(var(--surface-raised)); color: rgb(var(--fg-muted)); border: 1px solid rgb(var(--border)); }
+  .status-applied  { background-color: rgb(var(--info-bg)); color: rgb(var(--info)); border: 1px solid rgb(var(--info-border)); }
+  .status-interviewing { background-color: rgb(var(--warning-bg)); color: rgb(var(--warning)); border: 1px solid rgb(var(--warning-border)); }
+  .status-offer    { background-color: rgb(var(--success-bg)); color: rgb(var(--success)); border: 1px solid rgb(var(--success-border)); }
+  .status-rejected { background-color: rgb(var(--danger-bg)); color: rgb(var(--danger)); border: 1px solid rgb(var(--danger-border)); }
+  .status-pass     { background-color: rgb(var(--surface-raised)); color: rgb(var(--fg-subtle)); border: 1px solid rgb(var(--border)); }
 
-.status-badge {
-  @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-medium;
+  /* Tabular numerals everywhere they help */
+  .tnum { font-variant-numeric: tabular-nums; }
 }
-.status-new { @apply bg-blue-900/50 text-blue-300 border border-blue-700; }
-.status-evaluated { @apply bg-purple-900/50 text-purple-300 border border-purple-700; }
-.status-applied { @apply bg-cyan-900/50 text-cyan-300 border border-cyan-700; }
-.status-interviewing { @apply bg-amber-900/50 text-amber-300 border border-amber-700; }
-.status-offer { @apply bg-emerald-900/50 text-emerald-300 border border-emerald-700; }
-.status-rejected { @apply bg-red-900/50 text-red-400 border border-red-800; }
-.status-pass { @apply bg-gray-800 text-gray-500 border border-gray-700; }

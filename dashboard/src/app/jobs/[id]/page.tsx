@@ -1,206 +1,216 @@
 import { fetchJobDetail } from '@/lib/profile-api'
-import ProfileNav from '@/components/ProfileNav'
 import JobApplyButton from '@/components/JobApplyButton'
 import GenerateResumeButton from '@/components/GenerateResumeButton'
 import OutcomeLogger from '@/components/OutcomeLogger'
+import { AppShell } from '@/components/layout/AppShell'
+import { PageHeader } from '@/components/ui/PageHeader'
+import { Card } from '@/components/ui/Card'
+import { EmptyState } from '@/components/ui/EmptyState'
+import { Pill, type PillTone } from '@/components/ui/Pill'
+import { Icon } from '@/components/ui/Icon'
 
 export const dynamic = 'force-dynamic'
 
-const SCORE_COLOR = (s: number) =>
-  s >= 80 ? 'bg-emerald-900/40 border-emerald-800 text-emerald-300'
-  : s >= 65 ? 'bg-blue-900/40 border-blue-800 text-blue-300'
-  : s >= 50 ? 'bg-amber-900/40 border-amber-800 text-amber-300'
-  : 'bg-gray-800 border-gray-700 text-gray-400'
+const SCORE_TONE = (s: number): PillTone =>
+  s >= 80 ? 'success' : s >= 65 ? 'info' : s >= 50 ? 'warning' : 'neutral'
+
+const LEGITIMACY_TONE = (tier: string | undefined | null): PillTone =>
+  tier === 'High Confidence' ? 'success'
+  : tier === 'Suspicious' ? 'danger'
+  : 'warning'
+
+interface FitDetails {
+  gpt4_reason?: string
+  gaps_found?: number
+  gaps_filled?: number
+  strengths?: string[]
+  tailoring_priorities?: string[]
+}
+
+interface EvaluationBlocks {
+  block_a_role_summary?: { tldr?: string; level_signal?: string; key_themes?: string[] }
+  block_b_match?: {
+    matched_requirements?: Array<{ jd_requirement?: string; candidate_evidence?: string }>
+    gaps?: Array<{ requirement?: string; severity?: string; mitigation?: string }>
+  }
+  block_c_level_strategy?: { target_level?: string; selling_phrases?: string[] }
+  block_e_personalization?: { summary_rewrite?: string; ats_keywords_to_inject?: string[] }
+  block_f_interview_prep?: {
+    likely_questions_with_star?: Array<{ question?: string; star_situation?: string; action?: string; result?: string }>
+  }
+  tailoring_priorities?: string[]
+}
+
+interface Job {
+  id: number
+  title: string
+  company: string
+  location: string | null
+  match_score: number
+  status: string
+  url: string | null
+  source?: string | null
+  description?: string | null
+  archetype?: string | null
+  legitimacy_tier?: string | null
+  legitimacy_signals?: string[] | null
+  fit_details?: FitDetails | null
+  evaluation_blocks?: EvaluationBlocks | null
+  resume_path?: string | null
+  email_path?: string | null
+  interview_path?: string | null
+  resume_generated_at?: string | null
+}
+
+interface Artifact {
+  exists?: boolean
+  size?: number
+  content?: string
+  url?: string
+  kind?: string
+}
+
+interface JobDetailData {
+  job: Job
+  application?: { id?: string | null } | null
+  artifacts: { resume_path?: Artifact; email_path?: Artifact; interview_path?: Artifact }
+}
 
 export default async function JobDetailPage({ params }: { params: { id: string } }) {
-  let data
+  let data: JobDetailData | undefined
   let error: string | null = null
   try {
-    data = await fetchJobDetail(params.id)
-  } catch (e: any) {
-    error = e?.message || 'Failed to load job'
+    data = (await fetchJobDetail(params.id)) as JobDetailData
+  } catch (e: unknown) {
+    error = e instanceof Error ? e.message : 'Failed to load job'
   }
 
   if (error || !data) {
     return (
-      <Shell>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
-          <h2 className="text-lg font-semibold text-white">Job not found</h2>
-          {error && <p className="text-sm text-gray-400 mt-2">{error}</p>}
-        </div>
-      </Shell>
+      <AppShell>
+        <EmptyState
+          icon="alert-triangle"
+          title="Job not found"
+          description={error ?? undefined}
+        />
+      </AppShell>
     )
   }
 
   const j = data.job
   const fit = j.fit_details || {}
+
   return (
-    <Shell>
-      {/* Header */}
-      <section className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-800 rounded-2xl p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="flex-1 min-w-0">
-            <h1 className="text-2xl font-bold text-white">{j.title}</h1>
-            <p className="text-base text-blue-400 mt-1">
-              {j.company} {j.location && <span className="text-gray-500">· {j.location}</span>}
-            </p>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <span className={`text-xs border px-2 py-0.5 rounded ${SCORE_COLOR(j.match_score)}`}>
-                Match {j.match_score}/100
-              </span>
-              {j.archetype && (
-                <span className="text-xs bg-emerald-900/40 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded">
-                  📐 {j.archetype}
-                </span>
-              )}
-              {j.legitimacy_tier && (
-                <span
-                  className={`text-xs border px-2 py-0.5 rounded ${
-                    j.legitimacy_tier === 'High Confidence'
-                      ? 'bg-emerald-900/40 border-emerald-800 text-emerald-300'
-                      : j.legitimacy_tier === 'Suspicious'
-                      ? 'bg-red-900/40 border-red-800 text-red-300'
-                      : 'bg-amber-900/40 border-amber-800 text-amber-300'
-                  }`}
-                  title={(j.legitimacy_signals || []).join(' · ')}
-                >
-                  {j.legitimacy_tier === 'High Confidence' ? '✅' : j.legitimacy_tier === 'Suspicious' ? '⚠️' : '◑'}{' '}
-                  {j.legitimacy_tier}
-                </span>
-              )}
-              <span className="text-xs bg-gray-800 border border-gray-700 text-gray-300 px-2 py-0.5 rounded">
-                {j.status}
-              </span>
-              {j.source && (
-                <span className="text-xs bg-gray-800 border border-gray-700 text-gray-400 px-2 py-0.5 rounded">
-                  via {j.source}
-                </span>
-              )}
-              {j.url && (
-                <a
-                  href={j.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-blue-400 hover:text-blue-300 underline"
-                >
-                  Original posting ↗
-                </a>
-              )}
-            </div>
-            {(j.legitimacy_signals?.length ?? 0) > 0 && (
-              <div className="mt-3 text-[11px] text-gray-500">
-                <span className="font-semibold">Legitimacy signals:</span>{' '}
-                {(j.legitimacy_signals || []).join(' · ')}
-              </div>
-            )}
-          </div>
-          <div className="flex flex-col items-end gap-3">
+    <AppShell>
+      <PageHeader
+        eyebrow={
+          <span className="flex items-center gap-1.5">
+            <Icon name="briefcase" size={11} />
+            {j.company}{j.location ? ` · ${j.location}` : ''}
+          </span>
+        }
+        title={j.title}
+        actions={
+          <div className="flex flex-col items-end gap-2">
             <GenerateResumeButton
               jobId={j.id}
               score={j.match_score}
               alreadyGenerated={Boolean(j.resume_generated_at)}
               archetype={j.archetype}
             />
-            <JobApplyButton jobId={j.id} existingApp={data.application} />
+            <JobApplyButton jobId={j.id} existingApp={data.application ?? undefined} />
           </div>
-        </div>
-      </section>
+        }
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left col: fit + JD */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Fit details */}
-          {fit && (Object.keys(fit).length > 0) && (
-            <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">
-                Fit Analysis
-              </h2>
+      <div className="flex flex-wrap gap-1.5 -mt-3">
+        <Pill tone={SCORE_TONE(j.match_score)}>Match {j.match_score}/100</Pill>
+        {j.archetype && <Pill tone="success">{j.archetype}</Pill>}
+        {j.legitimacy_tier && (
+          <Pill
+            tone={LEGITIMACY_TONE(j.legitimacy_tier)}
+            title={(j.legitimacy_signals || []).join(' · ')}
+          >
+            {j.legitimacy_tier}
+          </Pill>
+        )}
+        <Pill>{j.status}</Pill>
+        {j.source && <Pill>via {j.source}</Pill>}
+        {j.url && (
+          <a
+            href={j.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-2xs text-info hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
+          >
+            Original posting <Icon name="arrow-up-right" size={11} />
+          </a>
+        )}
+      </div>
+
+      {(j.legitimacy_signals?.length ?? 0) > 0 && (
+        <p className="text-2xs text-fg-subtle">
+          <span className="font-semibold text-fg-muted">Legitimacy signals:</span>{' '}
+          {(j.legitimacy_signals || []).join(' · ')}
+        </p>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 space-y-4">
+          {fit && Object.keys(fit).length > 0 && (
+            <Card title="Fit analysis">
               {fit.gpt4_reason && (
-                <p className="text-xs text-gray-400 italic mb-3">"{fit.gpt4_reason}"</p>
+                <p className="text-xs text-fg-muted italic mb-3 leading-relaxed">&ldquo;{fit.gpt4_reason}&rdquo;</p>
               )}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mb-3">
-                {fit.gaps_found !== undefined && (
-                  <Stat label="Gaps found" value={fit.gaps_found} />
-                )}
-                {fit.gaps_filled !== undefined && (
-                  <Stat label="Gaps filled" value={fit.gaps_filled} />
-                )}
-              </div>
+              <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs mb-3">
+                {fit.gaps_found !== undefined && <Stat label="Gaps found" value={fit.gaps_found} />}
+                {fit.gaps_filled !== undefined && <Stat label="Gaps filled" value={fit.gaps_filled} />}
+              </dl>
               {fit.strengths && fit.strengths.length > 0 && (
                 <div className="mb-3">
-                  <h3 className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">
-                    Strengths
-                  </h3>
-                  <div className="flex flex-wrap gap-1.5">
-                    {fit.strengths.map((s: string, i: number) => (
-                      <span
-                        key={i}
-                        className="text-[11px] bg-emerald-900/30 border border-emerald-800 text-emerald-300 px-2 py-0.5 rounded"
-                      >
-                        {s}
-                      </span>
+                  <h3 className="text-2xs uppercase tracking-wider text-fg-subtle mb-1.5 font-semibold">Strengths</h3>
+                  <div className="flex flex-wrap gap-1">
+                    {fit.strengths.map((s, i) => (
+                      <Pill key={i} tone="success">{s}</Pill>
                     ))}
                   </div>
                 </div>
               )}
               {fit.tailoring_priorities && fit.tailoring_priorities.length > 0 && (
                 <div>
-                  <h3 className="text-[10px] uppercase tracking-wider text-gray-500 mb-1.5">
-                    Tailoring priorities
-                  </h3>
-                  <ul className="text-xs text-gray-300 space-y-1">
-                    {fit.tailoring_priorities.map((p: string, i: number) => (
-                      <li key={i}>• {p}</li>
+                  <h3 className="text-2xs uppercase tracking-wider text-fg-subtle mb-1.5 font-semibold">Tailoring priorities</h3>
+                  <ul className="text-xs text-fg-muted space-y-1">
+                    {fit.tailoring_priorities.map((p, i) => (
+                      <li key={i} className="flex gap-2">
+                        <span aria-hidden className="text-fg-subtle">•</span>
+                        <span>{p}</span>
+                      </li>
                     ))}
                   </ul>
                 </div>
               )}
-            </section>
+            </Card>
           )}
 
-          {/* A-F Evaluation Blocks (workflow v2) */}
           {j.evaluation_blocks && Object.keys(j.evaluation_blocks).length > 0 && (
-            <section className="bg-gray-900 border border-emerald-900/50 rounded-xl p-5">
-              <h2 className="text-sm font-semibold text-emerald-300 uppercase tracking-wider mb-3">
-                Recruitment-Expert Brief
-              </h2>
-              <EvaluationBlocks blocks={j.evaluation_blocks} />
-            </section>
+            <Card title="Recruitment-expert brief" tone="success">
+              <EvaluationBlocksView blocks={j.evaluation_blocks} />
+            </Card>
           )}
 
-          {/* JD */}
           {j.description && (
-            <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-              <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-3">
-                Job Description
-              </h2>
-              <pre className="text-xs text-gray-300 leading-relaxed whitespace-pre-wrap font-sans">
+            <Card title="Job description">
+              <div className="text-xs text-fg-muted leading-relaxed whitespace-pre-wrap font-sans">
                 {j.description}
-              </pre>
-            </section>
+              </div>
+            </Card>
           )}
         </div>
 
-        {/* Right col: artifacts + outcome */}
-        <div className="space-y-4">
-          <ArtifactCard
-            title="📄 Tailored Resume"
-            path={j.resume_path}
-            artifact={data.artifacts.resume_path}
-          />
-          <ArtifactCard
-            title="✉ Cover Email"
-            path={j.email_path}
-            artifact={data.artifacts.email_path}
-            preview
-          />
-          <ArtifactCard
-            title="🎯 Interview Prep"
-            path={j.interview_path}
-            artifact={data.artifacts.interview_path}
-            preview
-          />
-          {/* Phase 1.5: outcome logging closes the learning loop */}
+        <div className="space-y-3">
+          <ArtifactCard title="Tailored resume" icon="document" path={j.resume_path ?? null} artifact={data.artifacts.resume_path} />
+          <ArtifactCard title="Cover email" icon="mail" path={j.email_path ?? null} artifact={data.artifacts.email_path} preview />
+          <ArtifactCard title="Interview prep" icon="target" path={j.interview_path ?? null} artifact={data.artifacts.interview_path} preview />
           <OutcomeLogger
             jobId={j.id}
             applicationId={data.application?.id || null}
@@ -208,196 +218,185 @@ export default async function JobDetailPage({ params }: { params: { id: string }
           />
         </div>
       </div>
-    </Shell>
-  )
-}
-
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="min-h-screen bg-gray-950 text-gray-200">
-      <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-white">🤖 Job Hunt AI</h1>
-          <ProfileNav />
-        </div>
-      </header>
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">{children}</main>
-    </div>
+    </AppShell>
   )
 }
 
 function Stat({ label, value }: { label: string; value: number | string }) {
   return (
-    <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-3 py-1.5">
-      <div className="text-xs text-gray-400">{label}</div>
-      <div className="text-base font-bold text-white">{value}</div>
+    <div className="bg-surface-raised border border-border rounded-md px-3 py-2">
+      <dt className="text-2xs text-fg-subtle uppercase tracking-wider">{label}</dt>
+      <dd className="text-base font-semibold text-fg tnum mt-0.5">{value}</dd>
     </div>
   )
 }
 
-function EvaluationBlocks({ blocks }: { blocks: any }) {
-  const sections: { key: string; label: string; render: (v: any) => React.ReactNode }[] = [
-    {
-      key: 'block_a_role_summary',
-      label: 'A · Role Summary',
-      render: (v) => (
-        <div className="space-y-1.5 text-xs text-gray-300">
-          {v.tldr && <p className="italic">"{v.tldr}"</p>}
-          {v.level_signal && <p><span className="text-gray-500">Level:</span> {v.level_signal}</p>}
-          {v.key_themes?.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {v.key_themes.map((t: string, i: number) => (
-                <span key={i} className="bg-gray-800 border border-gray-700 px-1.5 py-0.5 rounded text-[10px]">{t}</span>
-              ))}
-            </div>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'block_b_match',
-      label: 'B · Match & Gaps',
-      render: (v) => (
-        <div className="space-y-2">
-          {v.matched_requirements?.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase text-gray-500 mb-1">Matched</div>
-              <ul className="text-xs text-gray-300 space-y-1">
-                {v.matched_requirements.slice(0, 5).map((m: any, i: number) => (
-                  <li key={i}>• <span className="text-emerald-400">{m.jd_requirement}</span> — {m.candidate_evidence}</li>
+function EvaluationBlocksView({ blocks }: { blocks: EvaluationBlocks }) {
+  return (
+    <div className="space-y-4">
+      {blocks.block_a_role_summary && (
+        <Section title="A · Role summary">
+          <div className="space-y-1.5 text-xs text-fg-muted">
+            {blocks.block_a_role_summary.tldr && <p className="italic">&ldquo;{blocks.block_a_role_summary.tldr}&rdquo;</p>}
+            {blocks.block_a_role_summary.level_signal && (
+              <p><span className="text-fg-subtle">Level:</span> {blocks.block_a_role_summary.level_signal}</p>
+            )}
+            {(blocks.block_a_role_summary.key_themes?.length ?? 0) > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {blocks.block_a_role_summary.key_themes!.map((t, i) => (
+                  <Pill key={i}>{t}</Pill>
                 ))}
-              </ul>
-            </div>
-          )}
-          {v.gaps?.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase text-gray-500 mb-1">Gaps</div>
-              <ul className="text-xs text-gray-300 space-y-1">
-                {v.gaps.slice(0, 5).map((g: any, i: number) => (
-                  <li key={i}>
-                    <span className={
-                      g.severity === 'blocker' ? 'text-red-400' :
-                      g.severity === 'gap' ? 'text-amber-400' : 'text-gray-400'
-                    }>● </span>
-                    {g.requirement} — <span className="text-gray-500">{g.mitigation}</span>
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {blocks.block_b_match && (
+        <Section title="B · Match & gaps">
+          <div className="space-y-2.5">
+            {(blocks.block_b_match.matched_requirements?.length ?? 0) > 0 && (
+              <div>
+                <div className="text-2xs uppercase text-fg-subtle mb-1 font-semibold">Matched</div>
+                <ul className="text-xs text-fg-muted space-y-1">
+                  {blocks.block_b_match.matched_requirements!.slice(0, 5).map((m, i) => (
+                    <li key={i} className="flex gap-2">
+                      <Icon name="check" size={12} className="text-success mt-0.5 shrink-0" />
+                      <span><span className="text-success">{m.jd_requirement}</span> — {m.candidate_evidence}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {(blocks.block_b_match.gaps?.length ?? 0) > 0 && (
+              <div>
+                <div className="text-2xs uppercase text-fg-subtle mb-1 font-semibold">Gaps</div>
+                <ul className="text-xs text-fg-muted space-y-1">
+                  {blocks.block_b_match.gaps!.slice(0, 5).map((g, i) => {
+                    const tone = g.severity === 'blocker' ? 'text-danger' : g.severity === 'gap' ? 'text-warning' : 'text-fg-subtle'
+                    const symbol = g.severity === 'blocker' ? '!' : g.severity === 'gap' ? '?' : '·'
+                    return (
+                      <li key={i} className="flex gap-2">
+                        <span aria-label={g.severity || 'note'} className={`${tone} font-bold tabular-nums w-4 text-center`}>{symbol}</span>
+                        <span>{g.requirement} <span className="text-fg-subtle">— {g.mitigation}</span></span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {blocks.block_c_level_strategy && (
+        <Section title="C · Level strategy">
+          <div className="space-y-1.5 text-xs text-fg-muted">
+            {blocks.block_c_level_strategy.target_level && (
+              <p><span className="text-fg-subtle">Target:</span> {blocks.block_c_level_strategy.target_level}</p>
+            )}
+            {(blocks.block_c_level_strategy.selling_phrases?.length ?? 0) > 0 && (
+              <ul className="space-y-1">
+                {blocks.block_c_level_strategy.selling_phrases!.map((p, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span aria-hidden className="text-fg-subtle">•</span>
+                    <span className="italic">&ldquo;{p}&rdquo;</span>
                   </li>
                 ))}
               </ul>
-            </div>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'block_c_level_strategy',
-      label: 'C · Level Strategy',
-      render: (v) => (
-        <div className="space-y-1.5 text-xs text-gray-300">
-          {v.target_level && <p><span className="text-gray-500">Target:</span> {v.target_level}</p>}
-          {v.selling_phrases?.length > 0 && (
-            <ul className="space-y-1">
-              {v.selling_phrases.map((p: string, i: number) => (
-                <li key={i}>• "{p}"</li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'block_e_personalization',
-      label: 'E · Tailoring',
-      render: (v) => (
-        <div className="space-y-2">
-          {v.summary_rewrite && (
-            <div className="bg-gray-950 border border-gray-800 rounded p-2">
-              <div className="text-[10px] uppercase text-gray-500 mb-1">Proposed summary</div>
-              <p className="text-xs text-gray-300 italic">{v.summary_rewrite}</p>
-            </div>
-          )}
-          {v.ats_keywords_to_inject?.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {v.ats_keywords_to_inject.map((k: string, i: number) => (
-                <span key={i} className="bg-violet-900/30 border border-violet-800 text-violet-300 px-1.5 py-0.5 rounded text-[10px]">{k}</span>
-              ))}
-            </div>
-          )}
-        </div>
-      ),
-    },
-    {
-      key: 'block_f_interview_prep',
-      label: 'F · Interview Prep',
-      render: (v) => (
-        <div className="space-y-2">
-          {v.likely_questions_with_star?.length > 0 && (
-            <div className="space-y-2">
-              {v.likely_questions_with_star.slice(0, 3).map((q: any, i: number) => (
-                <div key={i} className="bg-gray-950 border border-gray-800 rounded p-2 text-xs text-gray-300">
-                  <p className="font-semibold text-white">Q: {q.question}</p>
-                  {q.star_situation && <p className="mt-1"><span className="text-gray-500">S:</span> {q.star_situation}</p>}
-                  {q.action && <p><span className="text-gray-500">A:</span> {q.action}</p>}
-                  {q.result && <p><span className="text-gray-500">R:</span> {q.result}</p>}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ),
-    },
-  ]
-
-  return (
-    <div className="space-y-4">
-      {sections.map((s) => {
-        const v = blocks[s.key]
-        if (!v) return null
-        return (
-          <div key={s.key}>
-            <h3 className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">
-              {s.label}
-            </h3>
-            {s.render(v)}
+            )}
           </div>
-        )
-      })}
-      {blocks.tailoring_priorities?.length > 0 && (
-        <div>
-          <h3 className="text-xs font-semibold text-emerald-400 uppercase tracking-wider mb-2">
-            Top Resume Changes (priority order)
-          </h3>
-          <ol className="text-xs text-gray-300 space-y-1 list-decimal list-inside">
-            {blocks.tailoring_priorities.map((p: string, i: number) => (
+        </Section>
+      )}
+
+      {blocks.block_e_personalization && (
+        <Section title="E · Tailoring">
+          <div className="space-y-2">
+            {blocks.block_e_personalization.summary_rewrite && (
+              <div className="bg-surface-raised border border-border rounded-md p-2.5">
+                <div className="text-2xs uppercase text-fg-subtle mb-1 font-semibold">Proposed summary</div>
+                <p className="text-xs text-fg-muted italic">{blocks.block_e_personalization.summary_rewrite}</p>
+              </div>
+            )}
+            {(blocks.block_e_personalization.ats_keywords_to_inject?.length ?? 0) > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {blocks.block_e_personalization.ats_keywords_to_inject!.map((k, i) => (
+                  <Pill key={i} tone="info">{k}</Pill>
+                ))}
+              </div>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {blocks.block_f_interview_prep && (
+        <Section title="F · Interview prep">
+          <div className="space-y-2">
+            {(blocks.block_f_interview_prep.likely_questions_with_star?.length ?? 0) > 0 && (
+              blocks.block_f_interview_prep.likely_questions_with_star!.slice(0, 3).map((q, i) => (
+                <div key={i} className="bg-surface-raised border border-border rounded-md p-2.5 text-xs text-fg-muted">
+                  <p className="font-semibold text-fg">Q: {q.question}</p>
+                  {q.star_situation && <p className="mt-1"><span className="text-fg-subtle">S:</span> {q.star_situation}</p>}
+                  {q.action && <p><span className="text-fg-subtle">A:</span> {q.action}</p>}
+                  {q.result && <p><span className="text-fg-subtle">R:</span> {q.result}</p>}
+                </div>
+              ))
+            )}
+          </div>
+        </Section>
+      )}
+
+      {(blocks.tailoring_priorities?.length ?? 0) > 0 && (
+        <Section title="Top resume changes (priority order)">
+          <ol className="text-xs text-fg-muted space-y-1 list-decimal list-outside ml-4">
+            {blocks.tailoring_priorities!.map((p, i) => (
               <li key={i}>{p}</li>
             ))}
           </ol>
-        </div>
+        </Section>
       )}
+    </div>
+  )
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <h3 className="text-2xs font-semibold text-success uppercase tracking-wider mb-2">{title}</h3>
+      {children}
     </div>
   )
 }
 
 function ArtifactCard({
   title,
+  icon,
   path,
   artifact,
   preview,
 }: {
   title: string
+  icon: 'document' | 'mail' | 'target'
   path: string | null
-  artifact?: { exists?: boolean; size?: number; content?: string; url?: string; kind?: string }
+  artifact?: Artifact
   preview?: boolean
 }) {
   const exists = artifact?.exists
   const kind = artifact?.kind
   return (
-    <section className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <h3 className="text-sm font-semibold text-white mb-2">{title}</h3>
+    <Card
+      title={
+        <span className="flex items-center gap-1.5">
+          <Icon name={icon} size={14} className="text-fg-muted" />
+          {title}
+        </span>
+      }
+    >
       {!path ? (
-        <p className="text-xs text-gray-500 italic">Not generated yet — click "Generate Resume" above.</p>
+        <p className="text-2xs text-fg-subtle italic">Not generated yet — use &ldquo;Generate resume&rdquo; above.</p>
       ) : !exists ? (
-        <p className="text-xs text-amber-400">
-          ⚠ Generated, but artifact lost on redeploy. Click "Re-generate Resume" to rebuild.
+        <p className="text-2xs text-warning">
+          Generated, but artifact lost on redeploy. Click &ldquo;Re-generate resume&rdquo; to rebuild.
         </p>
       ) : kind === 'remote' && artifact?.url ? (
         <>
@@ -405,26 +404,27 @@ function ArtifactCard({
             href={artifact.url}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 text-xs bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded-lg font-medium"
+            className="inline-flex items-center gap-1.5 text-2xs bg-accent text-accent-fg hover:bg-accent-hover px-3 py-2 rounded-md font-medium min-h-9 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent transition-colors"
           >
-            ⬇ Download
+            <Icon name="download" size={12} />
+            Download
           </a>
-          <p className="text-[10px] text-gray-500 mt-2 break-all">{path.split('/').pop()}</p>
+          <p className="text-2xs text-fg-subtle mt-2 break-all font-mono">{path.split('/').pop()}</p>
         </>
       ) : (
         <>
-          <p className="text-[10px] text-gray-500 break-all">{path.split('/').pop()}</p>
+          <p className="text-2xs text-fg-subtle break-all font-mono">{path.split('/').pop()}</p>
           {artifact?.size !== undefined && (
-            <p className="text-[10px] text-gray-500">{(artifact.size / 1024).toFixed(1)} KB</p>
+            <p className="text-2xs text-fg-subtle">{(artifact.size / 1024).toFixed(1)} KB</p>
           )}
           {preview && artifact?.content && (
-            <pre className="mt-2 text-[11px] text-gray-300 leading-relaxed whitespace-pre-wrap font-sans bg-gray-950 border border-gray-800 rounded p-2 max-h-64 overflow-y-auto">
+            <pre className="mt-2 text-2xs text-fg-muted leading-relaxed whitespace-pre-wrap font-mono bg-surface-raised border border-border rounded p-2 max-h-64 overflow-y-auto">
               {artifact.content.slice(0, 2000)}
               {artifact.content.length > 2000 ? '\n\n... (truncated)' : ''}
             </pre>
           )}
         </>
       )}
-    </section>
+    </Card>
   )
 }

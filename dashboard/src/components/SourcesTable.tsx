@@ -27,22 +27,22 @@ export default function SourcesTable({ documents }: Props) {
   )
 
   return (
-    <section className="bg-gray-900 border border-gray-800 rounded-xl">
-      <div className="px-5 py-3 border-b border-gray-800 flex flex-col sm:flex-row gap-2 items-start sm:items-center justify-between">
-        <h3 className="text-sm font-semibold text-white">
-          Documents <span className="text-gray-500 font-normal text-xs">({filtered.length} shown)</span>
+    <section className="bg-surface border border-border rounded-xl">
+      <div className="px-5 py-3 border-b border-border flex flex-col sm:flex-row gap-2 items-start sm:items-center justify-between">
+        <h3 className="text-sm font-semibold text-fg">
+          Documents <span className="text-fg-subtle font-normal text-xs">({filtered.length} shown)</span>
         </h3>
         <div className="flex flex-wrap gap-2">
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search filename..."
-            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200 w-48"
+            className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg w-48"
           />
           <select
             value={classFilter}
             onChange={(e) => setClassFilter(e.target.value)}
-            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200"
+            className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
           >
             <option value="all">All classes</option>
             {classes.map((c) => (
@@ -55,8 +55,8 @@ export default function SourcesTable({ documents }: Props) {
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
-          <thead className="text-left text-gray-400 uppercase tracking-wider">
-            <tr className="border-b border-gray-800">
+          <thead className="text-left text-fg-muted uppercase tracking-wider">
+            <tr className="border-b border-border">
               <th className="px-5 py-2.5">File</th>
               <th className="px-3 py-2.5">Class</th>
               <th className="px-3 py-2.5 text-right">Chars</th>
@@ -64,34 +64,34 @@ export default function SourcesTable({ documents }: Props) {
               <th className="px-3 py-2.5">Hash</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-800">
+          <tbody className="divide-y divide-border">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-5 py-8 text-center text-gray-500">
+                <td colSpan={5} className="px-5 py-8 text-center text-fg-subtle">
                   No documents match.
                 </td>
               </tr>
             ) : (
               filtered.slice(0, 250).map((d) => (
-                <tr key={d.id} className="hover:bg-gray-800/40">
-                  <td className="px-5 py-2 text-white" title={d.file_name}>
+                <tr key={d.id} className="hover:bg-surface-raised/40">
+                  <td className="px-5 py-2 text-fg" title={d.file_name}>
                     {d.file_name.length > 60 ? d.file_name.slice(0, 60) + '…' : d.file_name}
                   </td>
-                  <td className="px-3 py-2 text-gray-300">{d.document_class}</td>
-                  <td className="px-3 py-2 text-right text-gray-400 tabular-nums">
+                  <td className="px-3 py-2 text-fg-muted">{d.document_class}</td>
+                  <td className="px-3 py-2 text-right text-fg-muted tabular-nums">
                     {d.char_count.toLocaleString()}
                   </td>
-                  <td className="px-3 py-2 text-right text-gray-400 tabular-nums">
+                  <td className="px-3 py-2 text-right text-fg-muted tabular-nums">
                     {(d.file_size / 1024).toFixed(1)} KB
                   </td>
-                  <td className="px-3 py-2 text-gray-500 font-mono">{d.file_hash.slice(0, 8)}</td>
+                  <td className="px-3 py-2 text-fg-subtle font-mono">{d.file_hash.slice(0, 8)}</td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
         {filtered.length > 250 && (
-          <div className="px-5 py-3 border-t border-gray-800 text-xs text-gray-500 text-center">
+          <div className="px-5 py-3 border-t border-border text-xs text-fg-subtle text-center">
             Showing 250 of {filtered.length} — refine filters to see more.
           </div>
         )}

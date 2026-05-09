@@ -19,7 +19,6 @@ import {
   type AlertHistoryEntry,
 } from '@/lib/profile-api'
 import Link from 'next/link'
-import ProfileNav from '@/components/ProfileNav'
 import CostSummaryCards from '@/components/CostSummaryCards'
 import DailyCostChart from '@/components/DailyCostChart'
 import CostByProviderChart from '@/components/CostByProviderChart'
@@ -27,6 +26,10 @@ import CostByAgentTable from '@/components/CostByAgentTable'
 import RecentCallsTable from '@/components/RecentCallsTable'
 import ProviderHealthBadges from '@/components/ProviderHealthBadges'
 import AlertHistoryTable from '@/components/AlertHistoryTable'
+import { AppShell } from '@/components/layout/AppShell'
+import { PageHeader } from '@/components/ui/PageHeader'
+import { Card } from '@/components/ui/Card'
+import { Pill } from '@/components/ui/Pill'
 
 export const dynamic = 'force-dynamic'
 
@@ -66,81 +69,55 @@ export default async function CostsPage() {
     health = h
     logStats = ls
     alerts = al
-  } catch (e: any) {
-    error = e?.message || 'Failed to load cost data'
+  } catch (e: unknown) {
+    error = e instanceof Error ? e.message : 'Failed to load cost data'
   }
 
   return (
-    <Shell>
-      {/* Header */}
-      <section className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-800 rounded-2xl p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="text-2xl font-bold text-white">💸 LLM Cost Observability</h1>
-            <p className="text-sm text-gray-400 mt-1">
-              Per-call cost + latency telemetry from{' '}
-              <code className="text-gray-300">agent_call_log</code>.{' '}
-              <span className="text-gray-500">
-                Written by{' '}
-                <code className="text-gray-400">agents/llm_router.py</code>{' '}
-                on every successful LLM call across all 5 providers.
-              </span>
-            </p>
-          </div>
-          {summary && (
-            <div className="text-right text-xs text-gray-400">
-              <div>
-                Today:{' '}
-                <span className="text-white font-bold">
-                  ${summary.today.cost_usd.toFixed(2)}
-                </span>
-              </div>
-              <div>
-                30d:{' '}
-                <span className="text-white font-bold">
-                  ${summary.last_30d.cost_usd.toFixed(2)}
-                </span>
-              </div>
+    <AppShell>
+      <PageHeader
+        eyebrow="Telemetry"
+        title="LLM cost observability"
+        description={
+          <>
+            Per-call cost and latency from <code className="font-mono text-fg">agent_call_log</code>.
+            Written by <code className="font-mono text-fg">agents/llm_router.py</code> on every successful call across all 5 providers.
+          </>
+        }
+        actions={
+          summary ? (
+            <div className="flex items-center gap-3 text-2xs text-fg-muted">
+              <span>Today <span className="text-fg font-semibold tnum">${summary.today.cost_usd.toFixed(2)}</span></span>
+              <span className="text-fg-subtle" aria-hidden>·</span>
+              <span>30 d <span className="text-fg font-semibold tnum">${summary.last_30d.cost_usd.toFixed(2)}</span></span>
             </div>
-          )}
-        </div>
-      </section>
+          ) : null
+        }
+      />
 
       {error && (
-        <div className="bg-red-900/30 border border-red-900/60 rounded-xl p-4 text-sm text-red-300">
-          {error}
-        </div>
+        <Card tone="danger" padding="sm">
+          <p className="text-xs text-danger">{error}</p>
+        </Card>
       )}
 
-      {summary && summary.warning && (
-        <div className="bg-amber-900/20 border border-amber-900/50 rounded-xl p-4 text-sm text-amber-300">
-          ⚠ {summary.warning} — apply{' '}
-          <code className="text-amber-200">db/multi_llm_schema.sql</code> against
-          your Supabase project to start collecting cost telemetry.
-        </div>
+      {summary?.warning && (
+        <Card tone="warning" padding="sm">
+          <p className="text-xs text-warning">
+            {summary.warning} — apply{' '}
+            <code className="font-mono">db/multi_llm_schema.sql</code> against your Supabase project to start collecting cost telemetry.
+          </p>
+        </Card>
       )}
 
-      {/* Summary cards */}
       {summary && <CostSummaryCards summary={summary} />}
+      {health && <ProviderHealthBadges providers={health.providers} warning={health.warning} />}
+      {daily && <DailyCostChart rows={daily.rows} days={daily.days} warning={daily.warning} />}
 
-      {/* Phase 1.9: provider health strip — error rate + p95 latency per provider */}
-      {health && (
-        <ProviderHealthBadges providers={health.providers} warning={health.warning} />
-      )}
-
-      {/* Daily trend */}
-      {daily && (
-        <DailyCostChart rows={daily.rows} days={daily.days} warning={daily.warning} />
-      )}
-
-      {/* Side-by-side: provider donut + agent bar */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
         <div className="lg:col-span-2">
           {byProvider && (
-            <CostByProviderChart
-              providers={byProvider.providers}
-              days={byProvider.days}
-            />
+            <CostByProviderChart providers={byProvider.providers} days={byProvider.days} />
           )}
         </div>
         <div className="lg:col-span-3">
@@ -148,66 +125,42 @@ export default async function CostsPage() {
         </div>
       </div>
 
-      {/* Top resume builds by cost */}
       {byBuild && byBuild.builds.length > 0 && (
-        <section className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-800">
-            <h2 className="text-base font-semibold text-white">Top Resume Builds by Cost</h2>
-            <p className="text-[11px] text-gray-500 mt-0.5">
-              Last 90 days · most expensive first
-            </p>
-          </div>
+        <Card title="Top resume builds by cost" description="Last 90 days · most expensive first" padding="none">
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <thead className="bg-gray-950/50 text-gray-400 uppercase text-[10px]">
+              <caption className="sr-only">Top resume builds by cost in the last 90 days.</caption>
+              <thead className="bg-surface-raised text-fg-subtle uppercase text-2xs">
                 <tr>
-                  <th className="px-3 py-2 text-left">Company</th>
-                  <th className="px-3 py-2 text-right">Polisher</th>
-                  <th className="px-3 py-2 text-right">Iters</th>
-                  <th className="px-3 py-2 text-right">Calls</th>
-                  <th className="px-3 py-2 text-right">Tokens</th>
-                  <th className="px-3 py-2 text-right">Cost</th>
-                  <th className="px-3 py-2 text-left">Status</th>
-                  <th className="px-3 py-2 text-left">When</th>
+                  <th scope="col" className="px-4 py-2.5 text-left font-semibold tracking-wider">Company</th>
+                  <th scope="col" className="px-3 py-2.5 text-right font-semibold tracking-wider">Polisher</th>
+                  <th scope="col" className="px-3 py-2.5 text-right font-semibold tracking-wider">Iters</th>
+                  <th scope="col" className="px-3 py-2.5 text-right font-semibold tracking-wider">Calls</th>
+                  <th scope="col" className="px-3 py-2.5 text-right font-semibold tracking-wider">Tokens</th>
+                  <th scope="col" className="px-3 py-2.5 text-right font-semibold tracking-wider">Cost</th>
+                  <th scope="col" className="px-3 py-2.5 text-left font-semibold tracking-wider">Status</th>
+                  <th scope="col" className="px-4 py-2.5 text-left font-semibold tracking-wider">When</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-800/60">
+              <tbody className="divide-y divide-border">
                 {byBuild.builds.map((b) => (
-                  <tr key={b.resume_build_id} className="hover:bg-gray-800/30">
-                    <td className="px-3 py-2 text-gray-200">{b.company_name || '—'}</td>
-                    <td className="px-3 py-2 text-right text-gray-300">
-                      {b.polisher_score ?? '—'}
+                  <tr key={b.resume_build_id} className="hover:bg-surface-raised">
+                    <td className="px-4 py-2 text-fg">{b.company_name || '—'}</td>
+                    <td className="px-3 py-2 text-right text-fg-muted tnum">{b.polisher_score ?? '—'}</td>
+                    <td className="px-3 py-2 text-right text-fg-muted tnum">{b.iterations ?? '—'}</td>
+                    <td className="px-3 py-2 text-right text-fg-muted tnum">{b.calls}</td>
+                    <td className="px-3 py-2 text-right text-fg-muted tnum whitespace-nowrap">
+                      {(b.input_tokens / 1000).toFixed(1)}k / {(b.output_tokens / 1000).toFixed(1)}k
                     </td>
-                    <td className="px-3 py-2 text-right text-gray-400">
-                      {b.iterations ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 text-right text-gray-300">{b.calls}</td>
-                    <td className="px-3 py-2 text-right text-gray-400 whitespace-nowrap">
-                      {(b.input_tokens / 1000).toFixed(1)}k /{' '}
-                      {(b.output_tokens / 1000).toFixed(1)}k
-                    </td>
-                    <td className="px-3 py-2 text-right text-white font-bold">
-                      ${b.cost_usd.toFixed(2)}
-                    </td>
+                    <td className="px-3 py-2 text-right text-fg font-semibold tnum">${b.cost_usd.toFixed(2)}</td>
                     <td className="px-3 py-2">
-                      <span
-                        className={`text-[10px] border px-1.5 py-0.5 rounded uppercase ${
-                          b.status === 'converged'
-                            ? 'bg-emerald-900/40 border-emerald-800 text-emerald-300'
-                            : b.status === 'failed'
-                            ? 'bg-red-900/30 border-red-900/60 text-red-400'
-                            : 'bg-gray-800 border-gray-700 text-gray-400'
-                        }`}
-                      >
+                      <Pill tone={b.status === 'converged' ? 'success' : b.status === 'failed' ? 'danger' : 'neutral'}>
                         {b.status || '?'}
-                      </span>
+                      </Pill>
                     </td>
-                    <td className="px-3 py-2 text-gray-500 text-[10px]">
+                    <td className="px-4 py-2 text-fg-subtle whitespace-nowrap">
                       {b.created_at
-                        ? new Date(b.created_at).toLocaleDateString('en-GB', {
-                            day: 'numeric',
-                            month: 'short',
-                          })
+                        ? new Date(b.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
                         : '—'}
                     </td>
                   </tr>
@@ -215,119 +168,90 @@ export default async function CostsPage() {
               </tbody>
             </table>
           </div>
-        </section>
+        </Card>
       )}
 
-      {/* Recent calls — debug-grade visibility */}
       {recentCalls && (
         <RecentCallsTable initial={recentCalls.calls} warning={recentCalls.warning} />
       )}
 
-      {/* Phase 1.14: cost-alerter audit history */}
       {alerts && (
         <AlertHistoryTable alerts={alerts.alerts} warning={alerts.warning} />
       )}
 
-      {/* Phase 1.9: log-stats footer with scale-up guidance */}
-      <section className="bg-gray-900/50 border border-gray-800 rounded-xl p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Stats */}
-        <div>
-          <p className="font-semibold text-gray-400 mb-2 text-[11px] uppercase tracking-wider">
-            agent_call_log stats
-          </p>
-          {logStats?.warning ? (
-            <p className="text-[11px] text-amber-400">⚠ {logStats.warning}</p>
-          ) : logStats ? (
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-              <span className="text-gray-500">Total rows</span>
-              <span className="text-gray-200 font-mono">{logStats.total_rows}</span>
-              {logStats.rows_last_24h !== undefined && (
-                <>
-                  <span className="text-gray-500">Last 24h</span>
-                  <span className="text-gray-200 font-mono">{logStats.rows_last_24h}</span>
-                </>
-              )}
-              {logStats.rows_last_7d !== undefined && (
-                <>
-                  <span className="text-gray-500">Last 7d</span>
-                  <span className="text-gray-200 font-mono">{logStats.rows_last_7d}</span>
-                </>
-              )}
-              {logStats.total_size && (
-                <>
-                  <span className="text-gray-500">Table size</span>
-                  <span className="text-gray-200 font-mono">{logStats.total_size}</span>
-                </>
-              )}
-              {logStats.indexes_size && (
-                <>
-                  <span className="text-gray-500">Indexes</span>
-                  <span className="text-gray-200 font-mono">{logStats.indexes_size}</span>
-                </>
-              )}
-              {logStats.oldest_row_at && (
-                <>
-                  <span className="text-gray-500">Oldest entry</span>
-                  <span className="text-gray-200 font-mono text-[11px]">
-                    {new Date(logStats.oldest_row_at).toLocaleDateString('en-GB', {
-                      day: 'numeric',
-                      month: 'short',
-                      year: 'numeric',
-                    })}
-                  </span>
-                </>
-              )}
-            </div>
-          ) : (
-            <p className="text-[11px] text-gray-500">…</p>
-          )}
+      <Card title="agent_call_log stats" description="Storage health and scaling guidance">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            {logStats?.warning ? (
+              <p className="text-2xs text-warning">{logStats.warning}</p>
+            ) : logStats ? (
+              <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                <dt className="text-fg-subtle">Total rows</dt>
+                <dd className="text-fg font-mono tnum">{logStats.total_rows.toLocaleString()}</dd>
+                {logStats.rows_last_24h !== undefined && (
+                  <>
+                    <dt className="text-fg-subtle">Last 24 h</dt>
+                    <dd className="text-fg font-mono tnum">{logStats.rows_last_24h.toLocaleString()}</dd>
+                  </>
+                )}
+                {logStats.rows_last_7d !== undefined && (
+                  <>
+                    <dt className="text-fg-subtle">Last 7 d</dt>
+                    <dd className="text-fg font-mono tnum">{logStats.rows_last_7d.toLocaleString()}</dd>
+                  </>
+                )}
+                {logStats.total_size && (
+                  <>
+                    <dt className="text-fg-subtle">Table size</dt>
+                    <dd className="text-fg font-mono">{logStats.total_size}</dd>
+                  </>
+                )}
+                {logStats.indexes_size && (
+                  <>
+                    <dt className="text-fg-subtle">Indexes</dt>
+                    <dd className="text-fg font-mono">{logStats.indexes_size}</dd>
+                  </>
+                )}
+                {logStats.oldest_row_at && (
+                  <>
+                    <dt className="text-fg-subtle">Oldest entry</dt>
+                    <dd className="text-fg font-mono">
+                      {new Date(logStats.oldest_row_at).toLocaleDateString('en-GB', {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })}
+                    </dd>
+                  </>
+                )}
+              </dl>
+            ) : (
+              <p className="text-2xs text-fg-subtle">…</p>
+            )}
+          </div>
+          <div>
+            <p className="text-2xs uppercase tracking-wider text-fg-subtle font-semibold mb-2">Scale-up guidance</p>
+            <ul className="text-2xs text-fg-muted space-y-1.5 leading-relaxed">
+              <li>
+                <span className="text-fg">≤ 10 k rows</span> — current setup is fine. Composite indexes from{' '}
+                <code className="font-mono text-fg">agent_call_log_perf.sql</code> keep all queries sub-50 ms.
+              </li>
+              <li>
+                <span className="text-warning">10 k – 100 k rows</span> — consider cleanup cron:{' '}
+                <code className="font-mono text-fg">POST /costs/cleanup</code> with default 365-day retention.
+              </li>
+              <li>
+                <span className="text-danger">&gt; 100 k rows</span> — apply the partition setup at the bottom of{' '}
+                <code className="font-mono text-fg">db/agent_call_log_perf.sql</code> (monthly via pg_partman). See{' '}
+                <Link href="/personas" className="text-info hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded">
+                  docs/PERF.md
+                </Link>{' '}
+                once it lands.
+              </li>
+            </ul>
+          </div>
         </div>
-
-        {/* Scaling guidance */}
-        <div>
-          <p className="font-semibold text-gray-400 mb-2 text-[11px] uppercase tracking-wider">
-            Scale-up guidance
-          </p>
-          <ul className="text-[11px] text-gray-500 space-y-1 leading-relaxed">
-            <li>
-              <span className="text-gray-300">≤ 10k rows</span> — current setup
-              is fine. Composite indexes from{' '}
-              <code className="text-gray-400">agent_call_log_perf.sql</code>{' '}
-              keep all queries sub-50ms.
-            </li>
-            <li>
-              <span className="text-amber-400">10k – 100k rows</span> — consider
-              cleanup cron:{' '}
-              <code className="text-gray-400">POST /costs/cleanup</code>{' '}
-              with default 365-day retention.
-            </li>
-            <li>
-              <span className="text-red-400">&gt; 100k rows</span> — apply the
-              partition setup at the bottom of{' '}
-              <code className="text-gray-400">db/agent_call_log_perf.sql</code>{' '}
-              (monthly via pg_partman). See{' '}
-              <Link href="/personas" className="text-blue-400 hover:text-blue-300">
-                docs/PERF.md
-              </Link>{' '}
-              once it lands.
-            </li>
-          </ul>
-        </div>
-      </section>
-    </Shell>
-  )
-}
-
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="min-h-screen bg-gray-950 text-gray-200">
-      <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-white">🤖 Job Hunt AI</h1>
-          <ProfileNav />
-        </div>
-      </header>
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">{children}</main>
-    </div>
+      </Card>
+    </AppShell>
   )
 }

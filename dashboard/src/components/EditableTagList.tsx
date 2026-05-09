@@ -12,7 +12,7 @@ interface Props {
 export default function EditableTagList({
   values,
   onChange,
-  badgeClassName = 'bg-gray-800 border border-gray-700 text-gray-300',
+  badgeClassName = 'bg-surface-raised border border-border-strong text-fg-muted',
   addPlaceholder = 'Add new...',
 }: Props) {
   const [editing, setEditing] = useState(false)
@@ -60,7 +60,7 @@ export default function EditableTagList({
         ))}
         <button
           onClick={startEdit}
-          className="opacity-0 group-hover:opacity-100 text-[10px] bg-blue-600 hover:bg-blue-500 text-white px-2 py-1 rounded transition-opacity"
+          className="opacity-0 group-hover:opacity-100 text-2xs bg-info-bg hover:bg-info-bg text-fg px-2 py-1 rounded transition-opacity"
         >
           edit list
         </button>
@@ -76,7 +76,7 @@ export default function EditableTagList({
             {v}
             <button
               onClick={() => setDraft((d) => d.filter((_, idx) => idx !== i))}
-              className="opacity-70 hover:opacity-100 hover:text-red-400"
+              className="opacity-70 hover:opacity-100 hover:text-danger"
               aria-label={`Remove ${v}`}
             >
               ×
@@ -89,7 +89,7 @@ export default function EditableTagList({
           value={adding}
           onChange={(e) => setAdding(e.target.value)}
           placeholder={addPlaceholder}
-          className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white outline-none focus:ring-1 focus:ring-blue-500 w-64"
+          className="bg-surface-raised border border-border-strong rounded px-2 py-1 text-xs text-fg outline-none focus:ring-1 focus:ring-blue-500 w-64"
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault()
@@ -104,14 +104,14 @@ export default function EditableTagList({
         <button
           onClick={commit}
           disabled={saving}
-          className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-2 py-1 rounded"
+          className="text-xs bg-info-bg hover:bg-info-bg disabled:opacity-50 text-fg px-2 py-1 rounded"
         >
           {saving ? 'Saving...' : 'Save'}
         </button>
-        <button onClick={cancel} className="text-xs bg-gray-700 text-gray-200 px-2 py-1 rounded">
+        <button onClick={cancel} className="text-xs bg-border-strong text-fg px-2 py-1 rounded">
           Cancel
         </button>
-        {error && <span className="text-xs text-red-400">{error}</span>}
+        {error && <span className="text-xs text-danger">{error}</span>}
       </div>
     </div>
   )
