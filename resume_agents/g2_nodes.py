@@ -441,43 +441,79 @@ CURRENT RESUME DRAFT:
 
 Score and critique. Return strict JSON only.
 """
-    try:
-        result = await get_router().ask(
-            provider=provider,
-            model=model,
-            system=ATS_CRITIC_SYSTEM,
-            messages=[{"role": "user", "content": user}],
-            max_tokens=2000,
-            temperature=0.1,
-            agent_name=agent_name,
-            json_response=True,
-        )
-    except Exception as e:
-        logger.warning(
-            f"{agent_name} LLM call failed ({type(e).__name__}: {str(e)[:200]}); "
-            f"returning sentinel critique so the other critic can carry the merge"
-        )
-        sentinel = {
-            "ats_score": 0,
-            "missing_keywords": [],
-            "specific_fixes": [
-                f"(provider error from {provider}/{model}: {type(e).__name__}: {str(e)[:200]})"
-            ],
-            "_provider_error": True,
-        }
-        return sentinel, 0.0, 0, model, ""
+    # Reasoning-mode models (deepseek-reasoner, kimi-k2.x) burn a large
+    # share of max_tokens on internal chain-of-thought before emitting
+    # the final JSON. With max_tokens=2000 they routinely truncate mid-
+    # JSON, leaving _parse_json_loose with empty or malformed strings.
+    # Bump generously for those models; 2000 is fine for chat-tuned ones.
+    is_reasoning_model = (
+        model.startswith("deepseek-reasoner")
+        or model.startswith("kimi-k2")
+    )
+    max_tokens_budget = 8000 if is_reasoning_model else 2000
 
-    try:
-        parsed = _parse_json_loose(result.text)
-    except Exception as e:
-        logger.warning(f"{agent_name} JSON parse failed: {e}")
-        parsed = {
-            "ats_score": 0,
-            "missing_keywords": [],
-            "specific_fixes": [f"(parse error from {model}: {str(e)[:200]})"],
-            "_parse_error": True,
-        }
-    return parsed, result.cost_usd, result.latency_ms, result.model, result.text
+    async def _attempt_call(retry: bool) -> tuple[dict, float, int, str, str] | None:
+        """Returns (parsed, cost, latency, model_used, raw_text) on parse success,
+        or None to signal the caller should retry with a larger budget."""
+        try:
+            result = await get_router().ask(
+                provider=provider,
+                model=model,
+                system=ATS_CRITIC_SYSTEM,
+                messages=[{"role": "user", "content": user}],
+                max_tokens=max_tokens_budget * (2 if retry else 1),
+                temperature=0.1,
+                agent_name=agent_name,
+                json_response=True,
+            )
+        except Exception as e:
+            logger.warning(
+                f"{agent_name} LLM call failed ({type(e).__name__}: {str(e)[:200]}); "
+                f"returning sentinel critique so the other critic can carry the merge"
+            )
+            sentinel = {
+                "ats_score": 0,
+                "missing_keywords": [],
+                "specific_fixes": [
+                    f"(provider error from {provider}/{model}: {type(e).__name__}: {str(e)[:200]})"
+                ],
+                "_provider_error": True,
+            }
+            return sentinel, 0.0, 0, model, ""
+
+        try:
+            parsed = _parse_json_loose(result.text)
+            return parsed, result.cost_usd, result.latency_ms, result.model, result.text
+        except Exception:
+            # Truncated / empty / malformed JSON. For reasoning models this
+            # almost always means the model hit max_tokens mid-output. Tell
+            # the caller to retry with a 2× budget; fall through if already
+            # retrying.
+            return None
+
+    out = await _attempt_call(retry=False)
+    if out is None and is_reasoning_model:
+        logger.warning(
+            f"{agent_name} JSON parse failed on first attempt (likely max_tokens "
+            f"truncation); retrying with budget={max_tokens_budget * 2}"
+        )
+        out = await _attempt_call(retry=True)
+
+    if out is not None:
+        return out
+
+    # Both attempts failed to produce parseable JSON. Return sentinel so
+    # merge_critique defers to the other critic.
+    logger.warning(f"{agent_name} JSON parse failed on both attempts; sentinel returned")
+    sentinel_parse = {
+        "ats_score": 0,
+        "missing_keywords": [],
+        "specific_fixes": [
+            f"(parse error from {model}: empty or truncated JSON after retry)"
+        ],
+        "_parse_error": True,
+    }
+    return sentinel_parse, 0.0, 0, model, ""
 
 
 async def ats_critic_a_node(state: ResumeState) -> dict:
