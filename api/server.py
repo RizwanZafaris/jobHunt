@@ -96,6 +96,80 @@ async def health():
     return {"status": "healthy", "timestamp": date.today().isoformat()}
 
 
+@app.get("/debug/provider-ping")
+async def debug_provider_ping(
+    provider: str,
+    model: str,
+    _auth=Depends(verify_secret),
+):
+    """
+    Diagnostic: send a 1-token "ping" to a provider+model and report the
+    exact response or error. Used to triage why a provider's calls keep
+    failing inside the G2 graph (where they're caught silently by the
+    sentinel fallback in _run_ats_critic).
+
+    Example:
+        GET /debug/provider-ping?provider=moonshot&model=kimi-k2.5
+        GET /debug/provider-ping?provider=deepseek&model=deepseek-reasoner
+
+    Returns:
+        {ok: true, text, latency_ms, input_tokens, output_tokens, cost_usd}
+        OR
+        {ok: false, error_type, error_message, traceback_tail}
+
+    Never throws — every failure is captured into the JSON response so
+    we can see the real error from a curl. Dropped behind /debug/* so
+    it's never exposed without the X-Secret-Key header.
+    """
+    import os
+    import traceback as tb_mod
+    from agents.llm_router import get_router
+
+    # Sanity: env-var presence (without leaking the key value)
+    env_var_for_provider = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai":    "OPENAI_API_KEY",
+        "google":    "GOOGLE_API_KEY",
+        "deepseek":  "DEEPSEEK_API_KEY",
+        "moonshot":  "KIMI_API_KEY",
+    }.get(provider, "?")
+    env_present = bool(os.environ.get(env_var_for_provider))
+
+    try:
+        result = await get_router().ask(
+            provider=provider,
+            model=model,
+            system="You are a healthcheck endpoint. Respond with only the word 'pong'.",
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=10,
+            temperature=0.0,
+            agent_name="debug.provider_ping",
+        )
+        return {
+            "ok": True,
+            "provider": provider,
+            "model": model,
+            "env_var": env_var_for_provider,
+            "env_var_present": env_present,
+            "response_text": result.text[:200],
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "cost_usd": result.cost_usd,
+            "latency_ms": result.latency_ms,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "provider": provider,
+            "model": model,
+            "env_var": env_var_for_provider,
+            "env_var_present": env_present,
+            "error_type": type(e).__name__,
+            "error_message": str(e)[:600],
+            "traceback_tail": tb_mod.format_exc()[-1500:],
+        }
+
+
 @app.post("/pipeline/run")
 async def run_pipeline(
     request: PipelineRunRequest,
