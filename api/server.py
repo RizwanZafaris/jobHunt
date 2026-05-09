@@ -141,7 +141,9 @@ async def debug_apify_check(_auth=Depends(verify_secret)):
                 json={"query": "test", "maxResults": 1, "outputFormats": ["markdown"]},
             )
             out["http_status"] = resp.status_code
-            if resp.status_code == 200:
+            # Apify's run-sync-get-dataset-items returns 201 (Created) on success,
+            # not 200. Accept both.
+            if resp.status_code in (200, 201):
                 items = resp.json() or []
                 out["items_returned"] = len(items)
                 out["verdict"] = "OK — Apify auth works, query returned data"
