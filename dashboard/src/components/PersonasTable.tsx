@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useMemo, useState } from 'react'
 import { type PersonaRow } from '@/lib/profile-api'
 import RegeneratePersonaButton from './RegeneratePersonaButton'
+import DeepResearchPersonaButton from './DeepResearchPersonaButton'
 
 interface Props {
   personas: PersonaRow[]
@@ -192,7 +193,10 @@ export default function PersonasTable({ personas }: Props) {
                     )}
                   </td>
                   <td className="px-3 py-2 text-right">
-                    <RegeneratePersonaButton companyName={p.company_name} />
+                    <div className="inline-flex items-center gap-1.5 flex-wrap justify-end">
+                      <DeepResearchPersonaButton companyName={p.company_name} size="xs" />
+                      <RegeneratePersonaButton companyName={p.company_name} />
+                    </div>
                   </td>
                 </tr>
               )

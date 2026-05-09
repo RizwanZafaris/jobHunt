@@ -1976,6 +1976,141 @@ async def trigger_persona_synthesis(
     }
 
 
+# ─── Phase 2.2 — Deep research persona builder ────────────────────────────
+@app.post("/personas/deep-research")
+async def trigger_deep_research(
+    company: str,
+    background_tasks: BackgroundTasks,
+    sync: bool = False,
+    _auth=Depends(verify_secret),
+):
+    """
+    Build (or refresh) a company persona using live web research.
+
+    Pipeline:
+      1. 8 parallel Apify rag-web-browser queries (overview, news, careers,
+         culture, tech_stack, leadership, competitors, interview process)
+      2. Gemini 2.5 Pro long-context synthesis into 13 knowledge sections
+         + system_prompt_template + ats_keyword_bank + persona_quality
+      3. Upsert company_knowledge (per section) and company_personas
+         (bumps version on refresh)
+
+    Cost: ~$0.20/company (Apify ~$0.10 + Gemini ~$0.10).
+
+    Requires APIFY_TOKEN env var. Without it, the call still runs but
+    returns persona_quality='low' since synthesis falls back to LLM
+    prior-knowledge only.
+
+    Pass `sync=true` to wait for the result inline (90-180s). Default
+    is background — returns immediately, poll /personas/{company} to
+    see the new version.
+    """
+    if not company or not company.strip():
+        raise HTTPException(status_code=400, detail="company is required")
+    company = company.strip()
+
+    if sync:
+        from agents.persona_deep_research import deep_research_persona
+        result = await deep_research_persona(company)
+        return {
+            "status": "complete",
+            "company": result.company_name,
+            "persona_quality": result.persona_quality,
+            "sources_count": result.sources_count,
+            "knowledge_sections": list(result.sections.keys()),
+            "ats_keyword_bank": result.ats_keyword_bank,
+            "cost_usd": result.cost_usd,
+            "latency_ms": result.latency_ms,
+            "note": result.note,
+        }
+
+    async def _run():
+        try:
+            from agents.persona_deep_research import deep_research_persona
+            r = await deep_research_persona(company)
+            logger.info(
+                f"deep_research_persona[{company}]: quality={r.persona_quality} "
+                f"sources={r.sources_count} sections={len(r.sections)} "
+                f"cost=${r.cost_usd:.4f} latency={r.latency_ms}ms"
+            )
+        except Exception as e:
+            logger.exception(f"deep_research_persona[{company}] failed")
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "company": company,
+        "message": (
+            f"Deep-research persona build for {company} running in background. "
+            f"Poll /personas/{company} to see the new version (~2 min)."
+        ),
+    }
+
+
+@app.post("/personas/deep-research-batch")
+async def trigger_deep_research_batch(
+    background_tasks: BackgroundTasks,
+    priority: Optional[str] = None,
+    only_missing: bool = True,
+    _auth=Depends(verify_secret),
+):
+    """
+    Run deep research across all target companies, sequentially.
+
+    Filters:
+      - priority: 'high' | 'medium' | 'low' (defaults to all priorities)
+      - only_missing: when True (default), skips companies that already
+        have a persona. Set to False to refresh existing personas too.
+
+    Uses background task — returns immediately with the planned roster.
+    Per-company latency ~2 min, so a full 70-company run is ~2.5 hours.
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+    q = db.table("companies").select(
+        "name, priority"
+    ).eq("is_target", True)
+    if priority:
+        q = q.eq("priority", priority)
+    rows = q.execute().data or []
+    company_names = [r["name"] for r in rows]
+
+    if only_missing:
+        existing = (
+            db.table("company_personas")
+            .select("company_name")
+            .execute()
+            .data or []
+        )
+        have = {r["company_name"] for r in existing}
+        company_names = [n for n in company_names if n not in have]
+
+    async def _run():
+        from agents.persona_deep_research import deep_research_persona
+        for name in company_names:
+            try:
+                r = await deep_research_persona(name)
+                logger.info(
+                    f"[batch] {name}: quality={r.persona_quality} "
+                    f"sources={r.sources_count} cost=${r.cost_usd:.4f}"
+                )
+            except Exception as e:
+                logger.warning(f"[batch] {name} failed: {e}")
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "queued": company_names,
+        "queued_count": len(company_names),
+        "priority_filter": priority,
+        "only_missing": only_missing,
+        "message": (
+            f"Batch deep-research started for {len(company_names)} companies. "
+            f"Estimated runtime: {len(company_names) * 2} minutes."
+        ),
+    }
+
+
 @app.get("/personas")
 async def list_personas(_auth=Depends(verify_secret)):
     """List all company_personas with quality + version info."""

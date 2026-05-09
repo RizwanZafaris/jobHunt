@@ -7,6 +7,7 @@ import {
 import PersonasTable from '@/components/PersonasTable'
 import ConversionFunnel from '@/components/ConversionFunnel'
 import RegeneratePersonaButton from '@/components/RegeneratePersonaButton'
+import BatchDeepResearchButton from '@/components/BatchDeepResearchButton'
 import { AppShell } from '@/components/layout/AppShell'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card } from '@/components/ui/Card'
@@ -70,6 +71,7 @@ export default async function PersonasPage() {
                 />
               )}
               <RegeneratePersonaButton companyName="" size="md" />
+              <BatchDeepResearchButton onlyMissing={true} size="md" />
             </div>
           ) : null
         }
