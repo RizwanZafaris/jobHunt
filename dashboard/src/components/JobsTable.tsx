@@ -1,8 +1,13 @@
 'use client'
 
 import Link from 'next/link'
-import { useState } from 'react'
+import { useId, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { getScoreGrade, getScoreClass, getStatusClass } from '@/lib/api'
+import { Card } from '@/components/ui/Card'
+import { TextInput, Select } from '@/components/ui/Field'
+import { Pill } from '@/components/ui/Pill'
+import { Icon } from '@/components/ui/Icon'
 
 interface Job {
   id: number
@@ -22,128 +27,148 @@ interface Props {
 }
 
 export default function JobsTable({ jobs }: Props) {
+  const router = useRouter()
   const [filter, setFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [minScore, setMinScore] = useState(0)
+  const captionId = useId()
 
-  const filtered = jobs.filter((j) => {
-    const matchText = filter === '' ||
-      j.title.toLowerCase().includes(filter.toLowerCase()) ||
-      j.company.toLowerCase().includes(filter.toLowerCase())
-    const matchStatus = statusFilter === 'all' || j.status === statusFilter
-    const matchScore = j.match_score >= minScore
-    return matchText && matchStatus && matchScore
-  })
+  // useMemo: avoid rebuilding the array on every keystroke when only one filter changed.
+  const filtered = useMemo(() => {
+    const f = filter.toLowerCase()
+    return jobs.filter((j) => {
+      const matchText = f === '' || j.title.toLowerCase().includes(f) || j.company.toLowerCase().includes(f)
+      const matchStatus = statusFilter === 'all' || j.status === statusFilter
+      const matchScore = j.match_score >= minScore
+      return matchText && matchStatus && matchScore
+    })
+  }, [jobs, filter, statusFilter, minScore])
 
-  const statuses = ['all', ...Array.from(new Set(jobs.map(j => j.status)))]
+  const statuses = useMemo(
+    () => ['all', ...Array.from(new Set(jobs.map((j) => j.status)))],
+    [jobs],
+  )
 
   return (
-    <div className="bg-gray-900 rounded-xl border border-gray-800">
-      <div className="px-6 py-4 border-b border-gray-800 flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
-        <h2 className="text-base font-semibold text-white">
-          Job Pipeline
-          <span className="ml-2 text-xs text-gray-400 font-normal">({filtered.length} shown)</span>
+    <Card padding="none">
+      <div className="px-4 sm:px-5 py-3 border-b border-border flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">
+          Job pipeline
+          <span className="ml-2 text-2xs text-fg-subtle font-normal tnum">({filtered.length} shown)</span>
         </h2>
-        <div className="flex flex-wrap gap-2">
-          {/* Search */}
-          <input
-            type="text"
-            placeholder="Search..."
+        <div className="flex flex-wrap gap-2 items-end w-full sm:w-auto">
+          <TextInput
+            label="Search jobs"
+            srLabel
+            type="search"
+            placeholder="Search…"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 w-36"
+            className="w-40"
           />
-          {/* Status filter */}
-          <select
+          <Select
+            label="Status filter"
+            srLabel
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
-            {statuses.map(s => (
+            {statuses.map((s) => (
               <option key={s} value={s}>{s === 'all' ? 'All statuses' : s}</option>
             ))}
-          </select>
-          {/* Min score */}
-          <select
+          </Select>
+          <Select
+            label="Minimum score filter"
+            srLabel
             value={minScore}
             onChange={(e) => setMinScore(Number(e.target.value))}
-            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
             <option value={0}>All scores</option>
             <option value={40}>40+ match</option>
             <option value={60}>60+ match</option>
             <option value={75}>75+ match</option>
             <option value={85}>85+ match</option>
-          </select>
+          </Select>
+          <button
+            type="button"
+            onClick={() => router.refresh()}
+            aria-label="Refresh data"
+            title="Refresh"
+            className="inline-flex items-center justify-center w-9 h-9 rounded-md text-fg-muted hover:text-fg hover:bg-surface-raised border border-transparent hover:border-border focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent transition-colors"
+          >
+            <Icon name="refresh" size={14} />
+          </button>
         </div>
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm" aria-describedby={captionId}>
+          <caption id={captionId} className="sr-only">
+            Job pipeline — sortable list of discovered roles with match score and status.
+          </caption>
           <thead>
-            <tr className="text-left border-b border-gray-800">
-              <th className="px-6 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Role</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Company</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Location</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Score</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Status</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Found</th>
-              <th className="px-4 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider"></th>
+            <tr className="text-left border-b border-border">
+              <th scope="col" className="px-4 sm:px-5 py-3 text-2xs font-semibold text-fg-subtle uppercase tracking-wider">Role</th>
+              <th scope="col" className="px-3 py-3 text-2xs font-semibold text-fg-subtle uppercase tracking-wider">Company</th>
+              <th scope="col" className="px-3 py-3 text-2xs font-semibold text-fg-subtle uppercase tracking-wider">Location</th>
+              <th scope="col" className="px-3 py-3 text-2xs font-semibold text-fg-subtle uppercase tracking-wider">Score</th>
+              <th scope="col" className="px-3 py-3 text-2xs font-semibold text-fg-subtle uppercase tracking-wider">Status</th>
+              <th scope="col" className="px-3 py-3 text-2xs font-semibold text-fg-subtle uppercase tracking-wider">Found</th>
+              <th scope="col" className="px-3 py-3"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-800">
+          <tbody className="divide-y divide-border">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-6 py-8 text-center text-gray-500 text-sm">
+                <td colSpan={7} className="px-6 py-10 text-center text-fg-subtle text-xs">
                   No jobs match your filters.
                 </td>
               </tr>
             ) : (
               filtered.map((job) => (
-                <tr key={job.id} className="hover:bg-gray-800/50 transition-colors">
-                  <td className="px-6 py-3">
-                    <Link href={`/jobs/${job.id}`} className="text-white font-medium text-sm hover:text-blue-400">
+                <tr key={job.id} className="hover:bg-surface-raised/60 transition-colors">
+                  <td className="px-4 sm:px-5 py-3">
+                    <Link
+                      href={`/jobs/${job.id}`}
+                      className="text-fg font-medium text-sm hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
+                    >
                       {job.title}
                     </Link>
-                    <div className="flex gap-1 mt-0.5">
-                      {job.archetype && (
-                        <span className="text-[10px] bg-emerald-900/40 border border-emerald-800 text-emerald-300 px-1.5 py-0 rounded">
-                          {job.archetype}
-                        </span>
-                      )}
+                    <div className="flex gap-1 mt-1">
+                      {job.archetype && <Pill tone="success">{job.archetype}</Pill>}
                       {job.legitimacy_tier === 'Suspicious' && (
-                        <span className="text-[10px] bg-red-900/40 border border-red-800 text-red-300 px-1.5 py-0 rounded">
-                          ⚠️ ghost?
-                        </span>
+                        <Pill tone="danger">
+                          <Icon name="alert-triangle" size={10} />
+                          ghost?
+                        </Pill>
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3 text-gray-300 text-sm">{job.company}</td>
-                  <td className="px-4 py-3 text-gray-400 text-xs">{job.location || '—'}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 text-fg-muted text-xs">{job.company}</td>
+                  <td className="px-3 py-3 text-fg-subtle text-2xs">{job.location || '—'}</td>
+                  <td className="px-3 py-3">
                     <span className={`score-badge ${getScoreClass(job.match_score)}`}>
                       {getScoreGrade(job.match_score)} {job.match_score}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     <span className={`status-badge ${getStatusClass(job.status)}`}>
                       {job.status}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">
+                  <td className="px-3 py-3 text-fg-subtle text-2xs whitespace-nowrap">
                     {job.discovered_at
                       ? new Date(job.discovered_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
                       : '—'}
                   </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 whitespace-nowrap">
                     {job.url && (
                       <a
                         href={job.url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-xs text-blue-400 hover:text-blue-300 underline"
+                        className="inline-flex items-center gap-1 text-2xs text-info hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
                       >
-                        View →
+                        View <Icon name="arrow-up-right" size={11} />
                       </a>
                     )}
                   </td>
@@ -153,6 +178,6 @@ export default function JobsTable({ jobs }: Props) {
           </tbody>
         </table>
       </div>
-    </div>
+    </Card>
   )
 }

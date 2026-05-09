@@ -29,22 +29,22 @@ export default function CostByProviderChart({ providers, days }: Props) {
   const isEmpty = total === 0
 
   return (
-    <section className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+    <section className="bg-surface border border-border rounded-xl p-6">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-base font-semibold text-white">Cost by Provider</h2>
-          <p className="text-[11px] text-gray-500 mt-0.5">last {days} days</p>
+          <h2 className="text-base font-semibold text-fg">Cost by Provider</h2>
+          <p className="text-2xs text-fg-subtle mt-0.5">last {days} days</p>
         </div>
         {!isEmpty && (
-          <span className="text-xs text-gray-400">
-            <span className="text-white font-bold">${total.toFixed(2)}</span> total
+          <span className="text-xs text-fg-muted">
+            <span className="text-fg font-bold">${total.toFixed(2)}</span> total
           </span>
         )}
       </div>
 
       {isEmpty ? (
-        <div className="text-center py-12 border border-dashed border-gray-800 rounded-lg">
-          <p className="text-sm text-gray-500">No provider data yet</p>
+        <div className="text-center py-12 border border-dashed border-border rounded-lg">
+          <p className="text-sm text-fg-subtle">No provider data yet</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-5 gap-4 items-center">
@@ -91,25 +91,25 @@ export default function CostByProviderChart({ providers, days }: Props) {
               return (
                 <div key={p.provider} className="text-xs">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="flex items-center gap-2 text-gray-200">
+                    <span className="flex items-center gap-2 text-fg">
                       <span
                         className="inline-block w-2 h-2 rounded-full"
                         style={{ background: color }}
                       />
                       <code className="font-mono">{p.provider}</code>
                     </span>
-                    <span className="text-gray-300">
-                      <span className="text-white font-bold">${p.cost_usd.toFixed(2)}</span>
-                      <span className="text-gray-500"> ({pct.toFixed(0)}%)</span>
+                    <span className="text-fg-muted">
+                      <span className="text-fg font-bold">${p.cost_usd.toFixed(2)}</span>
+                      <span className="text-fg-subtle"> ({pct.toFixed(0)}%)</span>
                     </span>
                   </div>
-                  <div className="bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                  <div className="bg-surface-raised rounded-full h-1.5 overflow-hidden">
                     <div
                       className="h-1.5 rounded-full"
                       style={{ width: `${pct}%`, backgroundColor: color }}
                     />
                   </div>
-                  <div className="flex items-center justify-between mt-0.5 text-[10px] text-gray-500">
+                  <div className="flex items-center justify-between mt-0.5 text-2xs text-fg-subtle">
                     <span>{p.calls} calls · ~{Math.round(p.avg_latency_ms / 100) / 10}s avg</span>
                     <span>
                       {(p.input_tokens / 1000).toFixed(1)}k in /{' '}

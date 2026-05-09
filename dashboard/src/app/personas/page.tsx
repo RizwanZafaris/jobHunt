@@ -4,10 +4,14 @@ import {
   type PersonasResponse,
   type ConversionFunnelRow,
 } from '@/lib/profile-api'
-import ProfileNav from '@/components/ProfileNav'
 import PersonasTable from '@/components/PersonasTable'
 import ConversionFunnel from '@/components/ConversionFunnel'
 import RegeneratePersonaButton from '@/components/RegeneratePersonaButton'
+import { AppShell } from '@/components/layout/AppShell'
+import { PageHeader } from '@/components/ui/PageHeader'
+import { Card } from '@/components/ui/Card'
+import { EmptyState } from '@/components/ui/EmptyState'
+import { Pill } from '@/components/ui/Pill'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,142 +30,89 @@ export default async function PersonasPage() {
       }),
     ])
     personas = p
-    funnel = (f as any).funnel || []
-    if ((f as any).warning) funnelWarning = (f as any).warning
-  } catch (e: any) {
-    error = e?.message || 'Failed to load personas'
+    const fAny = f as { funnel?: ConversionFunnelRow[]; warning?: string }
+    funnel = fAny.funnel || []
+    if (fAny.warning) funnelWarning = fAny.warning
+  } catch (e: unknown) {
+    error = e instanceof Error ? e.message : 'Failed to load personas'
   }
 
+  const high = personas?.by_quality?.high ?? 0
+  const medium = personas?.by_quality?.medium ?? 0
+  const low = personas?.by_quality?.low ?? 0
+
   return (
-    <Shell>
-      {/* Header */}
-      <section className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-800 rounded-2xl p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="text-2xl font-bold text-white">🧠 Company Personas</h1>
-            <p className="text-sm text-gray-400 mt-1">
-              Per-company system prompts the G2 Insider Expert loads.{' '}
-              <span className="text-gray-500">
-                Synthesizer reads outcomes + transcripts and refreshes these
-                weekly (Sundays 03:00 GST).
-              </span>
-            </p>
-          </div>
-          {personas && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <QualityBadge label="High" count={personas.by_quality?.high || 0} color="emerald" />
-              <QualityBadge label="Medium" count={personas.by_quality?.medium || 0} color="amber" />
-              <QualityBadge label="Low" count={personas.by_quality?.low || 0} color="red" />
-              {/* Phase 1.13: bulk-regenerate the low-quality tier in one
-                  click instead of clicking Regenerate on each row. Order
-                  is Low → Medium → All so the most-actionable button is
-                  closest to the badges. Tiers with count==0 are hidden. */}
-              {(personas.by_quality?.low || 0) > 0 && (
+    <AppShell>
+      <PageHeader
+        eyebrow="Knowledge"
+        title="Company personas"
+        description="Per-company system prompts the G2 Insider Expert loads. The synthesizer reads outcomes and transcripts and refreshes these weekly (Sundays 03:00 GST)."
+        actions={
+          personas ? (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <Pill tone="success"><span className="font-semibold tnum">{high}</span> high</Pill>
+              <Pill tone="warning"><span className="font-semibold tnum">{medium}</span> medium</Pill>
+              <Pill tone="danger"><span className="font-semibold tnum">{low}</span> low</Pill>
+              {low > 0 && (
                 <RegeneratePersonaButton
                   companyName=""
                   qualityFilter="low"
                   size="md"
-                  label={`Regenerate Low (${personas.by_quality.low})`}
+                  label={`Regenerate low (${low})`}
                 />
               )}
-              {(personas.by_quality?.medium || 0) > 0 && (
+              {medium > 0 && (
                 <RegeneratePersonaButton
                   companyName=""
                   qualityFilter="medium"
                   size="md"
-                  label={`Regenerate Medium (${personas.by_quality.medium})`}
+                  label={`Regenerate medium (${medium})`}
                 />
               )}
-              <RegenerateAllButton />
+              <RegeneratePersonaButton companyName="" size="md" />
             </div>
-          )}
-        </div>
-      </section>
+          ) : null
+        }
+      />
 
-      {/* Conversion funnel */}
       <ConversionFunnel funnel={funnel} warning={funnelWarning} />
 
-      {/* Personas list */}
       {error && (
-        <div className="bg-red-900/30 border border-red-900/60 rounded-xl p-4 text-sm text-red-300">
-          {error}
-        </div>
+        <Card tone="danger" padding="sm">
+          <p className="text-xs text-danger">{error}</p>
+        </Card>
       )}
+
       {personas && personas.personas.length === 0 && (
-        <div className="bg-gray-900 border border-dashed border-gray-800 rounded-xl p-8 text-center">
-          <p className="text-sm text-gray-400">No personas seeded yet.</p>
-          <p className="text-xs text-gray-500 mt-1">
-            Run <code className="text-gray-300">db/seed_company_personas.sql</code>{' '}
-            against your Supabase project to bootstrap from existing
-            company_knowledge.
-          </p>
-        </div>
+        <EmptyState
+          icon="brain"
+          title="No personas seeded yet"
+          description={
+            <>
+              Run <code className="font-mono text-fg">db/seed_company_personas.sql</code> against your Supabase project to bootstrap from existing company_knowledge.
+            </>
+          }
+        />
       )}
+
       {personas && personas.personas.length > 0 && (
         <PersonasTable personas={personas.personas} />
       )}
 
-      {/* Footer help */}
-      <section className="bg-gray-900/50 border border-gray-800 rounded-xl p-4 text-[11px] text-gray-500 leading-relaxed">
-        <p className="font-semibold text-gray-400 mb-1">How personas mature</p>
-        <ol className="list-decimal list-inside space-y-0.5">
+      <Card title="How personas mature" description="Three stages from seed to lived-in system prompt">
+        <ol className="list-decimal list-outside ml-4 text-xs text-fg-muted space-y-1.5 leading-relaxed">
           <li>
-            <span className="text-gray-300">v1 (seed)</span> — built from{' '}
-            <code className="text-gray-400">company_knowledge</code> 13-section research, quality-graded by how much was "Unknown — insufficient data".
+            <span className="text-fg font-medium">v1 (seed)</span> — built from{' '}
+            <code className="font-mono text-fg">company_knowledge</code> 13-section research, quality-graded by how much was &quot;Unknown — insufficient data&quot;.
           </li>
           <li>
-            <span className="text-gray-300">v2+ (synthesized)</span> — Sunday cron pulls last 90d of outcomes + transcripts, calls Gemini 2.5 Pro long-context to extract success_patterns + failure_patterns, increments persona_version.
+            <span className="text-fg font-medium">v2+ (synthesized)</span> — Sunday cron pulls last 90 d of outcomes and transcripts, calls Gemini 2.5 Pro long-context to extract success_patterns and failure_patterns, increments persona_version.
           </li>
           <li>
-            <span className="text-gray-300">G2 next build</span> — Insider Expert loads the persona's system_prompt_template at the start of every resume build for that company.
+            <span className="text-fg font-medium">G2 next build</span> — Insider Expert loads the persona&apos;s system_prompt_template at the start of every resume build for that company.
           </li>
         </ol>
-      </section>
-    </Shell>
+      </Card>
+    </AppShell>
   )
-}
-
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="min-h-screen bg-gray-950 text-gray-200">
-      <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-white">🤖 Job Hunt AI</h1>
-          <ProfileNav />
-        </div>
-      </header>
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">{children}</main>
-    </div>
-  )
-}
-
-function QualityBadge({
-  label,
-  count,
-  color,
-}: {
-  label: string
-  count: number
-  color: 'emerald' | 'amber' | 'red'
-}) {
-  const cls =
-    color === 'emerald'
-      ? 'bg-emerald-900/40 border-emerald-800 text-emerald-300'
-      : color === 'amber'
-      ? 'bg-amber-900/40 border-amber-800 text-amber-300'
-      : 'bg-red-900/30 border-red-900/60 text-red-400'
-  return (
-    <span className={`text-[11px] border px-2 py-0.5 rounded ${cls}`}>
-      <span className="font-bold">{count}</span> {label}
-    </span>
-  )
-}
-
-// Client-component button — keep outside Shell (which is a server tree)
-function RegenerateAllButton() {
-  // We rely on the typed helper from profile-api but POST without a
-  // company_name so it iterates everything. Inline-defined client component
-  // would require 'use client' at top of file; this is a Server Component
-  // page, so we use the existing component with a sentinel value.
-  return <RegeneratePersonaButton companyName="" size="md" />
 }

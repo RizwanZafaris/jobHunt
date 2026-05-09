@@ -1,40 +1,9 @@
-'use client'
-
-import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-
-const TABS = [
-  { href: '/', label: 'Pipeline' },
-  { href: '/companies', label: 'Targets' },
-  { href: '/applications', label: 'Applications' },
-  { href: '/personas', label: 'Personas' },
-  { href: '/costs', label: 'Costs' },
-  { href: '/profile', label: 'Profile' },
-  { href: '/profile/keywords', label: 'Keywords' },
-  { href: '/profile/recommendations', label: 'Recommendations' },
-  { href: '/profile/sources', label: 'Sources' },
-]
-
-export default function ProfileNav() {
-  const path = usePathname()
-  return (
-    <nav className="flex items-center gap-1 text-xs">
-      {TABS.map((t) => {
-        const active = path === t.href
-        return (
-          <Link
-            key={t.href}
-            href={t.href}
-            className={`px-3 py-1.5 rounded-lg font-medium transition-colors ${
-              active
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-300 hover:text-white hover:bg-gray-800'
-            }`}
-          >
-            {t.label}
-          </Link>
-        )
-      })}
-    </nav>
-  )
-}
+/**
+ * ProfileNav — kept as a thin re-export for backwards compatibility.
+ *
+ * The new shared AppNav lives in '@/components/layout/AppNav' and is
+ * mounted via AppShell. New code should import AppShell directly; this
+ * shim keeps any lingering imports working.
+ */
+export { AppNav as default } from './layout/AppNav'
+export { AppNav } from './layout/AppNav'

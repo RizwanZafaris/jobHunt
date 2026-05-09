@@ -1,7 +1,12 @@
 import Link from 'next/link'
 import { fetchPersonaDetail } from '@/lib/profile-api'
-import ProfileNav from '@/components/ProfileNav'
 import RegeneratePersonaButton from '@/components/RegeneratePersonaButton'
+import { AppShell } from '@/components/layout/AppShell'
+import { PageHeader } from '@/components/ui/PageHeader'
+import { Card } from '@/components/ui/Card'
+import { EmptyState } from '@/components/ui/EmptyState'
+import { Pill, type PillTone } from '@/components/ui/Pill'
+import { Icon } from '@/components/ui/Icon'
 
 export const dynamic = 'force-dynamic'
 
@@ -34,11 +39,11 @@ interface PersonaDetail {
   }
 }
 
-const QUALITY_COLOR: Record<string, string> = {
-  high: 'bg-emerald-900/40 border-emerald-800 text-emerald-300',
-  medium: 'bg-amber-900/40 border-amber-800 text-amber-300',
-  low: 'bg-red-900/30 border-red-900/60 text-red-400',
-  unknown: 'bg-gray-800 border-gray-700 text-gray-400',
+const QUALITY_TONE: Record<string, PillTone> = {
+  high: 'success',
+  medium: 'warning',
+  low: 'danger',
+  unknown: 'neutral',
 }
 
 export default async function PersonaDetailPage({
@@ -52,29 +57,33 @@ export default async function PersonaDetailPage({
 
   try {
     persona = (await fetchPersonaDetail(decoded)) as PersonaDetail
-  } catch (e: any) {
-    error = e?.message || 'Failed to load persona'
+  } catch (e: unknown) {
+    error = e instanceof Error ? e.message : 'Failed to load persona'
   }
 
   if (error || !persona) {
     return (
-      <Shell>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
-          <h2 className="text-lg font-semibold text-white">Persona not found</h2>
-          <p className="text-sm text-gray-400 mt-2">
-            {error || `No persona row exists for "${decoded}".`}
-          </p>
-          <p className="text-xs text-gray-500 mt-3">
-            <Link href="/personas" className="text-blue-400 hover:text-blue-300">
-              ← Back to personas
+      <AppShell>
+        <EmptyState
+          icon="alert-triangle"
+          title="Persona not found"
+          description={error || `No persona row exists for "${decoded}".`}
+          action={
+            <Link
+              href="/personas"
+              className="text-2xs text-info hover:underline inline-flex items-center gap-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
+            >
+              <Icon name="chevron-right" size={12} className="rotate-180" />
+              Back to personas
             </Link>
-          </p>
-        </div>
-      </Shell>
+          }
+        />
+      </AppShell>
     )
   }
 
   const quality = persona.metadata?.persona_quality || 'unknown'
+  const qualityTone = QUALITY_TONE[quality]
   const required = persona.ats_keyword_bank?.required || []
   const boost = persona.ats_keyword_bank?.boost || []
   const banned = persona.ats_keyword_bank?.banned || []
@@ -82,170 +91,122 @@ export default async function PersonaDetailPage({
   const failurePatterns = persona.failure_patterns || []
 
   return (
-    <Shell>
-      {/* Breadcrumb */}
-      <nav className="text-xs text-gray-500">
-        <Link href="/personas" className="hover:text-gray-300">
+    <AppShell>
+      <nav aria-label="Breadcrumb" className="text-2xs text-fg-subtle">
+        <Link
+          href="/personas"
+          className="hover:text-fg inline-flex items-center gap-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
+        >
+          <Icon name="chevron-right" size={12} className="rotate-180" />
           Personas
-        </Link>{' '}
-        <span className="text-gray-700">/</span>{' '}
-        <span className="text-gray-300">{persona.company_name}</span>
+        </Link>
+        <span className="text-fg-subtle/50 mx-1.5">/</span>
+        <span className="text-fg">{persona.company_name}</span>
       </nav>
 
-      {/* Header */}
-      <section className="bg-gradient-to-br from-gray-900 to-gray-950 border border-gray-800 rounded-2xl p-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="text-2xl font-bold text-white">{persona.company_name}</h1>
-            <p className="text-sm text-gray-400 mt-1">
-              Persona v{persona.persona_version} · last synthesized{' '}
-              {new Date(persona.last_synthesized_at).toLocaleString('en-GB')}
-            </p>
-            <div className="flex flex-wrap gap-2 mt-3">
-              <span
-                className={`text-xs border px-2 py-0.5 rounded uppercase ${QUALITY_COLOR[quality]}`}
-              >
-                {quality} quality
-              </span>
-              {persona.metadata?.unknown_sections !== undefined &&
-                persona.metadata.unknown_sections > 0 && (
-                  <span
-                    className="text-xs bg-gray-800 border border-gray-700 text-gray-400 px-2 py-0.5 rounded"
-                    title="Number of recruitment-intel sections that were 'Unknown — insufficient data' at synthesis time"
-                  >
-                    {persona.metadata.unknown_sections}/5 sections sparse
-                  </span>
-                )}
-              <span className="text-xs bg-gray-800 border border-gray-700 text-gray-300 px-2 py-0.5 rounded">
-                {persona.n_examples_used} outcome{persona.n_examples_used === 1 ? '' : 's'} used
-              </span>
-              {persona.metadata?.last_synthesizer_model && (
-                <span
-                  className="text-xs bg-violet-900/30 border border-violet-900/60 text-violet-300 px-2 py-0.5 rounded"
-                  title="Model used by the last synthesizer run"
-                >
-                  ⚡ {persona.metadata.last_synthesizer_model}
-                </span>
-              )}
-            </div>
-            {persona.metadata?.synthesis_summary && (
-              <p className="text-xs text-gray-400 italic mt-3 max-w-2xl">
-                "{persona.metadata.synthesis_summary}"
-              </p>
-            )}
-          </div>
-          <RegeneratePersonaButton companyName={persona.company_name} size="md" showForce />
-        </div>
-      </section>
+      <PageHeader
+        eyebrow="Persona"
+        title={persona.company_name}
+        description={
+          <>
+            v{persona.persona_version} · last synthesized{' '}
+            {new Date(persona.last_synthesized_at).toLocaleString('en-GB')}
+          </>
+        }
+        actions={<RegeneratePersonaButton companyName={persona.company_name} size="md" showForce />}
+      />
 
-      {/* ATS Keyword Bank — the structural part */}
-      <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <h2 className="text-sm font-semibold text-white uppercase tracking-wider mb-4">
-          ATS Keyword Bank
-        </h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <KeywordList
-            label="Required"
-            sublabel="must appear in resume"
-            items={required}
-            color="emerald"
-          />
-          <KeywordList
-            label="Boost"
-            sublabel="helpful but not required"
-            items={boost}
-            color="blue"
-          />
-          <KeywordList
-            label="Banned"
-            sublabel="avoid these phrases here"
-            items={banned}
-            color="red"
-          />
+      <div className="flex flex-wrap gap-1.5 -mt-3">
+        <Pill tone={qualityTone}>{quality} quality</Pill>
+        {persona.metadata?.unknown_sections !== undefined && persona.metadata.unknown_sections > 0 && (
+          <Pill title="Recruitment-intel sections that were 'Unknown — insufficient data' at synthesis time">
+            {persona.metadata.unknown_sections}/5 sections sparse
+          </Pill>
+        )}
+        <Pill>
+          {persona.n_examples_used} outcome{persona.n_examples_used === 1 ? '' : 's'} used
+        </Pill>
+        {persona.metadata?.last_synthesizer_model && (
+          <Pill tone="info" title="Model used by the last synthesizer run">
+            {persona.metadata.last_synthesizer_model}
+          </Pill>
+        )}
+      </div>
+
+      {persona.metadata?.synthesis_summary && (
+        <p className="text-sm text-fg-muted italic max-w-2xl leading-relaxed">
+          &ldquo;{persona.metadata.synthesis_summary}&rdquo;
+        </p>
+      )}
+
+      <Card title="ATS keyword bank">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+          <KeywordList label="Required" sublabel="must appear in resume" items={required} tone="success" />
+          <KeywordList label="Boost" sublabel="helpful but not required" items={boost} tone="info" />
+          <KeywordList label="Banned" sublabel="avoid these phrases here" items={banned} tone="danger" />
         </div>
         {persona.ats_keyword_bank?.raw_signals && (
-          <details className="mt-4">
-            <summary className="cursor-pointer text-[11px] text-gray-500 hover:text-gray-300 select-none">
+          <details className="mt-4 group">
+            <summary className="cursor-pointer text-2xs text-fg-subtle hover:text-fg select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded inline-flex items-center gap-1.5">
+              <Icon name="chevron-right" size={12} className="transition-transform group-open:rotate-90" />
               Raw signals (unstructured prose from{' '}
-              <code className="text-gray-400">company_knowledge.ats_signals</code>)
+              <code className="font-mono text-fg">company_knowledge.ats_signals</code>)
             </summary>
-            <pre className="mt-2 text-[11px] text-gray-400 leading-relaxed whitespace-pre-wrap bg-gray-950 border border-gray-800 rounded p-3 max-h-48 overflow-y-auto">
+            <pre className="mt-2 text-2xs text-fg-muted leading-relaxed whitespace-pre-wrap font-mono bg-surface-raised border border-border rounded-md p-3 max-h-48 overflow-y-auto">
               {persona.ats_keyword_bank.raw_signals}
             </pre>
           </details>
         )}
-      </section>
+      </Card>
 
-      {/* Success / failure patterns side-by-side */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <PatternCard
-          title="✓ Success Patterns"
+          title="Success patterns"
           subtitle="Bullet structures from past resumes that got interviews"
           patterns={successPatterns}
-          tone="emerald"
+          tone="success"
         />
         <PatternCard
-          title="✗ Failure Patterns"
+          title="Failure patterns"
           subtitle="Bullet structures from past resumes that didn't"
           patterns={failurePatterns}
-          tone="red"
+          tone="danger"
         />
       </div>
 
-      {/* The big system prompt — collapsible */}
-      <section className="bg-gray-900 border border-gray-800 rounded-xl p-5">
-        <details open>
-          <summary className="cursor-pointer flex items-center justify-between mb-3 select-none">
-            <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
-              System Prompt Template
+      <Card>
+        <details open className="group">
+          <summary className="cursor-pointer flex items-center justify-between mb-3 select-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded">
+            <h2 className="text-sm font-semibold text-fg flex items-center gap-2">
+              <Icon name="chevron-right" size={12} className="transition-transform group-open:rotate-90" />
+              System prompt template
             </h2>
-            <span className="text-[11px] text-gray-500">
+            <span className="text-2xs text-fg-subtle tnum">
               {persona.system_prompt_template?.length || 0} chars · used by G2 Insider Expert
             </span>
           </summary>
-          <pre className="text-xs text-gray-300 leading-relaxed whitespace-pre-wrap font-sans bg-gray-950 border border-gray-800 rounded p-4 max-h-[600px] overflow-y-auto">
+          <pre className="text-xs text-fg-muted leading-relaxed whitespace-pre-wrap font-mono bg-surface-raised border border-border rounded-md p-4 max-h-[600px] overflow-y-auto">
             {persona.system_prompt_template}
           </pre>
         </details>
-      </section>
+      </Card>
 
-      {/* Metadata footer */}
-      <section className="bg-gray-900/50 border border-gray-800 rounded-xl p-4 text-[11px] text-gray-500 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <Meta label="Seeded from" value={persona.metadata?.seeded_from || '—'} />
-        <Meta
-          label="Outcomes (last synth)"
-          value={String(persona.metadata?.n_outcomes_used ?? 0)}
-        />
-        <Meta
-          label="Transcripts (last synth)"
-          value={String(persona.metadata?.n_transcripts_used ?? 0)}
-        />
-        <Meta
-          label="Last synthesizer run"
-          value={
-            persona.metadata?.last_synthesizer_run
-              ? new Date(persona.metadata.last_synthesizer_run).toLocaleDateString('en-GB')
-              : '—'
-          }
-        />
-      </section>
-    </Shell>
-  )
-}
-
-// ─── Sub-components ───────────────────────────────────────────────────
-
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="min-h-screen bg-gray-950 text-gray-200">
-      <header className="border-b border-gray-800 bg-gray-900/50 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-3 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-white">🤖 Job Hunt AI</h1>
-          <ProfileNav />
-        </div>
-      </header>
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">{children}</main>
-    </div>
+      <Card padding="md">
+        <dl className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <Meta label="Seeded from" value={persona.metadata?.seeded_from || '—'} />
+          <Meta label="Outcomes" value={String(persona.metadata?.n_outcomes_used ?? 0)} />
+          <Meta label="Transcripts" value={String(persona.metadata?.n_transcripts_used ?? 0)} />
+          <Meta
+            label="Last synth run"
+            value={
+              persona.metadata?.last_synthesizer_run
+                ? new Date(persona.metadata.last_synthesizer_run).toLocaleDateString('en-GB')
+                : '—'
+            }
+          />
+        </dl>
+      </Card>
+    </AppShell>
   )
 }
 
@@ -253,36 +214,23 @@ function KeywordList({
   label,
   sublabel,
   items,
-  color,
+  tone,
 }: {
   label: string
   sublabel: string
   items: string[]
-  color: 'emerald' | 'blue' | 'red'
+  tone: PillTone
 }) {
-  const pillCls =
-    color === 'emerald'
-      ? 'bg-emerald-900/40 border-emerald-800 text-emerald-300'
-      : color === 'blue'
-      ? 'bg-blue-900/40 border-blue-800 text-blue-300'
-      : 'bg-red-900/30 border-red-900/60 text-red-400'
   return (
     <div>
-      <h3 className="text-[11px] uppercase tracking-wider text-gray-400 mb-1">{label}</h3>
-      <p className="text-[10px] text-gray-500 mb-2">{sublabel}</p>
+      <h3 className="text-2xs uppercase tracking-wider text-fg-muted font-semibold">{label}</h3>
+      <p className="text-2xs text-fg-subtle mt-0.5 mb-2">{sublabel}</p>
       {items.length === 0 ? (
-        <p className="text-xs text-gray-600 italic">
-          (empty — synthesizer hasn't extracted these yet)
-        </p>
+        <p className="text-2xs text-fg-subtle italic">(empty — synthesizer hasn&apos;t extracted these yet)</p>
       ) : (
         <div className="flex flex-wrap gap-1">
           {items.map((kw, i) => (
-            <span
-              key={i}
-              className={`text-[11px] border px-1.5 py-0.5 rounded ${pillCls}`}
-            >
-              {kw}
-            </span>
+            <Pill key={`${kw}-${i}`} tone={tone}>{kw}</Pill>
           ))}
         </div>
       )}
@@ -299,67 +247,47 @@ function PatternCard({
   title: string
   subtitle: string
   patterns: Array<{ pattern?: string; example?: string; evidence?: string } | string>
-  tone: 'emerald' | 'red'
+  tone: 'success' | 'danger'
 }) {
-  const borderCls =
-    tone === 'emerald'
-      ? 'border-emerald-900/60'
-      : 'border-red-900/60'
-  const titleCls =
-    tone === 'emerald' ? 'text-emerald-300' : 'text-red-400'
-
   return (
-    <section className={`bg-gray-900 border ${borderCls} rounded-xl p-5`}>
-      <h2 className={`text-sm font-semibold uppercase tracking-wider mb-1 ${titleCls}`}>
-        {title}
-      </h2>
-      <p className="text-[11px] text-gray-500 mb-4">{subtitle}</p>
+    <Card title={title} description={subtitle}>
       {patterns.length === 0 ? (
-        <p className="text-xs text-gray-500 italic leading-relaxed">
-          No patterns extracted yet. The synthesizer needs ≥3 outcomes for this
-          company before it can confidently identify recurring patterns.
+        <p className="text-xs text-fg-subtle italic leading-relaxed">
+          No patterns extracted yet. The synthesizer needs ≥3 outcomes for this company before it can confidently identify recurring patterns.
         </p>
       ) : (
         <ul className="space-y-3">
           {patterns.map((p, i) => {
-            // Tolerate both shape: stringified rules OR structured objects
             if (typeof p === 'string') {
               return (
-                <li key={i} className="text-xs text-gray-300 leading-relaxed">
-                  • {p}
+                <li key={i} className="text-xs text-fg-muted leading-relaxed flex gap-2">
+                  <span aria-hidden className={tone === 'success' ? 'text-success' : 'text-danger'}>•</span>
+                  <span>{p}</span>
                 </li>
               )
             }
             return (
               <li
                 key={i}
-                className="bg-gray-950/40 border border-gray-800 rounded-lg p-3 text-xs space-y-1"
+                className="bg-surface-raised border border-border rounded-md p-3 text-xs space-y-1"
               >
-                {p.pattern && (
-                  <p className="text-gray-200 font-medium">{p.pattern}</p>
-                )}
-                {p.example && (
-                  <p className="text-gray-400 italic">e.g. "{p.example}"</p>
-                )}
-                {p.evidence && (
-                  <p className="text-[10px] text-gray-500">{p.evidence}</p>
-                )}
+                {p.pattern && <p className="text-fg font-medium">{p.pattern}</p>}
+                {p.example && <p className="text-fg-muted italic">e.g. &ldquo;{p.example}&rdquo;</p>}
+                {p.evidence && <p className="text-2xs text-fg-subtle">{p.evidence}</p>}
               </li>
             )
           })}
         </ul>
       )}
-    </section>
+    </Card>
   )
 }
 
 function Meta({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-gray-600">{label}</div>
-      <div className="text-xs text-gray-300 truncate" title={value}>
-        {value}
-      </div>
+      <dt className="text-2xs uppercase tracking-wider text-fg-subtle">{label}</dt>
+      <dd className="text-xs text-fg mt-0.5 truncate" title={value}>{value}</dd>
     </div>
   )
 }

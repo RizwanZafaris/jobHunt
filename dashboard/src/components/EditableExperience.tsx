@@ -60,30 +60,30 @@ export default function EditableExperience({ initial }: Props) {
   }
 
   return (
-    <div className="border-l-2 border-gray-700 pl-4">
+    <div className="border-l-2 border-border-strong pl-4">
       <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-base font-semibold text-white flex-1">
+        <h3 className="text-base font-semibold text-fg flex-1">
           <EditableField value={e.title} onSave={(v) => patch({ title: v })} />
         </h3>
-        <span className="text-xs text-gray-500 whitespace-nowrap">
+        <span className="text-xs text-fg-subtle whitespace-nowrap">
           <EditableField value={e.dates} onSave={(v) => patch({ dates: v })} />
         </span>
       </div>
-      <p className="text-xs text-blue-400 mt-1 flex flex-wrap gap-x-1">
+      <p className="text-xs text-info mt-1 flex flex-wrap gap-x-1">
         <EditableField value={e.company} onSave={(v) => patch({ company: v })} />
         {e.location && (
-          <span className="text-gray-500">
+          <span className="text-fg-subtle">
             · <EditableField value={e.location} onSave={(v) => patch({ location: v })} />
           </span>
         )}
         {e.scope && (
-          <span className="text-gray-500">
+          <span className="text-fg-subtle">
             · <EditableField value={e.scope} onSave={(v) => patch({ scope: v })} />
           </span>
         )}
       </p>
       {(e.summary || true) && (
-        <div className="text-xs text-gray-400 mt-2 leading-relaxed">
+        <div className="text-xs text-fg-muted mt-2 leading-relaxed">
           <EditableField
             value={e.summary || ''}
             onSave={(v) => patch({ summary: v })}
@@ -97,24 +97,24 @@ export default function EditableExperience({ initial }: Props) {
       {(e.highlights?.length > 0 || true) && (
         <div className="mt-3">
           <div className="flex items-center justify-between mb-1.5">
-            <span className="text-[10px] uppercase tracking-wider text-gray-500">Highlights</span>
+            <span className="text-2xs uppercase tracking-wider text-fg-subtle">Highlights</span>
             <button
               onClick={addHighlight}
-              className="text-[10px] bg-blue-600 hover:bg-blue-500 text-white px-2 py-0.5 rounded"
+              className="text-2xs bg-info-bg hover:bg-info-bg text-fg px-2 py-0.5 rounded"
             >
               + add
             </button>
           </div>
-          <ul className="text-xs text-gray-300 space-y-1.5">
+          <ul className="text-xs text-fg-muted space-y-1.5">
             {(e.highlights || []).map((h, i) => (
               <li key={i} className="flex gap-2 group">
-                <span className="text-gray-600">•</span>
+                <span className="text-fg-subtle">•</span>
                 <span className="flex-1 leading-relaxed">
                   <EditableField value={h} onSave={(v) => updateHighlight(i, v)} multiline />
                 </span>
                 <button
                   onClick={() => deleteHighlight(i)}
-                  className="opacity-0 group-hover:opacity-100 text-[10px] text-red-400 hover:text-red-300"
+                  className="opacity-0 group-hover:opacity-100 text-2xs text-danger hover:text-danger"
                   title="Delete bullet"
                 >
                   ×
@@ -130,13 +130,13 @@ export default function EditableExperience({ initial }: Props) {
         <div className="mt-3 space-y-3">
           {e.groups.map((g, gi) => (
             <div key={gi}>
-              <h4 className="text-xs font-semibold text-gray-200 mb-1">
+              <h4 className="text-xs font-semibold text-fg mb-1">
                 <EditableField value={g.label} onSave={(v) => updateGroupLabel(gi, v)} />
               </h4>
-              <ul className="text-xs text-gray-300 space-y-1.5 ml-2">
+              <ul className="text-xs text-fg-muted space-y-1.5 ml-2">
                 {g.bullets.map((b, bi) => (
                   <li key={bi} className="flex gap-2 group">
-                    <span className="text-gray-600">•</span>
+                    <span className="text-fg-subtle">•</span>
                     <span className="flex-1 leading-relaxed">
                       <EditableField
                         value={b}
@@ -146,7 +146,7 @@ export default function EditableExperience({ initial }: Props) {
                     </span>
                     <button
                       onClick={() => deleteGroupBullet(gi, bi)}
-                      className="opacity-0 group-hover:opacity-100 text-[10px] text-red-400 hover:text-red-300"
+                      className="opacity-0 group-hover:opacity-100 text-2xs text-danger hover:text-danger"
                       title="Delete bullet"
                     >
                       ×

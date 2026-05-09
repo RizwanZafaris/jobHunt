@@ -6,6 +6,10 @@ import {
   generateResumeForJob,
   PersonaQualityGateError,
 } from '@/lib/profile-api'
+import { Button } from '@/components/ui/Button'
+import { Icon } from '@/components/ui/Icon'
+import { LiveRegion } from '@/components/ui/LiveRegion'
+import { Card } from '@/components/ui/Card'
 
 interface Props {
   jobId: number
@@ -22,22 +26,21 @@ export default function GenerateResumeButton({ jobId, score, alreadyGenerated, a
 
   async function trigger(opts?: { force?: boolean }) {
     setRunning(true)
-    setMsg(opts?.force ? 'Force-building (low quality persona)...' : 'Head of Recruitment Agency analyzing...')
+    setMsg(opts?.force ? 'Force-building (low-quality persona)…' : 'Recruitment expert analyzing…')
     setGateConfirm(null)
     try {
       const r = await generateResumeForJob(jobId, opts)
-      setMsg(`✅ ${r.message || 'Started'}`)
+      setMsg(r.message || 'Started')
       setTimeout(() => {
         router.refresh()
         setMsg('')
-      }, 60000)
-    } catch (e: any) {
-      // Phase 1.12: persona quality gate — show confirm dialog instead of error
+      }, 60_000)
+    } catch (e: unknown) {
       if (e instanceof PersonaQualityGateError) {
         setGateConfirm(e)
         setMsg('')
       } else {
-        setMsg(`❌ ${e.message}`)
+        setMsg(e instanceof Error ? e.message : 'Failed')
         setTimeout(() => setMsg(''), 6000)
       }
     } finally {
@@ -47,78 +50,69 @@ export default function GenerateResumeButton({ jobId, score, alreadyGenerated, a
 
   if (score < 85) {
     return (
-      <div className="text-xs text-gray-500 italic">
-        Resume generation gated at 85+. This job scored {score}/100.
+      <div className="text-2xs text-fg-subtle italic">
+        Resume generation gated at 85+. This job scored <span className="font-mono">{score}</span>/100.
       </div>
     )
   }
 
   return (
-    <div className="flex flex-col gap-1.5 items-end">
-      <button
+    <div className="flex flex-col gap-2 items-end">
+      <Button
+        variant={alreadyGenerated ? 'secondary' : 'primary'}
+        size="md"
         onClick={() => trigger()}
-        disabled={running}
-        className={`text-xs whitespace-nowrap px-4 py-2 rounded-lg font-medium ${
-          alreadyGenerated
-            ? 'bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700'
-            : 'bg-emerald-600 hover:bg-emerald-500 text-white'
-        } disabled:opacity-50`}
+        loading={running}
       >
-        {running
-          ? '⏳ Generating...'
-          : alreadyGenerated
-          ? '🔁 Re-generate Resume'
-          : '🎯 Generate Tailored Resume'}
-      </button>
+        <Icon name="sparkles" size={14} />
+        {alreadyGenerated ? 'Re-generate resume' : 'Generate tailored resume'}
+      </Button>
 
       {archetype && (
-        <span className="text-[10px] text-gray-500 text-right">
-          targeting <span className="text-emerald-400">{archetype}</span> archetype
+        <span className="text-2xs text-fg-subtle text-right">
+          targeting <span className="text-success">{archetype}</span> archetype
         </span>
       )}
-      {msg && <span className="text-xs text-gray-400 text-right">{msg}</span>}
+      <LiveRegion>
+        {msg && <span className="text-2xs text-fg-muted text-right">{msg}</span>}
+      </LiveRegion>
 
-      {/* Phase 1.12 confirm dialog when persona quality blocked */}
       {gateConfirm && (
-        <div className="mt-2 max-w-sm bg-amber-900/30 border border-amber-700/60 rounded-lg p-3 text-left">
-          <p className="text-xs font-semibold text-amber-200 mb-1">
-            ⚠ Low-quality persona for {gateConfirm.detail.company_name}
+        <Card tone="warning" padding="sm" className="mt-1 max-w-sm">
+          <p className="text-xs font-semibold text-warning mb-1">
+            Low-quality persona for {gateConfirm.detail.company_name}
           </p>
-          <p className="text-[11px] text-amber-100/80 leading-relaxed mb-2">
+          <p className="text-2xs text-fg-muted leading-relaxed mb-2">
             Persona quality is{' '}
-            <span className="font-bold">{gateConfirm.detail.persona_quality}</span>{' '}
+            <span className="font-semibold text-fg">{gateConfirm.detail.persona_quality}</span>{' '}
             (v{gateConfirm.detail.persona_version}
             {gateConfirm.detail.unknown_sections != null
               ? `, ${gateConfirm.detail.unknown_sections}/5 sections sparse`
               : ''}
             ). Building anyway may waste tokens on a poor result.
           </p>
-          <details className="text-[10px] text-amber-100/60 mb-2">
-            <summary className="cursor-pointer">Why blocked?</summary>
+          <details className="text-2xs text-fg-subtle mb-2">
+            <summary className="cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded">
+              Why blocked?
+            </summary>
             <p className="mt-1">{gateConfirm.detail.message}</p>
           </details>
           <div className="flex gap-2">
-            <button
-              onClick={() => trigger({ force: true })}
-              disabled={running}
-              className="text-[11px] bg-amber-600 hover:bg-amber-500 text-white px-2 py-1 rounded font-medium"
-            >
+            <Button variant="warning" size="sm" onClick={() => trigger({ force: true })} loading={running}>
               Force build anyway
-            </button>
-            <button
-              onClick={() => setGateConfirm(null)}
-              disabled={running}
-              className="text-[11px] bg-gray-700 hover:bg-gray-600 text-gray-200 px-2 py-1 rounded"
-            >
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setGateConfirm(null)} disabled={running}>
               Cancel
-            </button>
+            </Button>
           </div>
-          <p className="text-[10px] text-amber-100/50 mt-2">
+          <p className="text-2xs text-fg-subtle mt-2">
             Tip: regenerate the persona on{' '}
-            <a href="/personas" className="underline">/personas</a>{' '}
+            <a href="/personas" className="text-info underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded">
+              /personas
+            </a>{' '}
             after logging more outcomes.
           </p>
-        </div>
+        </Card>
       )}
     </div>
   )

@@ -2,25 +2,32 @@
 
 import { useState } from 'react'
 import { triggerPipeline, triggerBossAudit } from '@/lib/api'
+import { Button } from '@/components/ui/Button'
+import { Icon } from '@/components/ui/Icon'
+import { LiveRegion } from '@/components/ui/LiveRegion'
 
 export default function PipelineActions() {
   const [loading, setLoading] = useState<string | null>(null)
   const [message, setMessage] = useState('')
+  const [tone, setTone] = useState<'success' | 'danger' | null>(null)
 
   const handleRun = async (type: 'pipeline' | 'boss') => {
     setLoading(type)
     setMessage('')
+    setTone(null)
     try {
       if (type === 'pipeline') {
         await triggerPipeline()
-        setMessage('✅ Pipeline started in background')
+        setMessage('Pipeline started in background')
       } else {
         await triggerBossAudit()
-        setMessage('✅ Boss audit triggered')
+        setMessage('Boss audit triggered')
       }
+      setTone('success')
       setTimeout(() => setMessage(''), 4000)
-    } catch (e) {
-      setMessage('❌ Failed — check API connection')
+    } catch {
+      setMessage('Failed — check API connection')
+      setTone('danger')
       setTimeout(() => setMessage(''), 4000)
     } finally {
       setLoading(null)
@@ -28,30 +35,45 @@ export default function PipelineActions() {
   }
 
   return (
-    <div className="flex items-center gap-2">
-      {message && (
-        <span className="text-xs text-gray-300 mr-2">{message}</span>
-      )}
-      <button
+    <div className="flex items-center gap-1.5">
+      <LiveRegion>
+        {message && (
+          <span
+            className={`text-2xs mr-1 ${tone === 'danger' ? 'text-danger' : 'text-success'}`}
+          >
+            {message}
+          </span>
+        )}
+      </LiveRegion>
+      <Button
+        size="sm"
+        variant="primary"
         onClick={() => handleRun('pipeline')}
+        loading={loading === 'pipeline'}
         disabled={!!loading}
-        className="text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg font-medium transition-colors"
       >
-        {loading === 'pipeline' ? '⏳ Running...' : '🚀 Run Pipeline'}
-      </button>
-      <button
+        <Icon name="play" size={12} />
+        Run pipeline
+      </Button>
+      <Button
+        size="sm"
+        variant="secondary"
         onClick={() => handleRun('boss')}
+        loading={loading === 'boss'}
         disabled={!!loading}
-        className="text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed text-white px-3 py-1.5 rounded-lg font-medium transition-colors"
       >
-        {loading === 'boss' ? '⏳ Running...' : '🌙 Boss Audit'}
-      </button>
-      <button
+        <Icon name="moon" size={12} />
+        <span className="hidden sm:inline">Boss audit</span>
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
         onClick={() => window.location.reload()}
-        className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-lg font-medium transition-colors border border-gray-700"
+        aria-label="Refresh page"
+        title="Refresh"
       >
-        ↻ Refresh
-      </button>
+        <Icon name="refresh" size={14} />
+      </Button>
     </div>
   )
 }

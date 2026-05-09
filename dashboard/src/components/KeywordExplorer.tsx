@@ -30,22 +30,22 @@ export default function KeywordExplorer({ keywords, categoryColors }: Props) {
   )
 
   return (
-    <section className="bg-gray-900 border border-gray-800 rounded-xl">
-      <div className="px-5 py-3 border-b border-gray-800 flex flex-col sm:flex-row gap-2 items-start sm:items-center justify-between">
-        <h3 className="text-sm font-semibold text-white">
-          All Keywords <span className="text-gray-500 font-normal text-xs">({filtered.length} shown)</span>
+    <section className="bg-surface border border-border rounded-xl">
+      <div className="px-5 py-3 border-b border-border flex flex-col sm:flex-row gap-2 items-start sm:items-center justify-between">
+        <h3 className="text-sm font-semibold text-fg">
+          All Keywords <span className="text-fg-subtle font-normal text-xs">({filtered.length} shown)</span>
         </h3>
         <div className="flex flex-wrap gap-2">
           <input
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search keyword..."
-            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200 placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-blue-500 w-48"
+            className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-blue-500 w-48"
           />
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200"
+            className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
           >
             <option value="all">All categories</option>
             {cats.map((c) => (
@@ -57,7 +57,7 @@ export default function KeywordExplorer({ keywords, categoryColors }: Props) {
           <select
             value={minStrength}
             onChange={(e) => setMinStrength(Number(e.target.value))}
-            className="text-xs bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-gray-200"
+            className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
           >
             <option value={0}>Any strength</option>
             <option value={20}>20+</option>
@@ -69,8 +69,8 @@ export default function KeywordExplorer({ keywords, categoryColors }: Props) {
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
-          <thead className="text-left text-gray-400 uppercase tracking-wider">
-            <tr className="border-b border-gray-800">
+          <thead className="text-left text-fg-muted uppercase tracking-wider">
+            <tr className="border-b border-border">
               <th className="px-5 py-2.5">Keyword</th>
               <th className="px-3 py-2.5">Category</th>
               <th className="px-3 py-2.5 text-right">Strength</th>
@@ -79,39 +79,39 @@ export default function KeywordExplorer({ keywords, categoryColors }: Props) {
               <th className="px-3 py-2.5 text-right">Total</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-800">
+          <tbody className="divide-y divide-border">
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-5 py-8 text-center text-gray-500">
+                <td colSpan={6} className="px-5 py-8 text-center text-fg-subtle">
                   No keywords match your filters.
                 </td>
               </tr>
             ) : (
               filtered.slice(0, 200).map((k) => {
-                const color = categoryColors[k.category] || 'bg-gray-800 text-gray-300 border-gray-700'
+                const color = categoryColors[k.category] || 'bg-surface-raised text-fg-muted border-border-strong'
                 const barWidth = Math.min(100, k.ats_strength)
                 return (
-                  <tr key={k.id} className="hover:bg-gray-800/40">
-                    <td className="px-5 py-2 text-white font-medium">{k.keyword}</td>
+                  <tr key={k.id} className="hover:bg-surface-raised/40">
+                    <td className="px-5 py-2 text-fg font-medium">{k.keyword}</td>
                     <td className="px-3 py-2">
-                      <span className={`inline-block border px-2 py-0.5 rounded text-[10px] ${color}`}>
+                      <span className={`inline-block border px-2 py-0.5 rounded text-2xs ${color}`}>
                         {k.category}
                       </span>
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-2">
-                        <div className="w-16 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                        <div className="w-16 h-1.5 bg-surface-raised rounded-full overflow-hidden">
                           <div
-                            className="h-1.5 bg-blue-500 rounded-full"
+                            className="h-1.5 bg-info-bg rounded-full"
                             style={{ width: `${barWidth}%` }}
                           />
                         </div>
-                        <span className="text-gray-300 tabular-nums w-10 text-right">{k.ats_strength}</span>
+                        <span className="text-fg-muted tabular-nums w-10 text-right">{k.ats_strength}</span>
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-right text-gray-400 tabular-nums">{k.files_count}</td>
-                    <td className="px-3 py-2 text-right text-gray-400 tabular-nums">{k.coverage_pct}%</td>
-                    <td className="px-3 py-2 text-right text-gray-400 tabular-nums">{k.total_occurrences}</td>
+                    <td className="px-3 py-2 text-right text-fg-muted tabular-nums">{k.files_count}</td>
+                    <td className="px-3 py-2 text-right text-fg-muted tabular-nums">{k.coverage_pct}%</td>
+                    <td className="px-3 py-2 text-right text-fg-muted tabular-nums">{k.total_occurrences}</td>
                   </tr>
                 )
               })
@@ -119,7 +119,7 @@ export default function KeywordExplorer({ keywords, categoryColors }: Props) {
           </tbody>
         </table>
         {filtered.length > 200 && (
-          <div className="px-5 py-3 border-t border-gray-800 text-xs text-gray-500 text-center">
+          <div className="px-5 py-3 border-t border-border text-xs text-fg-subtle text-center">
             Showing 200 of {filtered.length} matches — refine filters to see more.
           </div>
         )}

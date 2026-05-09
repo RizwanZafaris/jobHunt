@@ -10,19 +10,19 @@ interface Props {
 }
 
 const COLUMNS: { key: string; label: string; color: string }[] = [
-  { key: 'evaluated', label: 'Evaluated', color: 'border-purple-700 bg-purple-900/20' },
-  { key: 'applied', label: 'Applied', color: 'border-cyan-700 bg-cyan-900/20' },
-  { key: 'interviewing', label: 'Interviewing', color: 'border-amber-700 bg-amber-900/20' },
-  { key: 'offer', label: 'Offer', color: 'border-emerald-700 bg-emerald-900/20' },
-  { key: 'accepted', label: 'Accepted', color: 'border-emerald-500 bg-emerald-900/40' },
-  { key: 'rejected', label: 'Rejected', color: 'border-red-800 bg-red-900/20' },
+  { key: 'evaluated', label: 'Evaluated', color: 'border-info-border bg-info-bg/20' },
+  { key: 'applied', label: 'Applied', color: 'border-info-border bg-info-bg/20' },
+  { key: 'interviewing', label: 'Interviewing', color: 'border-warning-border bg-warning-bg/20' },
+  { key: 'offer', label: 'Offer', color: 'border-success-border bg-success-bg/20' },
+  { key: 'accepted', label: 'Accepted', color: 'border-success-border bg-success-bg/40' },
+  { key: 'rejected', label: 'Rejected', color: 'border-danger-border bg-danger-bg/20' },
 ]
 
 const SCORE_COLOR = (s: number) =>
-  s >= 80 ? 'text-emerald-400'
-  : s >= 65 ? 'text-blue-400'
-  : s >= 50 ? 'text-amber-400'
-  : 'text-gray-400'
+  s >= 80 ? 'text-success'
+  : s >= 65 ? 'text-info'
+  : s >= 50 ? 'text-warning'
+  : 'text-fg-muted'
 
 export default function ApplicationsBoard({ initial }: Props) {
   const router = useRouter()
@@ -48,14 +48,14 @@ export default function ApplicationsBoard({ initial }: Props) {
 
   if (apps.length === 0) {
     return (
-      <div className="bg-gray-900 border border-gray-800 rounded-xl p-8 text-center">
-        <h2 className="text-lg font-semibold text-white mb-2">No applications yet</h2>
-        <p className="text-sm text-gray-400 mb-4">
-          Click "Track in Pipeline" on a job detail page to add it here.
+      <div className="bg-surface border border-border rounded-xl p-8 text-center">
+        <h2 className="text-lg font-semibold text-fg mb-2">No applications yet</h2>
+        <p className="text-sm text-fg-muted mb-4">
+          Click &ldquo;Track in pipeline&rdquo; on a job detail page to add it here.
         </p>
         <Link
           href="/"
-          className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg inline-block font-medium"
+          className="text-xs bg-info-bg hover:bg-info-bg text-fg px-4 py-2 rounded-lg inline-block font-medium"
         >
           Browse jobs →
         </Link>
@@ -66,39 +66,39 @@ export default function ApplicationsBoard({ initial }: Props) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
       {counts.map((col) => (
-        <div key={col.key} className={`border-t-2 ${col.color} bg-gray-900 rounded-xl p-3 min-h-[200px]`}>
+        <div key={col.key} className={`border-t-2 ${col.color} bg-surface rounded-xl p-3 min-h-[200px]`}>
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-xs font-semibold text-white uppercase tracking-wider">{col.label}</h3>
-            <span className="text-xs text-gray-500">{col.count}</span>
+            <h3 className="text-xs font-semibold text-fg uppercase tracking-wider">{col.label}</h3>
+            <span className="text-xs text-fg-subtle">{col.count}</span>
           </div>
           <div className="space-y-2">
             {col.items.length === 0 ? (
-              <p className="text-[11px] text-gray-600 italic text-center py-4">empty</p>
+              <p className="text-2xs text-fg-subtle italic text-center py-4">empty</p>
             ) : (
               col.items.map((a) => (
                 <article
                   key={a.id}
-                  className="bg-gray-800/50 border border-gray-800 rounded-lg p-2.5 hover:border-gray-700 transition-colors"
+                  className="bg-surface-raised/50 border border-border rounded-lg p-2.5 hover:border-border-strong transition-colors"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <h4 className="text-xs font-semibold text-white truncate flex-1" title={a.role}>
+                    <h4 className="text-xs font-semibold text-fg truncate flex-1" title={a.role}>
                       {a.role}
                     </h4>
                     {a.job?.match_score !== undefined && (
-                      <span className={`text-[10px] font-semibold tabular-nums ${SCORE_COLOR(a.job.match_score)}`}>
+                      <span className={`text-2xs font-semibold tabular-nums ${SCORE_COLOR(a.job.match_score)}`}>
                         {a.job.match_score}
                       </span>
                     )}
                   </div>
-                  <p className="text-[11px] text-blue-400 mt-0.5 truncate">{a.company}</p>
+                  <p className="text-2xs text-info mt-0.5 truncate">{a.company}</p>
                   {a.job?.location && (
-                    <p className="text-[10px] text-gray-500 truncate">{a.job.location}</p>
+                    <p className="text-2xs text-fg-subtle truncate">{a.job.location}</p>
                   )}
                   <div className="flex items-center gap-1 mt-2">
                     <select
                       value={a.status}
                       onChange={(e) => changeStatus(a.id, e.target.value)}
-                      className="text-[10px] bg-gray-900 border border-gray-700 rounded px-1.5 py-0.5 text-gray-300 flex-1"
+                      className="text-2xs bg-surface border border-border-strong rounded px-1.5 py-0.5 text-fg-muted flex-1"
                     >
                       {COLUMNS.map((c) => (
                         <option key={c.key} value={c.key}>
@@ -109,7 +109,7 @@ export default function ApplicationsBoard({ initial }: Props) {
                     {a.job_id && (
                       <Link
                         href={`/jobs/${a.job_id}`}
-                        className="text-[10px] text-blue-400 hover:text-blue-300 px-1"
+                        className="text-2xs text-info hover:text-info px-1"
                         title="Open job detail"
                       >
                         →
@@ -117,7 +117,7 @@ export default function ApplicationsBoard({ initial }: Props) {
                     )}
                   </div>
                   {a.applied_date && (
-                    <p className="text-[10px] text-gray-500 mt-1">
+                    <p className="text-2xs text-fg-subtle mt-1">
                       applied {new Date(a.applied_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
                     </p>
                   )}
