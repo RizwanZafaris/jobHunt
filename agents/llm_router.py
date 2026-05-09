@@ -118,6 +118,23 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     return round(in_cost + out_cost, 6)
 
 
+def _resolve_temperature(model: str, requested: float) -> float:
+    """
+    Some models force a fixed temperature and 400 if you pass anything else.
+
+    Known cases:
+      - kimi-k2.5 / kimi-k2.6: Moonshot's K2.x reasoning models REQUIRE
+        temperature=1. They return HTTP 400 with "invalid temperature: only
+        1 is allowed for this model" otherwise.
+
+    For everything else we honour the caller's requested temperature.
+    Update this function — never hardcode at the call site.
+    """
+    if model.startswith("kimi-k2"):
+        return 1.0
+    return requested
+
+
 def _supports_json_response_format(model: str) -> bool:
     """
     Whether `response_format={"type": "json_object"}` is honoured by the model.
@@ -349,7 +366,7 @@ class LLMRouter:
             model=model,
             messages=all_msgs,
             max_tokens=max_tokens,
-            temperature=temperature,
+            temperature=_resolve_temperature(model, temperature),
         )
         if json_response and _supports_json_response_format(model):
             kw["response_format"] = {"type": "json_object"}
