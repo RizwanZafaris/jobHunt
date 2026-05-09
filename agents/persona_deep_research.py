@@ -128,7 +128,9 @@ async def _fetch_apify(token: str, query: str, max_results: int = 3) -> list[dic
                 params={"token": token},
                 json=payload,
             )
-            if r.status_code != 200:
+            # Apify's run-sync-get-dataset-items returns 201 (Created) on success,
+            # not 200. Accept both. 4xx and 5xx are real failures.
+            if r.status_code not in (200, 201):
                 logger.warning(
                     f"Apify rag-web-browser HTTP {r.status_code} for {query[:60]}: "
                     f"{r.text[:200]}"
