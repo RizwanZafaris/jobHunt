@@ -18,6 +18,7 @@ refuse builds against low-quality personas without an explicit force flag.
 from __future__ import annotations
 import logging
 import os
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Optional
 
@@ -273,13 +274,21 @@ async def run_g2_graph(
         return dict(final_state)
     except Exception as e:
         logger.exception(f"G2 run failed for job_id={job_id}")
-        # Best-effort failure recording — only works if entry_node ran far
-        # enough to create a resume_builds row.
+        # Best-effort: tag the most recent running resume_builds row for this
+        # job with the exception type + message + truncated traceback. Lets
+        # us diagnose post-hoc from Supabase without needing Railway logs.
         try:
-            # If we have a resume_build_id in state mid-run, the checkpointer
-            # would have it. Without checkpointer this is impossible to recover
-            # cleanly; we just log and re-raise.
-            pass
-        except Exception:
-            pass
+            import traceback
+            from db.client import get_supabase
+            err_summary = (
+                f"{type(e).__name__}: {str(e)[:300]}\n\n"
+                f"Traceback (last 2KB):\n{traceback.format_exc()[-2000:]}"
+            )
+            get_supabase().table("resume_builds").update({
+                "status": "failed",
+                "error": err_summary,
+                "finalized_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("job_id", job_id).eq("status", "running").execute()
+        except Exception as record_err:
+            logger.warning(f"Failed to record G2 failure to resume_builds: {record_err}")
         raise
