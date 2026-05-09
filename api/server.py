@@ -362,6 +362,170 @@ async def run_boss_audit(
     return {"status": "started", "message": "Boss audit running in background"}
 
 
+# ─── Boss Chat (interactive Q&A) ──────────────────────────────────────────
+class BossChatMessage(BaseModel):
+    role: str  # 'user' | 'assistant'
+    content: str
+
+
+class BossChatRequest(BaseModel):
+    messages: list[BossChatMessage]
+
+
+BOSS_CHAT_SYSTEM = """You are the Boss — Rizwan's nightly orchestrator agent
+who knows the entire job-hunt pipeline. You speak in the voice of a senior
+operations partner: direct, strategic, no fluff. You answer questions about
+pipeline state, recommend next actions, and push back when Rizwan is
+chasing the wrong thing.
+
+You have access to live pipeline context (recent jobs, applications, costs)
+in the system prompt below. Use it. Cite specific job IDs, companies, or
+numbers when answering — never wave at "the data" abstractly.
+
+Style:
+- 2-5 sentences for typical questions; bullet lists for multi-part answers
+- Concrete recommendations, not "you might consider..."
+- Treat this as a working conversation, not a chatbot demo
+- Never fabricate. If pipeline context doesn't show what was asked, say so
+  and suggest the closest signal that does exist.
+"""
+
+
+def _build_boss_context() -> str:
+    """Pull a tight snapshot of pipeline state to ground the boss in reality.
+
+    Includes:
+      - Top 10 unscored / unbuilt jobs (score >= 85)
+      - Last 5 resume_builds (status, cost, target)
+      - Last 24h cost rollup
+      - Active applications by status
+    Never raises — best-effort; returns 'no live data' on partial failure.
+    """
+    from db.client import get_supabase
+    from datetime import datetime, timezone, timedelta
+    db = get_supabase()
+    parts: list[str] = []
+
+    try:
+        jobs = (
+            db.table("jobs")
+            .select("id, title, company, match_score, status, archetype, legitimacy_tier, resume_generated_at")
+            .gte("match_score", 85)
+            .order("match_score", desc=True)
+            .limit(10)
+            .execute()
+            .data or []
+        )
+        if jobs:
+            lines = [
+                f"  - [{j['id']}] {j.get('title','?')[:60]} @ {j.get('company','?')[:40]} "
+                f"score={j.get('match_score')} status={j.get('status')} "
+                f"resume={'yes' if j.get('resume_generated_at') else 'no'}"
+                for j in jobs
+            ]
+            parts.append("TOP 10 HIGH-SCORE JOBS:\n" + "\n".join(lines))
+    except Exception:
+        parts.append("TOP JOBS: (unavailable)")
+
+    try:
+        builds = (
+            db.table("resume_builds")
+            .select("id, job_id, company_name, status, iterations, cost_usd_total, created_at")
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+            .data or []
+        )
+        if builds:
+            lines = [
+                f"  - {b.get('company_name','?')[:30]} job_id={b.get('job_id')} "
+                f"status={b.get('status')} iters={b.get('iterations')} "
+                f"cost=${float(b.get('cost_usd_total') or 0):.2f}"
+                for b in builds
+            ]
+            parts.append("LAST 5 RESUME BUILDS:\n" + "\n".join(lines))
+    except Exception:
+        parts.append("RESUME BUILDS: (unavailable)")
+
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        rows = (
+            db.table("agent_call_log")
+            .select("provider, cost_usd")
+            .gte("called_at", since)
+            .execute()
+            .data or []
+        )
+        total = sum(float(r.get("cost_usd") or 0) for r in rows)
+        by_p: dict = {}
+        for r in rows:
+            by_p[r.get("provider", "?")] = by_p.get(r.get("provider", "?"), 0.0) + float(r.get("cost_usd") or 0)
+        breakdown = ", ".join(f"{k}=${v:.2f}" for k, v in sorted(by_p.items(), key=lambda x: -x[1]))
+        parts.append(f"24H COST: ${total:.2f} total ({breakdown or 'no calls'}) across {len(rows)} LLM calls")
+    except Exception:
+        parts.append("24H COST: (unavailable)")
+
+    try:
+        apps = (
+            db.table("applications")
+            .select("status")
+            .execute()
+            .data or []
+        )
+        if apps:
+            counts: dict = {}
+            for a in apps:
+                counts[a.get("status", "?")] = counts.get(a.get("status", "?"), 0) + 1
+            parts.append("APPLICATIONS BY STATUS: " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+    except Exception:
+        pass
+
+    return "\n\n".join(parts) if parts else "(no live pipeline data available right now)"
+
+
+@app.post("/boss/chat")
+async def boss_chat(
+    request: BossChatRequest,
+    _auth=Depends(verify_secret),
+):
+    """Interactive chat with the BossAgent persona, grounded in live pipeline state.
+
+    Frontend posts {messages: [{role, content}, ...]} where role is 'user' or
+    'assistant'. The latest message must be from 'user'. Returns
+    {role: 'assistant', content, cost_usd, latency_ms}.
+
+    Cheap by design — Claude Opus, max_tokens=1500. Each turn ~$0.05-$0.15.
+    """
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="messages must be non-empty")
+    if request.messages[-1].role != "user":
+        raise HTTPException(status_code=400, detail="last message must be from 'user'")
+
+    from agents.llm_router import get_router
+    from config.settings import get_settings
+
+    context = _build_boss_context()
+    system = BOSS_CHAT_SYSTEM + "\n\n--- LIVE PIPELINE STATE ---\n" + context
+
+    router = get_router()
+    result = await router.ask(
+        provider="anthropic",
+        model=get_settings().boss_agent_model,
+        system=system,
+        messages=[{"role": m.role, "content": m.content} for m in request.messages],
+        max_tokens=1500,
+        temperature=0.4,
+        agent_name="boss.chat",
+    )
+    return {
+        "role": "assistant",
+        "content": result.text,
+        "cost_usd": result.cost_usd,
+        "latency_ms": result.latency_ms,
+        "model": result.model,
+    }
+
+
 class NetworkingRequest(BaseModel):
     company: str
     job_title: str
