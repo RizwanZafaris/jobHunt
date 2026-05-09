@@ -492,9 +492,18 @@ class LLMRouter:
             client = AsyncOpenAI(api_key=key)
         elif provider in ("deepseek", "moonshot"):
             from openai import AsyncOpenAI
+            # Reasoning models (deepseek-reasoner, kimi-k2.x) routinely take
+            # 90-120s on iter 2+ critic calls where the resume + JD prompt is
+            # large. The OpenAI SDK's default 60s read timeout aborts mid-call
+            # and triggers internal retries, which can wedge a build for
+            # 10+ min (e.g. Adyen 1022 build 55210ffa stalled here on
+            # 2026-05-09). 180s gives Kimi K2.5 enough head-room for full
+            # reasoning + JSON emission with our 8000/16000 max_tokens budget.
             client = AsyncOpenAI(
                 api_key=key,
                 base_url=OPENAI_COMPATIBLE_BASE_URLS[provider],
+                timeout=180.0,
+                max_retries=2,
             )
         elif provider == "google":
             try:
