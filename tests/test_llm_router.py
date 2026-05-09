@@ -75,6 +75,18 @@ class TestCostEstimation:
     def test_zero_tokens(self):
         assert _estimate_cost("claude-opus-4-5", 0, 0) == 0.0
 
+    def test_none_tokens_coerced_to_zero(self):
+        # Regression: Gemini's usage_metadata sometimes returns
+        # candidates_token_count=None (rather than missing). The function
+        # used to crash with TypeError: NoneType * float. Now it should
+        # quietly coerce None → 0 and return a valid float cost.
+        assert _estimate_cost("gemini-2.5-pro", None, None) == 0.0
+        # Mixed: input set, output None → cost only includes input
+        cost = _estimate_cost("gemini-2.5-pro", 1_000_000, None)
+        assert cost == pytest.approx(1.25)
+        cost = _estimate_cost("gemini-2.5-pro", None, 1_000_000)
+        assert cost == pytest.approx(5.0)
+
     def test_pricing_table_consistency(self):
         # Sanity: every entry should be a 2-tuple of non-negative numbers
         for model, prices in PRICING_PER_1M.items():
