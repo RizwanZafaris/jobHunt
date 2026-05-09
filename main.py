@@ -229,7 +229,51 @@ def start_api():
     from config.settings import get_settings
     s = get_settings()
     console.print(f"[bold cyan]🌐 Starting API server on port {s.port}[/bold cyan]")
-    uvicorn.run("api.server:app", host="0.0.0.0", port=s.port, reload=s.environment == "development")
+
+    # Route Uvicorn lifecycle logs to stdout instead of stderr.
+    # Railway's log ingester tags any stderr line as severity=error, which
+    # was causing "Started server process", "Application startup complete",
+    # etc. to appear as red ERROR entries even though the app is healthy.
+    log_config = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "()": "uvicorn.logging.DefaultFormatter",
+                "fmt": "%(levelprefix)s %(message)s",
+                "use_colors": None,
+            },
+            "access": {
+                "()": "uvicorn.logging.AccessFormatter",
+                "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
+            },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+            },
+            "access": {
+                "formatter": "access",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stdout",
+            },
+        },
+        "loggers": {
+            "uvicorn":        {"handlers": ["default"], "level": "INFO", "propagate": False},
+            "uvicorn.error":  {"level": "INFO"},
+            "uvicorn.access": {"handlers": ["access"],  "level": "INFO", "propagate": False},
+        },
+    }
+
+    uvicorn.run(
+        "api.server:app",
+        host="0.0.0.0",
+        port=s.port,
+        reload=s.environment == "development",
+        log_config=log_config,
+    )
 
 
 if __name__ == "__main__":
