@@ -289,16 +289,22 @@ async def synthesize_persona(
 
 # ─── DB writes ───────────────────────────────────────────────────────────
 async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
-    """Upsert one row per section into company_knowledge with embeddings.
+    """Upsert all sections into company_knowledge with embeddings.
 
-    Routes through db.client.upsert_company_knowledge which writes
-    OpenAI text-embedding-3-small vectors into the existing
-    pgvector ivfflat index. The G2 insider_expert (PR B) and any other
-    consumer can then query via search_company_knowledge(query, company)
-    for semantically-relevant chunks.
+    Phase 2.2.1 robustness rewrite: instead of doing 13 sequential
+    embed+upsert pairs (where one bad call cascaded and lost the
+    other 12), this version:
+      1. Computes ALL embeddings in parallel via asyncio.gather
+      2. Builds a single batch payload
+      3. Upserts via Supabase with on_conflict so reruns are idempotent
+      4. Falls back to per-row inserts if batch fails (so one bad
+         section doesn't lose the other 12)
+
+    Returns count of rows written.
     """
-    from db.client import upsert_company_knowledge, get_supabase
+    from db.client import embed, get_supabase
     db = get_supabase()
+
     # Best-effort look up company_id once
     company_id: Optional[str] = None
     try:
@@ -312,27 +318,79 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
         )
         if rows:
             company_id = rows[0].get("id")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"company_id lookup failed for {company}: {e}")
 
-    written = 0
+    # Filter to allowed sections with non-empty content
+    cleaned: list[tuple[str, str]] = []
     for sec, content in sections.items():
         if sec not in SECTIONS:
             continue
-        if not content or not content.strip():
+        if not isinstance(content, str) or not content.strip():
             continue
+        cleaned.append((sec, content.strip()))
+
+    if not cleaned:
+        logger.warning(f"deep_research[{company}]: synth returned no usable sections")
+        return 0
+
+    # Compute all embeddings in parallel
+    async def _safe_embed(text: str) -> Optional[list]:
         try:
-            await upsert_company_knowledge(
-                company_name=company,
-                company_id=company_id,
-                section=sec,
-                content=content.strip(),
-                source_url=None,
-                metadata={"source": "deep_research"},
-            )
+            return await embed(text)
+        except Exception as e:
+            logger.warning(f"embed failed (len={len(text)}): {type(e).__name__}: {str(e)[:200]}")
+            return None
+
+    vectors = await asyncio.gather(*[_safe_embed(c) for _, c in cleaned])
+
+    # Build rows; embedding may be None for a few but content still goes in
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload: list[dict] = []
+    for (sec, content), vec in zip(cleaned, vectors):
+        row = {
+            "company_name": company,
+            "section": sec,
+            "content": content,
+            "scraped_at": now_iso,
+            "metadata": {"source": "deep_research"},
+        }
+        if vec is not None:
+            row["embedding"] = vec
+        if company_id:
+            row["company_id"] = company_id
+        payload.append(row)
+
+    # Try batch upsert first (much faster than 13 round-trips)
+    try:
+        result = (
+            db.table("company_knowledge")
+            .upsert(payload, on_conflict="company_name,section")
+            .execute()
+        )
+        n = len(result.data or [])
+        logger.info(f"deep_research[{company}]: batch-wrote {n} knowledge rows")
+        return n
+    except Exception as e:
+        logger.warning(
+            f"company_knowledge batch upsert failed for {company} ({type(e).__name__}: "
+            f"{str(e)[:200]}); falling back to per-row inserts"
+        )
+
+    # Fallback: per-row, so one bad row doesn't lose the rest
+    written = 0
+    for row in payload:
+        try:
+            db.table("company_knowledge").upsert(
+                row, on_conflict="company_name,section"
+            ).execute()
             written += 1
         except Exception as e:
-            logger.warning(f"company_knowledge write failed for {sec}: {e}")
+            logger.warning(
+                f"per-row upsert failed for {company}/{row['section']}: "
+                f"{type(e).__name__}: {str(e)[:200]}"
+            )
+    logger.info(f"deep_research[{company}]: per-row-wrote {written} of {len(payload)}")
     return written
 
 
@@ -383,18 +441,39 @@ def _upsert_persona(
     quality: str,
     sources_count: int,
 ) -> dict:
-    """Upsert into company_personas. Bumps persona_version if existing."""
-    from db.client import get_supabase
-    db = get_supabase()
+    """Upsert into company_personas. Bumps persona_version if existing.
 
-    existing = (
-        db.table("company_personas")
-        .select("id, persona_version")
-        .eq("company_name", company)
-        .limit(1)
-        .execute()
-        .data or []
-    )
+    Defensive: returns {} on any failure rather than raising. Caller
+    keeps going, persona just doesn't get a row this time.
+    """
+    from db.client import get_supabase
+    try:
+        db = get_supabase()
+    except Exception as e:
+        logger.warning(f"_upsert_persona: get_supabase failed: {e}")
+        return {}
+
+    # system_prompt is NOT NULL on the table — fall back to a stub if
+    # the LLM somehow returned empty so the upsert doesn't fail
+    if not system_prompt or not system_prompt.strip():
+        system_prompt = (
+            f"You are an insider expert at {company}. (Deep research did not "
+            f"produce a system prompt; quality flag set to 'low'.)"
+        )
+        quality = "low"
+
+    try:
+        existing = (
+            db.table("company_personas")
+            .select("id, persona_version")
+            .eq("company_name", company)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+    except Exception as e:
+        logger.warning(f"_upsert_persona: existing-row lookup failed for {company}: {e}")
+        existing = []
 
     metadata = {
         "persona_quality": quality,
@@ -404,23 +483,29 @@ def _upsert_persona(
     payload = {
         "company_name": company,
         "system_prompt_template": system_prompt,
-        "ats_keyword_bank": ats_keyword_bank,
+        "ats_keyword_bank": ats_keyword_bank or {},
         "last_synthesized_at": datetime.now(timezone.utc).isoformat(),
         "metadata": metadata,
     }
-    if existing:
-        payload["persona_version"] = (existing[0].get("persona_version") or 0) + 1
-        result = (
-            db.table("company_personas")
-            .update(payload)
-            .eq("id", existing[0]["id"])
-            .execute()
+    try:
+        if existing:
+            payload["persona_version"] = (existing[0].get("persona_version") or 0) + 1
+            result = (
+                db.table("company_personas")
+                .update(payload)
+                .eq("id", existing[0]["id"])
+                .execute()
+            )
+        else:
+            payload["persona_version"] = 1
+            result = db.table("company_personas").insert(payload).execute()
+        return (result.data or [{}])[0]
+    except Exception as e:
+        logger.warning(
+            f"_upsert_persona: write failed for {company} ({type(e).__name__}: "
+            f"{str(e)[:200]})"
         )
-    else:
-        payload["persona_version"] = 1
-        result = db.table("company_personas").insert(payload).execute()
-
-    return (result.data or [{}])[0]
+        return {}
 
 
 # ─── Public entry point ──────────────────────────────────────────────────
@@ -431,14 +516,30 @@ async def deep_research_persona(company: str) -> DeepResearchResult:
     """
     import time
     started = time.perf_counter()
+    notes: list[str] = []
 
-    sources = await gather_research(company)
-    parsed, cost_usd, latency_ms, model = await synthesize_persona(company, sources)
+    # Step 1 — gather
+    try:
+        sources = await gather_research(company)
+    except Exception as e:
+        logger.warning(f"gather_research[{company}] failed: {type(e).__name__}: {e}")
+        sources = []
+        notes.append(f"research_error: {type(e).__name__}")
 
-    sections = parsed.get("sections", {}) or {}
-    system_prompt = parsed.get("system_prompt_template", "") or ""
-    ats_bank = parsed.get("ats_keyword_bank", {}) or {}
-    quality = parsed.get("persona_quality", "low")
+    # Step 2 — synthesize
+    parsed: dict = {}
+    cost_usd = 0.0
+    try:
+        parsed, cost_usd, _lat, _model = await synthesize_persona(company, sources)
+    except Exception as e:
+        logger.warning(f"synthesize_persona[{company}] failed: {type(e).__name__}: {e}")
+        notes.append(f"synth_error: {type(e).__name__}: {str(e)[:120]}")
+
+    sections = parsed.get("sections") if isinstance(parsed, dict) else None
+    sections = sections if isinstance(sections, dict) else {}
+    system_prompt = (parsed.get("system_prompt_template", "") if isinstance(parsed, dict) else "") or ""
+    ats_bank = parsed.get("ats_keyword_bank", {}) if isinstance(parsed, dict) else {}
+    quality = parsed.get("persona_quality", "low") if isinstance(parsed, dict) else "low"
 
     if not isinstance(ats_bank, dict):
         ats_bank = {}
@@ -446,14 +547,25 @@ async def deep_research_persona(company: str) -> DeepResearchResult:
     ats_bank.setdefault("boost", [])
     ats_bank.setdefault("banned", [])
 
-    knowledge_written = await _upsert_knowledge(company, sections)
-    persona_row = _upsert_persona(
-        company, system_prompt, ats_bank, quality, len(sources)
-    )
+    # Step 3 — write knowledge (parallel embeds + batch upsert; never raises)
+    knowledge_written = 0
+    try:
+        knowledge_written = await _upsert_knowledge(company, sections)
+    except Exception as e:
+        logger.warning(f"_upsert_knowledge[{company}] failed: {type(e).__name__}: {e}")
+        notes.append(f"knowledge_write_error: {type(e).__name__}")
 
-    note = None
-    if not sources:
-        note = "APIFY_TOKEN not configured or all queries failed — synthesized from prior knowledge only. persona_quality='low'."
+    # Step 4 — write persona (defensive; never raises)
+    try:
+        _upsert_persona(company, system_prompt, ats_bank, quality, len(sources))
+    except Exception as e:
+        logger.warning(f"_upsert_persona[{company}] failed: {type(e).__name__}: {e}")
+        notes.append(f"persona_write_error: {type(e).__name__}")
+
+    if not sources and not notes:
+        notes.append(
+            "APIFY_TOKEN not configured or all queries failed — synthesized from prior knowledge only. persona_quality='low'."
+        )
 
     return DeepResearchResult(
         company_name=company,
@@ -465,5 +577,5 @@ async def deep_research_persona(company: str) -> DeepResearchResult:
         cost_usd=cost_usd,
         latency_ms=int((time.perf_counter() - started) * 1000),
         sources_count=len(sources),
-        note=note,
+        note=" | ".join(notes) if notes else None,
     )
