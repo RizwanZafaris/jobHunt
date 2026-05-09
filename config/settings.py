@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     g2_meta_critic_model: str = Field("gemini-2.5-pro", env="G2_META_CRITIC_MODEL")
     g2_writer_model: str = Field("claude-opus-4-5-20251101", env="G2_WRITER_MODEL")
     g2_ats_critic_a_model: str = Field("deepseek-reasoner", env="G2_ATS_CRITIC_A_MODEL")
-    g2_ats_critic_b_model: str = Field("kimi-k2", env="G2_ATS_CRITIC_B_MODEL")
+    g2_ats_critic_b_model: str = Field("kimi-k2.5", env="G2_ATS_CRITIC_B_MODEL")
     g2_orchestrator_model: str = Field("claude-opus-4-5-20251101", env="G2_ORCHESTRATOR_MODEL")
     g2_polisher_model: str = Field("claude-opus-4-5-20251101", env="G2_POLISHER_MODEL")
 

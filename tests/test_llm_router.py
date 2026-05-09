@@ -42,8 +42,14 @@ class TestInferProvider:
         assert infer_provider("deepseek-reasoner") == "deepseek"
 
     def test_kimi_models(self):
-        assert infer_provider("kimi-k2") == "moonshot"
+        # Real Moonshot model IDs per platform.kimi.ai/docs
+        assert infer_provider("kimi-k2.6") == "moonshot"
+        assert infer_provider("kimi-k2.5") == "moonshot"
         assert infer_provider("moonshot-v1-128k") == "moonshot"
+        # Provider inference still resolves the legacy/unversioned name
+        # so a stale env override (G2_ATS_CRITIC_B_MODEL=kimi-k2) doesn't
+        # crash before reaching the router; it'll just 404 at the API.
+        assert infer_provider("kimi-k2") == "moonshot"
 
     def test_unknown_model_raises(self):
         with pytest.raises(ValueError, match="Cannot infer provider"):
@@ -87,6 +93,17 @@ class TestCostEstimation:
         assert cost == pytest.approx(1.25)
         cost = _estimate_cost("gemini-2.5-pro", None, 1_000_000)
         assert cost == pytest.approx(5.0)
+
+    def test_kimi_pricing_real_models(self):
+        # Per platform.kimi.ai/docs/pricing as of 2026-05-09
+        cost = _estimate_cost("kimi-k2.6", 1_000_000, 1_000_000)
+        assert cost == pytest.approx(0.95 + 4.0)
+        cost = _estimate_cost("kimi-k2.5", 1_000_000, 1_000_000)
+        assert cost == pytest.approx(0.60 + 3.0)
+        # The unversioned "kimi-k2" name was NEVER a real Moonshot model id;
+        # _estimate_cost should return 0 (unknown model) rather than the old
+        # speculative number.
+        assert _estimate_cost("kimi-k2", 1_000_000, 1_000_000) == 0.0
 
     def test_json_response_format_whitelist(self):
         # deepseek-reasoner (R1) rejects response_format=json_object with HTTP 400.
