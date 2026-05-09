@@ -15,6 +15,7 @@ from agents.llm_router import (
     PRICING_PER_1M,
     _estimate_cost,
     _parse_json_loose,
+    _resolve_temperature,
     _supports_json_response_format,
     infer_provider,
 )
@@ -119,6 +120,20 @@ class TestCostEstimation:
         assert _supports_json_response_format("moonshot-v1-128k") is True
         # Unknown models default to True (best-effort)
         assert _supports_json_response_format("future-llm-9000") is True
+
+    def test_kimi_k2_temperature_forced_to_1(self):
+        # Moonshot's K2.x models 400 unless temperature=1.
+        # Confirmed live via /debug/provider-ping on prod 2026-05-09:
+        #   "invalid temperature: only 1 is allowed for this model"
+        assert _resolve_temperature("kimi-k2.5", 0.1) == 1.0
+        assert _resolve_temperature("kimi-k2.6", 0.0) == 1.0
+        # Versioned variants — prefix match
+        assert _resolve_temperature("kimi-k2.5-distill-32b", 0.3) == 1.0
+        # Other models: honour caller's requested temperature
+        assert _resolve_temperature("claude-opus-4-5", 0.1) == 0.1
+        assert _resolve_temperature("deepseek-reasoner", 0.0) == 0.0
+        assert _resolve_temperature("gpt-4.1", 0.7) == 0.7
+        assert _resolve_temperature("moonshot-v1-128k", 0.3) == 0.3
 
     def test_pricing_table_consistency(self):
         # Sanity: every entry should be a 2-tuple of non-negative numbers
