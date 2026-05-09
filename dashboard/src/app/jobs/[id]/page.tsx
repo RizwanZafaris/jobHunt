@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { fetchJobDetail } from '@/lib/profile-api'
 import JobApplyButton from '@/components/JobApplyButton'
 import GenerateResumeButton from '@/components/GenerateResumeButton'
@@ -118,6 +119,15 @@ export default async function JobDetailPage({ params }: { params: { id: string }
               alreadyGenerated={Boolean(j.resume_generated_at)}
               archetype={j.archetype}
             />
+            {j.resume_generated_at && (
+              <Link
+                href={`/jobs/${j.id}/resume`}
+                className="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-2xs font-medium bg-surface text-fg border border-border-strong hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <Icon name="document" size={12} />
+                View / Edit / Rate
+              </Link>
+            )}
             <JobApplyButton jobId={j.id} existingApp={data.application ?? undefined} />
           </div>
         }

@@ -8,11 +8,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Optional
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel
 import os
 
@@ -635,6 +635,275 @@ async def download_resume(filename: str, _auth=Depends(verify_secret)):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(path, filename=filename)
+
+
+# ─── Resume Builds — view / edit / download / feedback (Phase 2.1) ────────
+#
+# Closes the loop after a G2 graph build: the user couldn't see the
+# resume, edit it, download it, or give feedback. These five endpoints
+# (plus the migration in db/resume_builds_user_feedback.sql) wire that up.
+
+class ResumeBuildEdit(BaseModel):
+    user_edited_md: str
+
+
+class ResumeBuildFeedback(BaseModel):
+    user_rating: Optional[int] = None  # 1-5; None = clear rating
+    user_feedback: Optional[str] = None
+
+
+def _safe_resume_build_row(row: dict) -> dict:
+    """Strip noisy fields; return a UI-shaped dict."""
+    return {
+        "id":                row.get("id"),
+        "job_id":            row.get("job_id"),
+        "company_name":      row.get("company_name"),
+        "status":            row.get("status"),
+        "iterations":        row.get("iterations"),
+        "cost_usd_total":    float(row.get("cost_usd_total") or 0),
+        "latency_ms_total":  row.get("latency_ms_total"),
+        "resume_pdf_url":    row.get("resume_pdf_url"),
+        "resume_docx_url":   row.get("resume_docx_url"),
+        "cover_email_md":    row.get("cover_email_md"),
+        "user_rating":       row.get("user_rating"),
+        "user_feedback":     row.get("user_feedback"),
+        "user_edited_md":    row.get("user_edited_md"),
+        "user_edited_at":    row.get("user_edited_at"),
+        "created_at":        row.get("created_at"),
+        "finalized_at":      row.get("finalized_at"),
+        "error":             row.get("error"),
+    }
+
+
+@app.get("/resume-builds/by-job/{job_id}")
+async def list_resume_builds_for_job(job_id: int, _auth=Depends(verify_secret)):
+    """All builds for a job, latest first. Used by the Resume tab to
+    show 'previous attempts' and let the user switch between them."""
+    from db.client import get_supabase
+    db = get_supabase()
+    result = (
+        db.table("resume_builds")
+        .select("*")
+        .eq("job_id", job_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    rows = [_safe_resume_build_row(r) for r in (result.data or [])]
+    return {"builds": rows, "total": len(rows)}
+
+
+@app.get("/resume-builds/{build_id}")
+async def get_resume_build(build_id: str, _auth=Depends(verify_secret)):
+    """Single build record with all fields (without the heavy
+    agent_transcript blob — fetch that via /resume-builds/{id}/transcript
+    if you need it)."""
+    from db.client import get_supabase
+    db = get_supabase()
+    result = (
+        db.table("resume_builds")
+        .select("*")
+        .eq("id", build_id)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Resume build not found")
+    return _safe_resume_build_row(rows[0])
+
+
+@app.get("/resume-builds/{build_id}/markdown")
+async def get_resume_build_markdown(build_id: str, _auth=Depends(verify_secret)):
+    """Return the resume markdown content for the dashboard's preview/edit
+    surface. Prefers user_edited_md if the user has saved an override; else
+    fetches the canonical Storage object referenced from jobs.resume_path.
+
+    Returns: {markdown: str, source: 'user_edit'|'storage'|'missing', byte_size: int}
+    """
+    from db.client import get_supabase
+    import httpx
+    db = get_supabase()
+    rb = (
+        db.table("resume_builds")
+        .select("id, job_id, user_edited_md, user_edited_at")
+        .eq("id", build_id)
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    if not rb:
+        raise HTTPException(status_code=404, detail="Resume build not found")
+    rb = rb[0]
+
+    # 1. User edit takes precedence
+    if rb.get("user_edited_md"):
+        md = rb["user_edited_md"]
+        return {"markdown": md, "source": "user_edit", "byte_size": len(md.encode("utf-8"))}
+
+    # 2. Fall back to canonical Storage URL on the jobs row
+    job = (
+        db.table("jobs")
+        .select("resume_path")
+        .eq("id", rb["job_id"])
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    url = (job[0] if job else {}).get("resume_path")
+    if not url or not url.startswith("http"):
+        return {"markdown": "", "source": "missing", "byte_size": 0}
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return {"markdown": "", "source": "missing",
+                        "byte_size": 0,
+                        "fetch_status": resp.status_code}
+            md = resp.text
+            return {"markdown": md, "source": "storage", "byte_size": len(md.encode("utf-8"))}
+    except Exception as e:
+        logger.warning(f"resume markdown fetch failed for {build_id}: {e}")
+        return {"markdown": "", "source": "missing", "byte_size": 0,
+                "error": str(e)[:200]}
+
+
+@app.patch("/resume-builds/{build_id}/markdown")
+async def save_resume_build_edit(
+    build_id: str,
+    payload: ResumeBuildEdit,
+    _auth=Depends(verify_secret),
+):
+    """Save user-edited markdown over the agent draft. Stored in
+    resume_builds.user_edited_md so the original Storage object is kept
+    intact (audit trail). Display/download endpoints prefer this over
+    the canonical version."""
+    from db.client import get_supabase
+    db = get_supabase()
+    if not payload.user_edited_md or not payload.user_edited_md.strip():
+        raise HTTPException(status_code=400, detail="user_edited_md cannot be empty")
+    if len(payload.user_edited_md) > 200_000:
+        raise HTTPException(status_code=400, detail="resume too large (>200KB)")
+
+    result = (
+        db.table("resume_builds")
+        .update({
+            "user_edited_md": payload.user_edited_md,
+            "user_edited_at": datetime.now(timezone.utc).isoformat(),
+        })
+        .eq("id", build_id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Resume build not found")
+    return {"ok": True, "user_edited_at": result.data[0].get("user_edited_at")}
+
+
+@app.post("/resume-builds/{build_id}/feedback")
+async def save_resume_build_feedback(
+    build_id: str,
+    payload: ResumeBuildFeedback,
+    _auth=Depends(verify_secret),
+):
+    """Save user rating + free-text feedback on a build. Either field
+    is optional but at least one must be set. Used by the Sunday persona
+    synth cron to learn from negative ratings."""
+    from db.client import get_supabase
+    db = get_supabase()
+    if payload.user_rating is None and not payload.user_feedback:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide user_rating (1-5) and/or user_feedback (text)",
+        )
+    if payload.user_rating is not None and not (1 <= payload.user_rating <= 5):
+        raise HTTPException(status_code=400, detail="user_rating must be 1-5")
+
+    update: dict = {}
+    if payload.user_rating is not None:
+        update["user_rating"] = payload.user_rating
+    if payload.user_feedback is not None:
+        update["user_feedback"] = payload.user_feedback[:5000]  # cap
+
+    result = (
+        db.table("resume_builds")
+        .update(update)
+        .eq("id", build_id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Resume build not found")
+    return _safe_resume_build_row(result.data[0])
+
+
+@app.get("/resume-builds/{build_id}/download")
+async def download_resume_build(
+    build_id: str,
+    fmt: str = "md",
+    _auth=Depends(verify_secret),
+):
+    """Download a resume in the chosen format.
+
+    Currently supports:
+      - md (markdown, the canonical format)
+
+    docx/pdf are deliberately not implemented yet — they need a
+    pandoc/python-docx pipeline. Track at GH issue when you need them.
+    For now copy-paste the markdown into Pages/Word; the Phase 2.0
+    typography is intentionally clean enough to render verbatim.
+    """
+    from db.client import get_supabase
+    import httpx
+    fmt = (fmt or "md").lower()
+    if fmt != "md":
+        raise HTTPException(
+            status_code=400,
+            detail=f"format '{fmt}' not yet supported — only 'md' for now",
+        )
+
+    db = get_supabase()
+    rb = (
+        db.table("resume_builds")
+        .select("id, job_id, company_name, user_edited_md")
+        .eq("id", build_id)
+        .limit(1)
+        .execute()
+        .data or []
+    )
+    if not rb:
+        raise HTTPException(status_code=404, detail="Resume build not found")
+    rb = rb[0]
+
+    # Source: user edit if present, else canonical Storage URL
+    md = rb.get("user_edited_md")
+    if not md:
+        job = (
+            db.table("jobs")
+            .select("resume_path")
+            .eq("id", rb["job_id"])
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        url = (job[0] if job else {}).get("resume_path")
+        if url and url.startswith("http"):
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    r = await client.get(url)
+                    if r.status_code == 200:
+                        md = r.text
+            except Exception:
+                pass
+
+    if not md:
+        raise HTTPException(status_code=404, detail="No resume content to download")
+
+    company = (rb.get("company_name") or "company").lower().replace(" ", "-")
+    filename = f"resume_{company}_{rb['id'][:8]}.md"
+    return Response(
+        content=md,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/pipeline/stats")
