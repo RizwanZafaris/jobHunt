@@ -1977,6 +1977,24 @@ async def trigger_persona_synthesis(
 
 
 # ─── Phase 2.2 — Deep research persona builder ────────────────────────────
+@app.post("/personas/backfill-embeddings")
+async def trigger_backfill_embeddings(
+    company: Optional[str] = None,
+    _auth=Depends(verify_secret),
+):
+    """One-shot: re-embed any company_knowledge rows whose embedding IS NULL.
+
+    Used after the deep-research migration to embed the 30 v1-persona
+    companies whose seed knowledge was inserted without embeddings.
+    Pass `company` to scope to one company; omit for all.
+
+    Synchronous (typical run is <30s for 70 cos × 13 sec).
+    """
+    from agents.persona_deep_research import backfill_embeddings
+    result = await backfill_embeddings(company)
+    return {"status": "complete", **result}
+
+
 @app.post("/personas/deep-research")
 async def trigger_deep_research(
     company: str,

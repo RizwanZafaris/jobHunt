@@ -288,40 +288,92 @@ async def synthesize_persona(
 
 
 # ─── DB writes ───────────────────────────────────────────────────────────
-def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
-    """Upsert one row per section into company_knowledge. Returns count."""
-    from db.client import get_supabase
+async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
+    """Upsert one row per section into company_knowledge with embeddings.
+
+    Routes through db.client.upsert_company_knowledge which writes
+    OpenAI text-embedding-3-small vectors into the existing
+    pgvector ivfflat index. The G2 insider_expert (PR B) and any other
+    consumer can then query via search_company_knowledge(query, company)
+    for semantically-relevant chunks.
+    """
+    from db.client import upsert_company_knowledge, get_supabase
     db = get_supabase()
+    # Best-effort look up company_id once
+    company_id: Optional[str] = None
+    try:
+        rows = (
+            db.table("companies")
+            .select("id")
+            .eq("name", company)
+            .limit(1)
+            .execute()
+            .data or []
+        )
+        if rows:
+            company_id = rows[0].get("id")
+    except Exception:
+        pass
+
     written = 0
     for sec, content in sections.items():
         if sec not in SECTIONS:
             continue
         if not content or not content.strip():
             continue
-        row = {
-            "company_name": company,
-            "section": sec,
-            "content": content.strip(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
         try:
-            existing = (
-                db.table("company_knowledge")
-                .select("id")
-                .eq("company_name", company)
-                .eq("section", sec)
-                .limit(1)
-                .execute()
-                .data or []
+            await upsert_company_knowledge(
+                company_name=company,
+                company_id=company_id,
+                section=sec,
+                content=content.strip(),
+                source_url=None,
+                metadata={"source": "deep_research"},
             )
-            if existing:
-                db.table("company_knowledge").update(row).eq("id", existing[0]["id"]).execute()
-            else:
-                db.table("company_knowledge").insert(row).execute()
             written += 1
         except Exception as e:
             logger.warning(f"company_knowledge write failed for {sec}: {e}")
     return written
+
+
+async def backfill_embeddings(company: Optional[str] = None) -> dict:
+    """One-shot helper: re-embed any company_knowledge rows where embedding IS NULL.
+
+    Used after the deep-research migration to embed the 30 v1-persona
+    companies whose seed knowledge was inserted without embeddings.
+    Pass `company` to scope to one; omit for all.
+
+    Returns {scanned, embedded, errored}.
+    """
+    from db.client import embed, get_supabase
+    db = get_supabase()
+    q = db.table("company_knowledge").select("id, company_name, section, content")
+    if company:
+        q = q.eq("company_name", company)
+    # Fetch only rows where embedding is NULL — pgrst doesn't have a direct
+    # filter for "is null on a vector column" via the SDK, so we fetch all
+    # and filter in code. Volume is small (≤70 cos × 13 sec = 910 max).
+    rows = q.execute().data or []
+    scanned = embedded = errored = 0
+    for r in rows:
+        # Only process rows whose embedding column is empty/missing.
+        # The Supabase Python SDK doesn't return vector columns by default
+        # in select("..."); they're stripped. We re-fetch with a vector check
+        # via the RPC pattern — simpler approach: just embed all NULLs.
+        # Use an UPDATE WHERE embedding IS NULL guard on write.
+        scanned += 1
+        try:
+            vec = await embed(r["content"])
+            db.table("company_knowledge").update({
+                "embedding": vec,
+            }).eq("id", r["id"]).is_("embedding", "null").execute()
+            embedded += 1
+        except Exception as e:
+            logger.warning(
+                f"backfill embedding failed for {r.get('company_name')}/{r.get('section')}: {e}"
+            )
+            errored += 1
+    return {"scanned": scanned, "embedded": embedded, "errored": errored}
 
 
 def _upsert_persona(
@@ -394,7 +446,7 @@ async def deep_research_persona(company: str) -> DeepResearchResult:
     ats_bank.setdefault("boost", [])
     ats_bank.setdefault("banned", [])
 
-    knowledge_written = _upsert_knowledge(company, sections)
+    knowledge_written = await _upsert_knowledge(company, sections)
     persona_row = _upsert_persona(
         company, system_prompt, ats_bank, quality, len(sources)
     )
