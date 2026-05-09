@@ -139,6 +139,10 @@ class Settings(BaseSettings):
 
     # ── Search ──────────────────────────────────────────────────────────────
     serper_api_key: Optional[str] = Field(None, env="SERPER_API_KEY")
+    # Phase 2.2 — Apify deep-research for persona building.
+    # Get a token at https://console.apify.com/settings/integrations.
+    # Free tier: $5/month credit, enough for ~25 company persona builds.
+    apify_token: Optional[str] = Field(None, env="APIFY_TOKEN")
     serper_endpoint: str = "https://google.serper.dev/search"
 
     # ── Email ───────────────────────────────────────────────────────────────
