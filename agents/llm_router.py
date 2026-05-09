@@ -103,8 +103,13 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
                 break
     if not pricing:
         return 0.0
-    in_cost = input_tokens * pricing[0] / 1_000_000
-    out_cost = output_tokens * pricing[1] / 1_000_000
+    # Coerce None / missing token counts to 0. Some providers (notably
+    # Gemini's usage_metadata) sometimes return attributes whose values
+    # are None instead of an int, which used to crash this function.
+    in_toks = int(input_tokens or 0)
+    out_toks = int(output_tokens or 0)
+    in_cost = in_toks * pricing[0] / 1_000_000
+    out_cost = out_toks * pricing[1] / 1_000_000
     return round(in_cost + out_cost, 6)
 
 
@@ -290,12 +295,14 @@ class LLMRouter:
                 })
 
         usage = getattr(resp, "usage", None)
+        in_toks = (getattr(usage, "input_tokens", 0) or 0) if usage else 0
+        out_toks = (getattr(usage, "output_tokens", 0) or 0) if usage else 0
         return LLMResult(
             text="\n".join(text_parts).strip(),
             provider="anthropic",
             model=model,
-            input_tokens=getattr(usage, "input_tokens", 0) if usage else 0,
-            output_tokens=getattr(usage, "output_tokens", 0) if usage else 0,
+            input_tokens=int(in_toks),
+            output_tokens=int(out_toks),
             raw=resp,
             tool_calls=tool_calls,
         )
@@ -341,12 +348,14 @@ class LLMRouter:
                 })
 
         usage = getattr(resp, "usage", None)
+        in_toks = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        out_toks = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
         return LLMResult(
             text=text.strip(),
             provider=provider,
             model=model,
-            input_tokens=getattr(usage, "prompt_tokens", 0) if usage else 0,
-            output_tokens=getattr(usage, "completion_tokens", 0) if usage else 0,
+            input_tokens=int(in_toks),
+            output_tokens=int(out_toks),
             raw=resp,
             tool_calls=tool_calls,
         )
@@ -400,17 +409,19 @@ class LLMRouter:
         )
         text = (resp.text or "").strip()
 
-        # Token usage
+        # Token usage. NB: Gemini's usage_metadata sometimes returns
+        # attribute values that are None (not just missing) — getattr's
+        # default only fires for missing attrs, so wrap with `or 0`.
         usage = getattr(resp, "usage_metadata", None)
-        in_toks = getattr(usage, "prompt_token_count", 0) if usage else 0
-        out_toks = getattr(usage, "candidates_token_count", 0) if usage else 0
+        in_toks = (getattr(usage, "prompt_token_count", 0) or 0) if usage else 0
+        out_toks = (getattr(usage, "candidates_token_count", 0) or 0) if usage else 0
 
         return LLMResult(
             text=text,
             provider="google",
             model=model,
-            input_tokens=in_toks,
-            output_tokens=out_toks,
+            input_tokens=int(in_toks),
+            output_tokens=int(out_toks),
             raw=resp,
         )
 
