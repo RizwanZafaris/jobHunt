@@ -62,9 +62,14 @@ PRICING_PER_1M: dict[str, tuple[float, float]] = {
     # DeepSeek
     "deepseek-chat":              (0.27, 1.10),    # V3
     "deepseek-reasoner":          (0.55, 2.19),    # R1
-    # Moonshot Kimi
-    "kimi-k2":                    (0.15, 2.50),
+    # Moonshot Kimi (USD/1M, cache-miss input · output, per platform.kimi.ai/docs/pricing)
+    "kimi-k2.6":                  (0.95, 4.0),    # latest, recommended for new code
+    "kimi-k2.5":                  (0.60, 3.0),    # cheaper alternative, still SOTA
     "moonshot-v1-128k":           (2.0, 5.0),
+    # NB: plain "kimi-k2" is NOT a valid Moonshot model id. Removed from
+    # pricing table — calls with that name will 404 at the API. The
+    # _supports_json_response_format whitelist defaults to True for kimi-*
+    # variants, which is correct (Moonshot supports response_format).
 }
 
 # OpenAI-compatible endpoints (DeepSeek + Kimi)
