@@ -113,6 +113,24 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     return round(in_cost + out_cost, 6)
 
 
+def _supports_json_response_format(model: str) -> bool:
+    """
+    Whether `response_format={"type": "json_object"}` is honoured by the model.
+
+    Known offenders that 400 on json_object:
+      - deepseek-reasoner (R1): outputs reasoning + final answer, no native
+        JSON-mode. Fixed by setting json_response=False; the LLM router still
+        receives the raw text and `_parse_json_loose` handles prose-wrapped
+        JSON.
+
+    Defaults to True for everything else (gpt-*, deepseek-chat, kimi-k2,
+    moonshot-v1-*). Update this function — never hardcode at the call site.
+    """
+    if model.startswith("deepseek-reasoner"):
+        return False
+    return True
+
+
 def infer_provider(model: str) -> Provider:
     """Best-effort provider inference from model name. Used for back-compat."""
     m = model.lower()
@@ -328,7 +346,7 @@ class LLMRouter:
             max_tokens=max_tokens,
             temperature=temperature,
         )
-        if json_response:
+        if json_response and _supports_json_response_format(model):
             kw["response_format"] = {"type": "json_object"}
         if tools:
             kw["tools"] = tools

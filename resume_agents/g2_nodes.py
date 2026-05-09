@@ -424,7 +424,15 @@ async def _run_ats_critic(
     model: str,
     agent_name: str,
 ) -> tuple[dict, float, int, str, str]:
-    """Shared body for the two critics. Returns (parsed, cost, latency, model_used, raw_text)."""
+    """Shared body for the two critics. Returns (parsed, cost, latency, model_used, raw_text).
+
+    Resilient: if the LLM call itself fails (provider HTTP error, timeout,
+    auth, response_format unsupported, etc.), we return a sentinel critique
+    instead of letting the exception propagate. The G2 graph then continues
+    — merge_critique already handles a critic with ats_score=0 by deferring
+    to the other critic. Without this, one bad provider crashes the whole
+    parallel branch and forces a legacy fallback.
+    """
     user = f"""JOB DESCRIPTION:
 {(state['job'].get('description') or '')[:4000]}
 
@@ -433,16 +441,32 @@ CURRENT RESUME DRAFT:
 
 Score and critique. Return strict JSON only.
 """
-    result = await get_router().ask(
-        provider=provider,
-        model=model,
-        system=ATS_CRITIC_SYSTEM,
-        messages=[{"role": "user", "content": user}],
-        max_tokens=2000,
-        temperature=0.1,
-        agent_name=agent_name,
-        json_response=True,
-    )
+    try:
+        result = await get_router().ask(
+            provider=provider,
+            model=model,
+            system=ATS_CRITIC_SYSTEM,
+            messages=[{"role": "user", "content": user}],
+            max_tokens=2000,
+            temperature=0.1,
+            agent_name=agent_name,
+            json_response=True,
+        )
+    except Exception as e:
+        logger.warning(
+            f"{agent_name} LLM call failed ({type(e).__name__}: {str(e)[:200]}); "
+            f"returning sentinel critique so the other critic can carry the merge"
+        )
+        sentinel = {
+            "ats_score": 0,
+            "missing_keywords": [],
+            "specific_fixes": [
+                f"(provider error from {provider}/{model}: {type(e).__name__}: {str(e)[:200]})"
+            ],
+            "_provider_error": True,
+        }
+        return sentinel, 0.0, 0, model, ""
+
     try:
         parsed = _parse_json_loose(result.text)
     except Exception as e:

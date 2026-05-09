@@ -15,6 +15,7 @@ from agents.llm_router import (
     PRICING_PER_1M,
     _estimate_cost,
     _parse_json_loose,
+    _supports_json_response_format,
     infer_provider,
 )
 
@@ -86,6 +87,21 @@ class TestCostEstimation:
         assert cost == pytest.approx(1.25)
         cost = _estimate_cost("gemini-2.5-pro", None, 1_000_000)
         assert cost == pytest.approx(5.0)
+
+    def test_json_response_format_whitelist(self):
+        # deepseek-reasoner (R1) rejects response_format=json_object with HTTP 400.
+        # Whitelist must mark it as unsupported.
+        assert _supports_json_response_format("deepseek-reasoner") is False
+        # Versioned variants — prefix match
+        assert _supports_json_response_format("deepseek-reasoner-distill-llama-70b") is False
+        # Models known to support json_object
+        assert _supports_json_response_format("gpt-4.1") is True
+        assert _supports_json_response_format("gpt-5") is True
+        assert _supports_json_response_format("deepseek-chat") is True
+        assert _supports_json_response_format("kimi-k2") is True
+        assert _supports_json_response_format("moonshot-v1-128k") is True
+        # Unknown models default to True (best-effort)
+        assert _supports_json_response_format("future-llm-9000") is True
 
     def test_pricing_table_consistency(self):
         # Sanity: every entry should be a 2-tuple of non-negative numbers
