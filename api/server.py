@@ -96,6 +96,64 @@ async def health():
     return {"status": "healthy", "timestamp": date.today().isoformat()}
 
 
+@app.get("/debug/apify-check")
+async def debug_apify_check(_auth=Depends(verify_secret)):
+    """Diagnostic: check whether APIFY_TOKEN reaches the container + works.
+
+    Bypasses Pydantic settings cache by reading os.environ directly.
+    If a token is present, fires one tiny rag-web-browser query and
+    reports the actual HTTP status / response from Apify.
+
+    Use this when /personas/deep-research keeps returning sources_count=0
+    to figure out if the issue is (a) env var not set, (b) wrong name,
+    (c) invalid token, (d) Apify quota exhausted, (e) rate-limited.
+    """
+    import os
+    import httpx
+    from agents.persona_deep_research import APIFY_ACTOR_RUN_SYNC_URL
+
+    raw_token = os.environ.get("APIFY_TOKEN")
+    settings_token = None
+    try:
+        settings_token = settings.apify_token
+    except Exception:
+        pass
+
+    out = {
+        "env_var_present_raw": bool(raw_token),
+        "env_var_present_via_settings": bool(settings_token),
+        "raw_token_len": len(raw_token) if raw_token else 0,
+        "settings_token_len": len(settings_token) if settings_token else 0,
+        "raw_token_prefix": (raw_token[:8] + "…") if raw_token else None,
+        "settings_token_prefix": (settings_token[:8] + "…") if settings_token else None,
+    }
+
+    if not raw_token:
+        out["verdict"] = "APIFY_TOKEN env var not visible to container. Set it on Railway and redeploy."
+        return out
+
+    # Fire one tiny call
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                APIFY_ACTOR_RUN_SYNC_URL,
+                params={"token": raw_token},
+                json={"query": "test", "maxResults": 1, "outputFormats": ["markdown"]},
+            )
+            out["http_status"] = resp.status_code
+            if resp.status_code == 200:
+                items = resp.json() or []
+                out["items_returned"] = len(items)
+                out["verdict"] = "OK — Apify auth works, query returned data"
+            else:
+                out["body_preview"] = resp.text[:400]
+                out["verdict"] = f"Apify HTTP {resp.status_code} — token may be invalid, expired, or out of credit"
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+        out["verdict"] = "Network or client error reaching Apify"
+    return out
+
+
 @app.get("/debug/provider-ping")
 async def debug_provider_ping(
     provider: str,
