@@ -1,0 +1,37 @@
+[
+  {
+    "id": "rq_001",
+    "query": "TC40 chargeback fraud signals",
+    "company": "Marqeta",
+    "relevant_doc_ids": [],
+    "notes": "TODO label — see evals/README.md §RAG. Expected docs cover TC40 / SAFE / dispute lifecycle in Marqeta's company_knowledge."
+  },
+  {
+    "id": "rq_002",
+    "query": "VTS network token provisioning lifecycle",
+    "company": "Visa",
+    "relevant_doc_ids": [],
+    "notes": "TODO label. Expected docs: VTS provisioning APIs, token lifecycle states, EMVCo references."
+  },
+  {
+    "id": "rq_003",
+    "query": "Stripe authorization rate retry orchestration",
+    "company": "Stripe",
+    "relevant_doc_ids": [],
+    "notes": "TODO label. Expected docs: Stripe's auth-rate optimization writeups, Radar signals, retry strategies."
+  },
+  {
+    "id": "rq_004",
+    "query": "3DS 2.2 step-up authentication frictionless flow",
+    "company": "Visa",
+    "relevant_doc_ids": [],
+    "notes": "TODO label. Expected docs: 3DS 2.x specs, EMVCo framework, exemption rules."
+  },
+  {
+    "id": "rq_005",
+    "query": "card-on-file network token Apple Pay Google Pay",
+    "company": "Stripe",
+    "relevant_doc_ids": [],
+    "notes": "TODO label. Expected docs: card-on-file lifecycle, wallet provisioning integration, network token benefits for CoF."
+  }
+]

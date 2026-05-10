@@ -1,0 +1,33 @@
+{
+  "id": "case_003_stripe_lead_pm",
+  "company": "Stripe",
+  "role": "Lead PM — Payments Acceptance / Optimization",
+  "jd": {
+    "title": "Lead Product Manager — Acceptance Optimization",
+    "company": "Stripe",
+    "description": "Stripe is hiring a Lead PM to own approval-rate optimization for our card acceptance product. You will own the experimentation roadmap (network-token routing, retry logic, soft decline recovery, 3DS step-up policy, network-level token provisioning). You will work directly with our largest merchants (subscription, marketplace, platform) to lift authorization rates by integrating Stripe Radar signals, ML-driven retry orchestration, and real-time issuer feedback. Requirements: 8+ years PM, fluency in card-not-present payments economics, prior experience shipping authorization-rate, retries, or 3DS products at a payments-platform or large-merchant scale.",
+    "location": "Remote / SF / NYC",
+    "url": "https://example.invalid/stripe-lead-pm-acceptance"
+  },
+  "persona": {
+    "voice": "writing-driven, first-principles, customer-obsessed, technically precise",
+    "terminology": ["authorization rate", "approval rate", "soft decline", "hard decline", "issuer", "acquirer", "network token", "Stripe Radar", "3DS step-up", "step-up authentication", "interchange", "scheme fees", "BIN", "card-on-file", "decline code", "retry orchestration"],
+    "seniority": "Lead PM (~L6/L7 equivalent)",
+    "ats_keyword_bank": [
+      "authorization rate", "approval rate", "acceptance", "soft decline", "hard decline",
+      "retry", "retry orchestration", "network token", "tokenization", "Stripe Radar",
+      "3DS", "3-D Secure", "step-up", "issuer", "acquirer", "interchange", "scheme fee",
+      "BIN", "card on file", "card-not-present", "machine learning", "experimentation",
+      "A/B test", "platform", "marketplace", "subscription", "PM", "roadmap"
+    ]
+  },
+  "profile_ref": "cv.md",
+  "expected_axes": {
+    "ats_keyword_coverage": 8,
+    "evidence_specificity": 9,
+    "persona_fit": 9,
+    "hallucination_check": 10,
+    "length_discipline": 8
+  },
+  "notes": "Placeholder golden. Stripe values writing — golden resume must be tight, specific, and avoid PM-cliché verbs. Replace placeholder content with hand-curated golden before this case is meaningful."
+}

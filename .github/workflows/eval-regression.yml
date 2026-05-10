@@ -1,0 +1,57 @@
+# .github/workflows/eval-regression.yml
+#
+# Runs evals/regression_check.py on PRs that touch the prompts, the graph,
+# or the DB client. Compares the two most recent reports in evals/reports/
+# and fails the PR if a regression is detected.
+#
+# IMPORTANT: this is a NOOP until a baseline report exists in evals/reports/.
+# To produce the first baseline:
+#   1. Hand-edit the three golden resumes under evals/golden/
+#   2. Locally: `python -m evals.run_golden --case all --resumes a.md,b.md,c.md`
+#   3. `git add evals/reports/<the-report>.json && git commit && push`
+# After the baseline is in main, this workflow becomes meaningful.
+#
+# Cost: regression_check itself spends ZERO on LLMs — it only diffs JSON.
+# It's the developer's job to produce a fresh golden report locally before
+# raising a PR that changes prompts. CI will not generate one for you.
+
+name: eval-regression
+
+on:
+  pull_request:
+    paths:
+      - 'agents/**'
+      - 'resume_agents/**'
+      - 'db/client.py'
+      - 'evals/**'
+
+jobs:
+  regression-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Need full history so we can compare against the report that
+          # landed in main, not just the diff in this PR.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        # Assumes requirements.txt has every dep the harness needs.
+        # If a separate agent adds eval-only deps to _pending_deps_evals.txt,
+        # update this step (and requirements.txt) at that point.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run regression check
+        # Exit 0 = no regression (or no baseline yet)
+        # Exit 1 = regression — fails the PR
+        # Exit 2 = bad inputs — fails the PR
+        run: |
+          python -m evals.regression_check --reports-dir evals/reports/

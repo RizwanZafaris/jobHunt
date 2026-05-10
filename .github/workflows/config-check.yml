@@ -1,0 +1,73 @@
+name: config-check
+
+# Verify the config-drift detector itself works. The script is run
+# against .env.example which is full of placeholder values, so the
+# expectation is that the script EXITS NON-ZERO. We invert the exit
+# code with `!` — if the script ever stops catching placeholders,
+# CI fails loudly.
+#
+# Triggered only when something in the config plumbing changes.
+
+on:
+  pull_request:
+    paths:
+      - '.env.example'
+      - 'scripts/check-prod-config.py'
+      - '.github/workflows/config-check.yml'
+      - 'requirements.txt'
+
+jobs:
+  verify-script-catches-placeholders:
+    name: Script catches .env.example placeholders
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify check-prod-config.py is stdlib-only (no install needed)
+        # The script must run with zero deps. We deliberately don't `pip
+        # install -r requirements.txt` here — if someone adds a third-party
+        # import, this step catches it.
+        run: |
+          python <<'PY'
+          import ast, sys
+          tree = ast.parse(open("scripts/check-prod-config.py").read())
+          mods = set()
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  for n in node.names:
+                      mods.add(n.name.split(".")[0])
+              elif isinstance(node, ast.ImportFrom):
+                  if node.module:
+                      mods.add(node.module.split(".")[0])
+          allowed = {"argparse", "os", "re", "sys", "dataclasses",
+                     "pathlib", "typing", "__future__"}
+          bad = mods - allowed
+          if bad:
+              print(f"non-stdlib imports detected: {sorted(bad)}")
+              sys.exit(1)
+          PY
+
+      - name: Assert script catches .env.example placeholders (non-zero exit)
+        # `!` inverts: if the script (correctly) returns 1, this step is OK.
+        # If the script ever returns 0 against .env.example, the assertion
+        # fails — meaning the placeholder detector is broken.
+        run: '! python scripts/check-prod-config.py --env-file .env.example'
+
+      - name: Assert script passes when required vars are set (sanity)
+        # Spot-check: with all required tier vars filled in with non-placeholder
+        # values + --ignore-optional, the script must exit 0.
+        env:
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SERVICE_KEY: fake-but-non-placeholder-1234567890
+          ANTHROPIC_API_KEY: sk-ant-fake-1234567890
+          OPENAI_API_KEY: sk-fake-1234567890
+          PORT: '8000'
+          ENVIRONMENT: production
+          SECRET_KEY: actually-random-secret-1234567890
+        run: python scripts/check-prod-config.py --ignore-optional
