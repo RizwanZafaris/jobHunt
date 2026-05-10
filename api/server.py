@@ -2127,6 +2127,81 @@ async def trigger_deep_research(
     }
 
 
+@app.post("/personas/refresh-news")
+async def trigger_refresh_news(
+    background_tasks: BackgroundTasks,
+    company: Optional[str] = None,
+    sync: bool = False,
+    _auth=Depends(verify_secret),
+):
+    """Daily news-only refresh. Cheap variant of /personas/deep-research.
+
+    PR C: meant to be called by the scheduled-tasks MCP cron once per day
+    for every target company. Updates ONLY the `news` section + bumps
+    last_synthesized_at. Leaves the other 12 sections + success/failure
+    patterns + ATS bank untouched.
+
+    Cost: ~$0.005 Apify per company × 70 × 30 days = ~$10/month.
+
+    `company`: pass to refresh ONE company. Omit to refresh ALL targets.
+    `sync`: pass true to wait inline; default is background.
+    """
+    from agents.persona_deep_research import refresh_news_only
+    from db.client import get_supabase
+
+    if company:
+        if sync:
+            r = await refresh_news_only(company)
+            return {"status": "complete", **r}
+        async def _run_one():
+            try:
+                r = await refresh_news_only(company)
+                logger.info(
+                    f"refresh_news_only[{company}]: chars={r['news_chars']} "
+                    f"sources={r['sources_count']} lat={r['latency_ms']}ms"
+                )
+            except Exception:
+                logger.exception(f"refresh_news_only[{company}] failed")
+        background_tasks.add_task(_run_one)
+        return {
+            "status": "started",
+            "company": company,
+            "message": f"News refresh for {company} running in background.",
+        }
+
+    # All targets
+    rows = (
+        get_supabase()
+        .table("companies")
+        .select("name")
+        .eq("is_target", True)
+        .execute()
+        .data or []
+    )
+    company_names = [r["name"] for r in rows]
+
+    async def _run_all():
+        from agents.persona_deep_research import refresh_news_only
+        for name in company_names:
+            try:
+                r = await refresh_news_only(name)
+                logger.info(
+                    f"[news-cron] {name}: sources={r['sources_count']} chars={r['news_chars']}"
+                )
+            except Exception as e:
+                logger.warning(f"[news-cron] {name} failed: {e}")
+
+    background_tasks.add_task(_run_all)
+    return {
+        "status": "started",
+        "queued_count": len(company_names),
+        "message": (
+            f"Daily news refresh started for {len(company_names)} companies. "
+            f"Estimated runtime: ~{len(company_names)} minutes (~$0.005/company)."
+        ),
+    }
+
+
 @app.post("/personas/deep-research-batch")
 async def trigger_deep_research_batch(
     background_tasks: BackgroundTasks,
