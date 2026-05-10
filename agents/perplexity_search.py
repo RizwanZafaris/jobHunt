@@ -198,7 +198,11 @@ def _extract_token_usage(payload: dict[str, Any]) -> tuple[int, int]:
 
 
 # ─── Public surface ───────────────────────────────────────────────────────
-async def recency_check(company: str, days: int = 30) -> dict[str, Any]:
+async def recency_check(
+    company: str,
+    days: int = 30,
+    industry_hint: str = "fintech / payments / financial technology",
+) -> dict[str, Any]:
     """Find news from the last `days` days about `company`.
 
     Returns:
@@ -209,18 +213,46 @@ async def recency_check(company: str, days: int = 30) -> dict[str, Any]:
             model: str,
             raw_tokens: {input: int, output: int},
         }
+
+    Disambiguation: ambiguous brand names (e.g. "Visa" the payments
+    company collides with US travel/immigration visas) cause Sonar to
+    return high-traffic off-topic citations. The system prompt below
+    constrains both (a) the entity definition and (b) the allowed
+    citation domains so we get press-releases / earnings / business-news
+    rather than .gov travel / .edu / immigration sites.
     """
+    company_lc = company.lower()
     system = (
-        f"You are a research assistant. Find news from the last {days} days "
-        f"about {company}. Return citations with URLs and published_at. "
-        "Focus on hiring direction, product launches, leadership changes, "
-        "financial results, or strategic shifts that would matter to a "
-        "senior product manager preparing to apply for a role there."
+        f"You are a research assistant. Find news from the last {days} days about "
+        f"\"{company}\" — specifically the company / brand operating in the "
+        f"{industry_hint} industry. NOT any similarly-named policy / "
+        f"government / consumer-product / immigration term that may share the "
+        f"name (e.g. for 'Visa' this means the payments company NASDAQ:V, NOT "
+        f"US travel-visa / green-card / immigration policy).\n\n"
+        f"Citation rules — return ONLY URLs from these source types:\n"
+        f"  - the company's own domains (e.g. *.{company_lc}.com, "
+        f"investor.{company_lc}.com, ir.{company_lc}.com)\n"
+        f"  - business newswires: businesswire.com, prnewswire.com, "
+        f"globenewswire.com, sec.gov\n"
+        f"  - established business / fintech press: bloomberg.com, reuters.com, "
+        f"wsj.com, ft.com, marketwatch.com, marketscreener.com, fool.com, "
+        f"seekingalpha.com, pymnts.com, americanbanker.com, finextra.com, "
+        f"techcrunch.com, theinformation.com\n\n"
+        f"EXCLUDE: travel.state.gov, .edu pages, immigration / consular / "
+        f"green-card / visa-bulletin / aila / boundless / immihelp / youtube "
+        f"explainer videos, generic travel news.\n\n"
+        f"Focus the summary on hiring direction, product launches, leadership "
+        f"changes, financial results, or strategic shifts that would matter "
+        f"to a senior product manager preparing to apply for a role there. "
+        f"If you find fewer than 3 on-topic results, say so — never pad with "
+        f"off-topic citations to reach a count."
     )
     user = (
-        f"What's new at {company} in the last {days} days? "
-        "Give me a tight bulleted summary, then end with a Citations: section "
-        "listing every source URL on its own line."
+        f"What's new at {company} (the {industry_hint} company) in the last "
+        f"{days} days? Give me a tight bulleted summary, then end with a "
+        f"Citations: section listing every source URL on its own line. "
+        f"Skip any source that's about travel visas, immigration, or "
+        f"government visa policy."
     )
 
     payload = await _post_chat(model=MODEL_RECENCY, system=system, user=user)
