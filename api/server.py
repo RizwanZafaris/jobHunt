@@ -56,6 +56,32 @@ app.include_router(interview_studio_router)
 app.include_router(perplexity_router)
 
 
+# ── Jobs-runs polling endpoint ────────────────────────────────────────────────
+# Referenced by:
+#   - dashboard ResumeEditor.tsx full-rebuild polling
+#   - dashboard ResumeTab.tsx build-resume polling
+#   - api/workspace.py (logs `poll_url: /jobs-runs/{id}` in responses)
+#   - api/queue.py docstring + api/linkedin.py docstring
+# but the GET handler itself was never implemented — frontend polling was
+# returning 404. This single endpoint closes that gap.
+@app.get("/jobs-runs/{run_id}")
+def get_jobs_run(
+    run_id: str,
+    _auth=Depends(verify_secret),
+):
+    """Return the current state of a jobs_runs row by id.
+
+    Status lifecycle: queued → running → succeeded | failed | cancelled.
+    Frontend polls every 8s after enqueueing G2/G3/G4 work.
+    """
+    from api.jobs_runs import get_run
+    run = get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"jobs_run {run_id} not found")
+    # Pydantic model.dump() handles UUIDs / datetimes for JSON.
+    return run.model_dump(mode="json")
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 def verify_secret(x_secret_key: str = Header(None)):
     if x_secret_key != settings.secret_key:
