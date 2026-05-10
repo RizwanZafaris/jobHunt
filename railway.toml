@@ -9,11 +9,64 @@ healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
 
+# ── API service ─────────────────────────────────────────────────────────
+# The FastAPI server. Public-facing.
 [[services]]
 name = "api"
 [services.variables]
 START_MODE = "api"
+# Worker queue lives on the same Redis Railway adds via the Redis plugin.
+# Set REDIS_URL on the Railway dashboard (Redis plugin auto-injects it
+# on services in the same project). The API process imports
+# api/queue.py to enqueue work.
+# REDIS_URL = "${REDIS_URL}"   # supplied by Redis plugin
 
+# ── Worker service ──────────────────────────────────────────────────────
+# Headless RQ worker that consumes the 'jobhunt' queue. Independent of
+# the API: redeploys of the API don't restart the worker (and vice
+# versa). Scale this horizontally in Railway (replicas=2-4) when peak
+# resume-build throughput becomes a constraint.
+[[services]]
+name = "worker"
+[services.build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.worker"
+[services.deploy]
+# No HTTP port — RQ worker is headless. Railway watches the process
+# for liveness. ON_FAILURE restart so a single crash doesn't take down
+# the worker permanently; 5 retries is enough to clear a transient
+# Redis blip but not enough to mask a misconfiguration.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+[services.variables]
+START_MODE = "worker"
+# REDIS_URL = "${REDIS_URL}"   # supplied by Redis plugin (REQUIRED)
+WORKER_CONCURRENCY = "1"
+RQ_QUEUE_NAME = "jobhunt"
+
+# ── Reaper (optional) ───────────────────────────────────────────────────
+# The orphan reaper can run either:
+#   (a) embedded in the worker as an APScheduler thread (default — see
+#       api/orphan_reaper.start_scheduler), OR
+#   (b) as a separate cron service that fires `python -m api.orphan_reaper`
+#       every 5 min via Railway's scheduled jobs.
+# Option (a) is simpler; option (b) survives worker container crashes
+# better. Pick one. Today we ship (a) — uncomment below to flip to (b).
+#
+# [[services]]
+# name = "reaper-cron"
+# [services.build]
+# builder = "DOCKERFILE"
+# dockerfilePath = "Dockerfile.worker"
+# [services.deploy]
+# # Cron syntax via Railway's scheduled-jobs feature, every 5 min.
+# # Set this in the Railway UI under the service's "Cron" tab.
+# startCommand = "python -m api.orphan_reaper"
+# [services.variables]
+# # REDIS_URL = "${REDIS_URL}"
+# LOG_LEVEL = "INFO"
+
+# ── Scheduler (existing — unchanged) ────────────────────────────────────
 # To add a second service for the scheduler daemon:
 # [[services]]
 # name = "scheduler"

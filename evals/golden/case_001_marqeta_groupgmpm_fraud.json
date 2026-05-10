@@ -1,0 +1,33 @@
+{
+  "id": "case_001_marqeta_groupgmpm_fraud",
+  "company": "Marqeta",
+  "role": "Group GM / PM — Fraud & Risk",
+  "jd": {
+    "title": "Group GM / PM — Fraud & Risk",
+    "company": "Marqeta",
+    "description": "Marqeta is hiring a Group GM/PM to own end-to-end fraud and risk product strategy across our card-issuing platform. You will define the roadmap for transaction monitoring, dispute lifecycle (TC40/SAFE), authorization risk scoring, and 3DS/SCA orchestration. You will partner with risk operations, data science, and engineering to ship ML-driven fraud detection that protects $250B+ TPV across our processor and program-manager customers. Outcomes: reduce net fraud loss as a % of TPV, improve approval rates, and shorten dispute resolution SLAs. Requirements: 8+ years PM experience, deep payments domain (issuer-side preferred), prior P&L or product-line ownership, comfort presenting to risk and finance leadership.",
+    "location": "Oakland, CA / Remote US",
+    "url": "https://example.invalid/marqeta-group-gm-fraud"
+  },
+  "persona": {
+    "voice": "data-led, operator-flavoured, comfortable with risk vocabulary",
+    "terminology": ["TC40", "SAFE", "TPV", "approval rate", "false-positive rate", "3DS", "SCA", "issuer processor", "program manager", "BIN sponsor", "chargeback", "first-party fraud", "card-present", "card-not-present", "tokenization", "VTS", "MDES"],
+    "seniority": "Group GM / Director-of-Product equivalent",
+    "ats_keyword_bank": [
+      "fraud", "risk", "TC40", "SAFE", "chargeback", "dispute", "TPV", "approval rate",
+      "false positive", "3DS", "SCA", "issuer processor", "program manager", "BIN",
+      "ML", "machine learning", "transaction monitoring", "authorization", "tokenization",
+      "VTS", "MDES", "P&L", "roadmap", "product strategy", "card issuing", "card present",
+      "card not present", "first-party fraud"
+    ]
+  },
+  "profile_ref": "cv.md",
+  "expected_axes": {
+    "ats_keyword_coverage": 8,
+    "evidence_specificity": 8,
+    "persona_fit": 9,
+    "hallucination_check": 10,
+    "length_discipline": 8
+  },
+  "notes": "Placeholder golden — see evals/golden/case_001_golden_resume.md. Replace placeholders before this case yields a meaningful score."
+}

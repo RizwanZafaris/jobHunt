@@ -1,0 +1,32 @@
+{
+  "id": "case_002_visa_seniorpm_payments",
+  "company": "Visa",
+  "role": "Senior PM — Payments / Network Tokenization",
+  "jd": {
+    "title": "Senior Product Manager — Visa Token Service (VTS)",
+    "company": "Visa",
+    "description": "Visa is hiring a Senior PM to drive the Visa Token Service (VTS) tokenization product line — provisioning, lifecycle, and credential-on-file scenarios. You will define APIs and SDKs used by issuers, wallets (Apple Pay, Google Pay, Samsung Pay), and large merchant card-on-file environments. Partner with cryptography, risk, and acceptance teams to launch new token formats and 3DS 2.x flows. Requirements: 6+ years PM, payments network or large-issuer experience, fluency in EMVCo / PCI / 3DS specs, ability to ship globally across regulated regions.",
+    "location": "Foster City, CA",
+    "url": "https://example.invalid/visa-vts-senior-pm"
+  },
+  "persona": {
+    "voice": "spec-fluent, network-policy aware, partnership-flavoured",
+    "terminology": ["VTS", "MDES", "PAN", "DPAN", "TR-31", "EMVCo", "3DS 2.2", "credential on file", "card on file", "tokenization", "provisioning", "Apple Pay", "Google Pay", "issuer", "acquirer", "PCI DSS", "PCI-PIN"],
+    "seniority": "Senior PM (IC, ~L5/L6 equivalent)",
+    "ats_keyword_bank": [
+      "tokenization", "VTS", "MDES", "PAN", "DPAN", "EMVCo", "3DS", "3-D Secure",
+      "credential on file", "card on file", "Apple Pay", "Google Pay", "Samsung Pay",
+      "issuer", "acquirer", "wallet", "network", "PCI DSS", "PCI-PIN", "cryptography",
+      "API", "SDK", "provisioning", "lifecycle", "payments", "card", "rails"
+    ]
+  },
+  "profile_ref": "cv.md",
+  "expected_axes": {
+    "ats_keyword_coverage": 8,
+    "evidence_specificity": 8,
+    "persona_fit": 8,
+    "hallucination_check": 10,
+    "length_discipline": 8
+  },
+  "notes": "Placeholder golden. Tokenization specs are highly cited — golden resume should be exact about which spec versions the candidate has shipped against."
+}

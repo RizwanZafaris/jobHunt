@@ -1,0 +1,54 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Dockerfile.worker — RQ worker image for jobHunt long-running graphs.
+#
+# Boots `python -m api.worker` which:
+#   - connects to REDIS_URL
+#   - loops on the 'jobhunt' queue (RQ_QUEUE_NAME env override)
+#   - dispatches G1 / G2 / G3 jobs to the existing graph code
+#
+# Identical base + deps to the API Dockerfile so the cached layers are
+# reused on Railway. Only the entrypoint differs. Keep this in sync with
+# Dockerfile when the API image's Python version or system deps change.
+# ──────────────────────────────────────────────────────────────────────────
+FROM python:3.11-slim
+
+# System dependencies (mirror Dockerfile to share layer cache)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps. Worker needs the SAME requirements.txt as the
+# API — graph code imports anthropic / openai / google-genai / supabase
+# / etc. We don't carve out a leaner requirements file because the
+# import surface of the worker is essentially the API minus FastAPI.
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Playwright browsers — needed by the persona deep-research pipeline
+# (Apify rag-web-browser is hosted, but some agents fall back to local
+# scraping). Keep this even though it's a bit of bloat; otherwise the
+# worker silently fails on cold-start companies.
+RUN playwright install chromium --with-deps || true
+
+# App code
+COPY . .
+
+# Output dirs (graphs write transient artifacts here before uploading)
+RUN mkdir -p output/resumes output/reports output/interview_prep data
+
+# RQ workers don't expose an HTTP port, but Railway's healthcheck wants
+# one if you configure it. We don't configure one (workers are headless);
+# Railway watches the process for liveness instead.
+
+# Worker concurrency: Railway-side env var. Default 1 — bump to 2-4 in
+# production (or scale horizontally with multiple worker replicas).
+ENV WORKER_CONCURRENCY=1
+
+# Default command. Override with WORKER_CMD if you want to run something
+# else (e.g. `python -m api.orphan_reaper` for a one-shot cron container).
+CMD ["python", "-m", "api.worker"]

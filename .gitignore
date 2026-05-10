@@ -49,3 +49,10 @@ dashboard/.env.local
 # but exclude raw text staging (contains full resume PII)
 profile_build/staging/
 
+# graphify build artifacts (large knowledge-graph outputs; regenerated from sources)
+graphify-out/
+
+# Pending-deps / pending-endpoints handoff files between agents (consumed; not repo state)
+_pending_deps_*.txt
+_pending_queue_additions.md
+_pending_endpoints.md

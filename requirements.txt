@@ -39,6 +39,16 @@ python-dotenv>=1.0.0
 apscheduler>=3.10.0
 pytz>=2024.2
 
+# Queue (Sprint 1 — durable G1/G2/G3 jobs; replaces FastAPI BackgroundTasks)
+rq>=2.0
+redis>=5.0
+
+# Auth (Sprint 1 — Supabase JWT verification for multi-tenant pivot)
+python-jose[cryptography]>=3.3
+
+# Referral graph (P1.1 — in-memory Dijkstra over user-scoped people/edges)
+networkx>=3.4
+
 # Email
 sendgrid>=6.11.0
 

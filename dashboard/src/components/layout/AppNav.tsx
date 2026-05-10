@@ -1,12 +1,16 @@
 /**
  * AppNav — primary site navigation.
  *
- * Replaces the 9-tab horizontal ProfileNav with:
- *   - 6 top-level tabs (Pipeline, Targets, Applications, Personas, Costs, Profile)
- *   - Profile sub-nav (Master, Keywords, Recommendations, Sources) shown
- *     only when the user is in the /profile section
- *   - mobile drawer below md: breakpoint
- *   - aria-current="page" on the active link
+ * Collapsed from 7 tabs (engineer-shaped) down to 5 (job-seeker-shaped):
+ *   - Today        — the ranked "what to do now" surface
+ *   - Targets      — the company / job pipeline
+ *   - Applications — outbound + outcome tracking
+ *   - Network      — referral graph (Sprint 2 placeholder)
+ *   - Insights     — Personas + Costs + System(Boss), tabbed
+ *
+ * Profile lives in a top-right user menu (avatar dropdown), rendered by
+ * `UserMenu` from AppShell — not here. The legacy /profile sub-nav is
+ * still rendered via `ProfileSubNav` when the user is on a profile route.
  */
 'use client'
 
@@ -14,33 +18,51 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import { clsx } from 'clsx'
-import { Icon } from '@/components/ui/Icon'
+import { Icon, IconName } from '@/components/ui/Icon'
 
 interface NavItem {
   href: string
   label: string
+  icon: IconName
 }
 
 const PRIMARY: NavItem[] = [
-  { href: '/',             label: 'Pipeline' },
-  { href: '/companies',    label: 'Targets' },
-  { href: '/applications', label: 'Applications' },
-  { href: '/personas',     label: 'Personas' },
-  { href: '/costs',        label: 'Costs' },
-  { href: '/boss',         label: 'Boss' },
-  { href: '/profile',      label: 'Profile' },
+  { href: '/today',        label: 'Today',        icon: 'sun' },
+  { href: '/targets',      label: 'Targets',      icon: 'target' },
+  { href: '/applications', label: 'Applications', icon: 'clipboard-list' },
+  { href: '/network',      label: 'Network',      icon: 'users' },
+  { href: '/insights',     label: 'Insights',     icon: 'bar-chart-3' },
 ]
 
 const PROFILE_SUB: NavItem[] = [
-  { href: '/profile',                 label: 'Master' },
-  { href: '/profile/keywords',        label: 'Keywords' },
-  { href: '/profile/recommendations', label: 'Recommendations' },
-  { href: '/profile/sources',         label: 'Sources' },
+  { href: '/profile',                 label: 'Master',          icon: 'document' },
+  { href: '/profile/keywords',        label: 'Keywords',        icon: 'tag' },
+  { href: '/profile/recommendations', label: 'Recommendations', icon: 'sparkles' },
+  { href: '/profile/sources',         label: 'Sources',         icon: 'link' },
 ]
 
 function isActive(href: string, pathname: string): boolean {
-  if (href === '/') return pathname === '/'
-  if (href === '/profile') return pathname === '/profile'
+  if (href === '/today') return pathname === '/today' || pathname === '/'
+  if (href === '/insights') {
+    return (
+      pathname === href ||
+      pathname.startsWith(href + '/') ||
+      pathname === '/personas' ||
+      pathname.startsWith('/personas/') ||
+      pathname === '/costs' ||
+      pathname.startsWith('/costs/') ||
+      pathname === '/boss' ||
+      pathname.startsWith('/boss/')
+    )
+  }
+  if (href === '/targets') {
+    return (
+      pathname === href ||
+      pathname.startsWith(href + '/') ||
+      pathname === '/companies' ||
+      pathname.startsWith('/companies/')
+    )
+  }
   return pathname === href || pathname.startsWith(href + '/')
 }
 
@@ -73,22 +95,20 @@ export function AppNav() {
       <nav aria-label="Primary" className="hidden md:flex items-center gap-0.5">
         {PRIMARY.map((item) => {
           const active = isActive(item.href, pathname)
-          // Highlight Profile when in any /profile/* sub-route
-          const isProfile = item.href === '/profile' && isProfileSection(pathname)
-          const showActive = active || isProfile
           return (
             <Link
               key={item.href}
               href={item.href}
-              aria-current={showActive ? 'page' : undefined}
+              aria-current={active ? 'page' : undefined}
               className={clsx(
-                'px-3 py-2 rounded-md text-2xs font-medium transition-colors',
+                'inline-flex items-center gap-1.5 px-3 py-2 rounded-md text-2xs font-medium transition-colors',
                 'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                showActive
+                active
                   ? 'bg-accent text-accent-fg'
                   : 'text-fg-muted hover:text-fg hover:bg-surface-raised',
               )}
             >
+              <Icon name={item.icon} size={14} />
               {item.label}
             </Link>
           )
@@ -135,20 +155,21 @@ export function AppNav() {
               </button>
             </div>
             {PRIMARY.map((item) => {
-              const active = isActive(item.href, pathname) || (item.href === '/profile' && isProfileSection(pathname))
+              const active = isActive(item.href, pathname)
               return (
                 <Link
                   key={item.href}
                   href={item.href}
                   aria-current={active ? 'page' : undefined}
                   className={clsx(
-                    'px-3 py-3 rounded-md text-sm font-medium min-h-11 flex items-center transition-colors',
+                    'inline-flex items-center gap-2 px-3 py-3 rounded-md text-sm font-medium min-h-11 transition-colors',
                     'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
                     active
                       ? 'bg-accent text-accent-fg'
                       : 'text-fg hover:bg-surface-raised',
                   )}
                 >
+                  <Icon name={item.icon} size={16} />
                   {item.label}
                 </Link>
               )
@@ -167,10 +188,11 @@ export function AppNav() {
                         href={item.href}
                         aria-current={active ? 'page' : undefined}
                         className={clsx(
-                          'px-3 py-2.5 rounded-md text-xs font-medium min-h-11 flex items-center',
+                          'inline-flex items-center gap-2 px-3 py-2.5 rounded-md text-xs font-medium min-h-11',
                           active ? 'bg-surface-raised text-fg' : 'text-fg-muted hover:text-fg hover:bg-surface-raised',
                         )}
                       >
+                        <Icon name={item.icon} size={14} />
                         {item.label}
                       </Link>
                     )
@@ -202,11 +224,12 @@ export function ProfileSubNav() {
             href={item.href}
             aria-current={active ? 'page' : undefined}
             className={clsx(
-              'px-3 py-2 text-2xs font-medium rounded-md transition-colors',
+              'inline-flex items-center gap-1.5 px-3 py-2 text-2xs font-medium rounded-md transition-colors',
               'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
               active ? 'text-fg bg-surface-raised' : 'text-fg-subtle hover:text-fg hover:bg-surface-raised',
             )}
           >
+            <Icon name={item.icon} size={12} />
             {item.label}
           </Link>
         )
