@@ -44,8 +44,10 @@ app.add_middleware(
 # RIZWAN_SINGLE_USER_MODE=1.
 from api.network import router as network_router  # noqa: E402
 from api.linkedin import router as linkedin_router  # noqa: E402
+from api.actions import router as actions_router  # noqa: E402  /actions/today (Phase 1)
 app.include_router(network_router)
 app.include_router(linkedin_router)
+app.include_router(actions_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
