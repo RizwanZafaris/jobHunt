@@ -37,6 +37,17 @@ app.add_middleware(
 )
 
 
+# ── Path C routers (P1.1 referral graph + P1.2 LinkedIn engine) ───────────────
+# Wired here so the new differentiator endpoints (/network/*, /linkedin/*) are
+# live the moment migrations 004/005 are applied. Endpoints internally use
+# Depends(get_current_user) which short-circuits to user_001 (Rizwan) when
+# RIZWAN_SINGLE_USER_MODE=1.
+from api.network import router as network_router  # noqa: E402
+from api.linkedin import router as linkedin_router  # noqa: E402
+app.include_router(network_router)
+app.include_router(linkedin_router)
+
+
 # ── Auth ──────────────────────────────────────────────────────────────────────
 def verify_secret(x_secret_key: str = Header(None)):
     if x_secret_key != settings.secret_key:
