@@ -50,6 +50,9 @@ export type IconName =
   | 'shield-warning'
   | 'circle-half'
   | 'tag'
+  | 'users'
+  | 'clipboard-list'
+  | 'bar-chart-3'
 
 const PATHS: Record<IconName, React.ReactNode> = {
   search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
@@ -91,6 +94,9 @@ const PATHS: Record<IconName, React.ReactNode> = {
   'shield-warning': <path d="M12 3 4 6v6c0 4 3 7.5 8 9 5-1.5 8-5 8-9V6zM12 8v4M12 16h.01" />,
   'circle-half': <><circle cx="12" cy="12" r="9" /><path d="M12 3v18" /></>,
   tag: <path d="M3 12V4h8l10 10-8 8z M7 8h.01" />,
+  users: <><circle cx="9" cy="8" r="3" /><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" /><circle cx="17" cy="9" r="2.5" /><path d="M15 14c1.5-.7 3-1 4-1 2.2 0 4 1.8 4 4" /></>,
+  'clipboard-list': <><rect x="6" y="4" width="12" height="17" rx="1" /><path d="M9 4h6v3H9zM10 11h6M10 15h6M10 19h4" /></>,
+  'bar-chart-3': <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
 }
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {

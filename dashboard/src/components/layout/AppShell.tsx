@@ -12,6 +12,7 @@ import Link from 'next/link'
 import { clsx } from 'clsx'
 import { AppNav, ProfileSubNav } from './AppNav'
 import { ThemeToggle } from '@/components/ui/ThemeToggle'
+import { UserMenu } from '@/components/ui/UserMenu'
 
 export interface AppShellProps {
   children: ReactNode
@@ -32,7 +33,7 @@ export function AppShell({ children, actions, wide = false }: AppShellProps) {
         <div className={clsx(containerCls, 'h-14 flex items-center justify-between gap-4')}>
           <div className="flex items-center gap-6 min-w-0">
             <Link
-              href="/"
+              href="/today"
               className="font-display text-lg tracking-tight text-fg hover:text-fg-muted transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
             >
               Job Hunt
@@ -42,6 +43,7 @@ export function AppShell({ children, actions, wide = false }: AppShellProps) {
           <div className="flex items-center gap-1.5">
             {actions}
             <ThemeToggle />
+            <UserMenu />
           </div>
         </div>
       </header>
