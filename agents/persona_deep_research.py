@@ -113,6 +113,20 @@ def build_queries(company: str) -> list[tuple[str, str]]:
     ]
 
 
+def build_news_only_queries(company: str) -> list[tuple[str, str]]:
+    """Lightweight 1-query subset for the daily news cron (PR C).
+
+    Phase 2.2.3 — keeps daily refresh under $0.05/company instead of $0.20.
+    The cron only updates the `news` section + recomputes the embedding
+    + bumps last_synthesized_at — leaves the other 12 sections + the
+    success/failure patterns + ATS bank intact.
+    """
+    return [
+        ("news",
+         f"{company} news funding launch leadership announcement {datetime.now(timezone.utc).year}"),
+    ]
+
+
 async def _fetch_apify(token: str, query: str, max_results: int = 3) -> list[dict]:
     """Run apify/rag-web-browser synchronously and return its dataset items.
 
@@ -151,8 +165,18 @@ def _truncate_md(md: str, max_chars: int = 6000) -> str:
     return md if len(md) <= max_chars else md[:max_chars] + "\n…[truncated]"
 
 
-async def gather_research(company: str, *, max_per_query: int = 3) -> list[ResearchSource]:
-    """Issue all 8 Apify queries in parallel; collect sources."""
+async def gather_research(
+    company: str,
+    *,
+    max_per_query: int = 3,
+    queries: Optional[list[tuple[str, str]]] = None,
+) -> list[ResearchSource]:
+    """Issue Apify queries in parallel; collect sources.
+
+    Pass `queries=build_news_only_queries(company)` from the daily news
+    cron (PR C) for the cheap variant. Default is the full 8-query
+    bundle from `build_queries`.
+    """
     settings = get_settings()
     token = settings.apify_token
     if not token:
@@ -162,12 +186,13 @@ async def gather_research(company: str, *, max_per_query: int = 3) -> list[Resea
         )
         return []
 
-    queries = build_queries(company)
+    if queries is None:
+        queries = build_queries(company)
     tasks = [_fetch_apify(token, q[1], max_results=max_per_query) for q in queries]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     sources: list[ResearchSource] = []
-    for (label, query), res in zip(queries, results):
+    for (label, _query), res in zip(queries, results):
         if isinstance(res, Exception) or not res:
             continue
         for item in res:
@@ -181,6 +206,91 @@ async def gather_research(company: str, *, max_per_query: int = 3) -> list[Resea
                 content=_truncate_md(md),
             ))
     return sources
+
+
+# ─── PR C: lightweight daily news refresh ────────────────────────────────
+async def refresh_news_only(company: str) -> dict:
+    """Fast, cheap variant for the daily cron.
+
+    Updates only the `news` section in company_knowledge (re-embeds it),
+    bumps last_synthesized_at, and adds `last_news_refresh` to metadata.
+    Leaves the other 12 sections + success/failure_patterns + ATS bank
+    untouched.
+
+    Cost: ~$0.005 Apify + $0 LLM (we're not synthesizing — we just
+    overwrite the news section with a fresh markdown digest). Per
+    company × 70 cos × 30 days = ~$10/month.
+
+    Returns {company, news_chars, sources_count, latency_ms, note}.
+    """
+    import time
+    from db.client import upsert_company_knowledge, get_supabase
+    started = time.perf_counter()
+    notes: list[str] = []
+
+    sources = await gather_research(
+        company,
+        max_per_query=3,
+        queries=build_news_only_queries(company),
+    )
+
+    if not sources:
+        notes.append("no Apify sources returned")
+        news_text = ""
+    else:
+        # Concatenate the top sources into one news digest, datestamped.
+        date_str = datetime.now(timezone.utc).date().isoformat()
+        news_text = (
+            f"## News digest — refreshed {date_str}\n\n"
+            + "\n\n---\n\n".join(
+                f"### {s.title or s.url}\nSource: {s.url}\n\n{s.content}"
+                for s in sources[:3]
+            )
+        )
+
+    # Look up company_id once
+    company_id: Optional[str] = None
+    try:
+        db = get_supabase()
+        rows = (
+            db.table("companies").select("id").eq("name", company).limit(1).execute().data or []
+        )
+        if rows:
+            company_id = rows[0].get("id")
+    except Exception as e:
+        logger.warning(f"refresh_news_only[{company}]: company_id lookup failed: {e}")
+
+    if news_text:
+        try:
+            await upsert_company_knowledge(
+                company_name=company,
+                company_id=company_id,
+                section="news",
+                content=news_text,
+                source_url=None,
+                metadata={"source": "daily_news_refresh"},
+            )
+        except Exception as e:
+            logger.warning(f"refresh_news_only[{company}] write failed: {e}")
+            notes.append(f"write_error: {type(e).__name__}")
+
+    # Touch last_synthesized_at on the persona row so the dashboard
+    # shows "freshly updated" for the news cycle.
+    try:
+        db = get_supabase()
+        db.table("company_personas").update({
+            "last_synthesized_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("company_name", company).execute()
+    except Exception as e:
+        logger.warning(f"refresh_news_only[{company}]: last_synthesized_at update failed: {e}")
+
+    return {
+        "company": company,
+        "news_chars": len(news_text),
+        "sources_count": len(sources),
+        "latency_ms": int((time.perf_counter() - started) * 1000),
+        "note": " | ".join(notes) if notes else None,
+    }
 
 
 # ─── Synthesis prompt ────────────────────────────────────────────────────
