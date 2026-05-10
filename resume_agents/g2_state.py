@@ -77,6 +77,20 @@ class ResumeState(TypedDict, total=False):
                                                         # export_node uses this to mark
                                                         # resume_builds.status='cost_capped'
 
+    # Phase 2.1: workspace rebuild flow
+    warm_start_md: Optional[str]                        # if set, the writer seeds from
+                                                        # this markdown instead of
+                                                        # generating from scratch. Used
+                                                        # by rebuild-section / full-rebuild
+                                                        # in the workspace editor.
+    edit_intent: Optional[str]                          # human instruction that drove the
+                                                        # rebuild ("make this more
+                                                        # product-led", "tighten Daraz
+                                                        # bullets"). The writer node
+                                                        # surfaces this in its brief so
+                                                        # the iteration is responsive to
+                                                        # the user's actual intent.
+
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 def make_turn(

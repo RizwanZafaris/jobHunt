@@ -201,6 +201,9 @@ def enqueue_g2_build(
     *,
     force: bool = False,
     max_cost_usd: Optional[float] = None,
+    warm_start_md: Optional[str] = None,
+    edit_intent: Optional[str] = None,
+    rebuild_scope: Optional[str] = None,
 ) -> str:
     """Enqueue a G2 resume build for one job.
 
@@ -212,10 +215,38 @@ def enqueue_g2_build(
 
     Returns the jobs_runs.id (UUID string). Caller exposes that to the
     UI for status polling: GET /jobs-runs/{run_id}.
+
+    Phase 2.1 — workspace rebuild plumbing:
+      `warm_start_md` is the current resume markdown. When set, the
+      writer node seeds from it instead of generating cold. Used by
+      `POST /workspace/{id}/rebuild-section` and full-rebuild.
+      `edit_intent` is the human instruction ("make this more
+      product-led"). Surfaced to the writer's brief.
+      `rebuild_scope` is `'section'` or `'full'` — recorded in payload
+      so the worker / audit log knows which path was taken.
+
+    All three flow into the idempotency-key payload, which means a
+    rebuild after a fresh build doesn't dedup (different payload →
+    different sha256). That's the right shape: the user explicitly
+    asked for a different operation.
     """
     payload: dict[str, Any] = {"job_id": int(job_id), "force": bool(force)}
     if max_cost_usd is not None:
         payload["max_cost_usd"] = float(max_cost_usd)
+    if warm_start_md:
+        # Hash the warm-start to keep the payload (and the idempotency
+        # key) compact. The full text rides on the worker side via the
+        # jobs_runs row's payload column — but a sha is enough to make
+        # the key unique. NOTE: we still STORE the full markdown in
+        # payload so the worker can read it; the hash is just defensive
+        # logging hygiene. Keeping the full text here means two distinct
+        # warm starts (different drafts) generate different keys, which
+        # is what we want.
+        payload["warm_start_md"] = str(warm_start_md)
+    if edit_intent:
+        payload["edit_intent"] = str(edit_intent)
+    if rebuild_scope:
+        payload["rebuild_scope"] = str(rebuild_scope)
     return _enqueue_or_dedup(
         user_id=user_id,
         kind="g2_resume",

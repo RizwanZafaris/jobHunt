@@ -128,7 +128,15 @@ async def insider_expert_node(state: ResumeState) -> dict:
 
     # ─── RAG: top-k relevant research chunks for THIS jd ────────────────
     # Falls back gracefully if the search RPC errors or returns nothing.
+    #
+    # Phase 3: each retrieved row contributes a `cite:knowledge_id=<uuid>`
+    # breadcrumb in the prompt (so the LLM can refer back to a specific row)
+    # AND we collect the IDs into `cited_knowledge_ids` for the transcript
+    # turn. agents/outcome_to_persona.credit_outcome reads either the
+    # structured field OR regexes the free text — defence in depth so a
+    # later prompt edit can't silently break credit assignment.
     rag_block = ""
+    cited_knowledge_ids: list[str] = []
     try:
         from db.client import search_company_knowledge
         jd_query = f"{job.get('title', '')} {(job.get('description') or '')[:1500]}"
@@ -143,7 +151,19 @@ async def insider_expert_node(state: ResumeState) -> dict:
                 sec = c.get("section", "?")
                 sim = c.get("similarity", 0)
                 content = (c.get("content") or "")[:1000]
-                rag_lines.append(f"### [{sec}] (relevance {sim:.2f})\n{content}")
+                kid = c.get("id")
+                # Append the cite marker only when we actually have a real
+                # uuid (post-migration-009). If the RPC is still v1 we skip
+                # the marker and the fallback path in outcome_to_persona
+                # handles credit assignment via "top-k for company".
+                if kid:
+                    cited_knowledge_ids.append(str(kid))
+                    rag_lines.append(
+                        f"### [{sec}] (relevance {sim:.2f}) "
+                        f"cite:knowledge_id={kid}\n{content}"
+                    )
+                else:
+                    rag_lines.append(f"### [{sec}] (relevance {sim:.2f})\n{content}")
             rag_block = "\n\n".join(rag_lines)
     except Exception as e:
         logger.warning(f"insider_expert RAG fetch failed for {company_name}: {e}")
@@ -203,21 +223,39 @@ Produce your positioning notes:
         tools=[{"type": "google_search"}],
         agent_name="g2.insider_expert",
     )
+    # ─── Build the transcript turn ─────────────────────────────────────
+    # The `user` prompt already contains the `cite:knowledge_id=<uuid>`
+    # markers (one per RAG row) via rag_block. truncate(user) cuts to 500
+    # chars and the markers live deep inside, so we append a compact
+    # citation suffix to input_summary that always survives truncation.
+    # This is what agents/outcome_to_persona._CITE_RE regexes against.
+    cite_suffix = ""
+    if cited_knowledge_ids:
+        cite_suffix = " | citations: " + " ".join(
+            f"cite:knowledge_id={k}" for k in cited_knowledge_ids
+        )
+    input_summary_text = truncate(user, 500 - len(cite_suffix)) + cite_suffix
+
+    turn = make_turn(
+        node="insider_expert",
+        provider=result.provider,
+        model=result.model,
+        input_summary=input_summary_text,
+        output=result.text,
+        cost_usd=result.cost_usd,
+        latency_ms=result.latency_ms,
+    )
+    # Structured field for forward-looking consumers (the regex path is the
+    # current authoritative reader; this is defence in depth so a future
+    # consumer can avoid free-text parsing).
+    if cited_knowledge_ids:
+        turn["cited_knowledge_ids"] = cited_knowledge_ids
+
     return {
         "expert_notes": result.text,
         "cost_usd_total": result.cost_usd,
         "latency_ms_total": result.latency_ms,
-        "transcript": [
-            make_turn(
-                node="insider_expert",
-                provider=result.provider,
-                model=result.model,
-                input_summary=truncate(user),
-                output=result.text,
-                cost_usd=result.cost_usd,
-                latency_ms=result.latency_ms,
-            )
-        ],
+        "transcript": [turn],
     }
 
 
@@ -391,6 +429,35 @@ Output ONLY the resume markdown. No preamble, no commentary."""
 async def writer_node(state: ResumeState) -> dict:
     settings = get_settings()
     iteration = state.get("iteration", 0)
+
+    # Phase 2.1: warm-start rebuild path. When the workspace editor calls
+    # rebuild-section / full-rebuild, the user's CURRENT resume is passed
+    # in as warm_start_md and the writer's job changes from "generate from
+    # scratch" to "iterate on this seed using the new context". We surface
+    # the seed and the intent into the brief so the model:
+    #   1) preserves voice + structure (treats the warm start as canon)
+    #   2) directs its edits at the named intent rather than re-rolling
+    warm_start_md = state.get("warm_start_md")
+    edit_intent = state.get("edit_intent")
+    has_warm_start = bool(warm_start_md and warm_start_md.strip())
+
+    if has_warm_start:
+        warm_start_block = (
+            f"\n\nWARM-START SEED (the candidate's current resume — "
+            f"PRESERVE its structure and voice; iterate within it rather "
+            f"than rewriting from scratch):\n{warm_start_md}\n"
+        )
+        if edit_intent:
+            intent_block = (
+                f"\n\nEDIT INTENT (the human instruction driving this "
+                f"rebuild — focus your changes on this):\n{edit_intent}\n"
+            )
+        else:
+            intent_block = ""
+    else:
+        warm_start_block = ""
+        intent_block = ""
+
     user = f"""JOB:
 {state['job'].get('title', '')} @ {state['company_name']}
 {state['job'].get('location', '') or ''}
@@ -414,7 +481,7 @@ PREVIOUS DRAFT (if revising):
 {state.get('current_draft') or '(none)'}
 
 CANDIDATE MASTER RESUME:
-{state['master_resume_md']}
+{state['master_resume_md']}{warm_start_block}{intent_block}
 
 Write the resume now. Output ONLY markdown.
 """

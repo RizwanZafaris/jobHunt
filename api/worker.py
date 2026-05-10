@@ -130,12 +130,19 @@ def worker_run_g2(jobs_run_id: str) -> dict[str, Any]:
         raise ValueError(f"worker_run_g2 payload missing job_id: {payload!r}")
 
     max_cost_usd = payload.get("max_cost_usd")
+    # Phase 2.1: workspace rebuild plumbing. Pulled from payload only if
+    # the enqueuer set them — both default to None for cold-start builds.
+    warm_start_md = payload.get("warm_start_md")
+    edit_intent = payload.get("edit_intent")
+    rebuild_scope = payload.get("rebuild_scope")
 
     try:
         from resume_agents.g2_run import run_g2_graph
         final_state = _run_async(run_g2_graph(
             job_id=int(job_id),
             max_cost_usd=max_cost_usd,
+            warm_start_md=warm_start_md,
+            edit_intent=edit_intent,
         ))
         # Trim the state to a transport-safe shape — the full state can
         # be megabytes (transcript blob, intermediate artifacts).
@@ -148,6 +155,7 @@ def worker_run_g2(jobs_run_id: str) -> dict[str, Any]:
             "latency_ms_total": final_state.get("latency_ms_total"),
             "resume_pdf_url": final_state.get("resume_pdf_url"),
             "resume_docx_url": final_state.get("resume_docx_url"),
+            "rebuild_scope": rebuild_scope,
         }
         mark_succeeded(jobs_run_id, result)
         return result
