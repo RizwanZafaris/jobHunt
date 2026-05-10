@@ -14,6 +14,7 @@ uvicorn[standard]>=0.32.0
 pydantic>=2.9.0
 pydantic-settings>=2.6.0
 email-validator>=2.2.0    # required by pydantic EmailStr (api/users.py User.email); Railway boot crash without it
+python-multipart>=0.0.20  # required by FastAPI for File/UploadFile (api/network.py POST /import/linkedin-csv); Railway boot crash without it
 
 # Supabase
 supabase>=2.9.0
