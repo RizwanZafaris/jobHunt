@@ -24,6 +24,26 @@ export async function fetchStats() {
   return res.json()
 }
 
+/**
+ * /actions/today — ranked TodayAction queue for the home page.
+ * Backed by api/actions.py. The shape matches dashboard/src/lib/types/today.ts.
+ */
+export interface FetchTodayResponse {
+  actions: import('./types/today').TodayAction[]
+  total: number
+  counts: Record<string, number>
+  generated_at: string
+}
+
+export async function fetchTodayActions(limit = 8): Promise<FetchTodayResponse> {
+  const res = await fetch(`${baseUrl}/actions/today?limit=${limit}`, {
+    headers,
+    next: { revalidate: 30 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch today actions (${res.status})`)
+  return res.json()
+}
+
 export async function fetchJobs(params?: {
   status?: string
   min_score?: number
