@@ -56,6 +56,13 @@ app.include_router(interview_studio_router)
 app.include_router(perplexity_router)
 
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
+def verify_secret(x_secret_key: str = Header(None)):
+    if x_secret_key != settings.secret_key:
+        raise HTTPException(status_code=401, detail="Invalid secret key")
+    return True
+
+
 # ── Jobs-runs polling endpoint ────────────────────────────────────────────────
 # Referenced by:
 #   - dashboard ResumeEditor.tsx full-rebuild polling
@@ -64,6 +71,10 @@ app.include_router(perplexity_router)
 #   - api/queue.py docstring + api/linkedin.py docstring
 # but the GET handler itself was never implemented — frontend polling was
 # returning 404. This single endpoint closes that gap.
+#
+# Defined AFTER `verify_secret` because Depends(verify_secret) is evaluated
+# at decorator-time and needs the symbol resolved. Earlier placement caused
+# Railway boot to crash with NameError (production logs 2026-05-10T12:37:52Z).
 @app.get("/jobs-runs/{run_id}")
 def get_jobs_run(
     run_id: str,
@@ -80,13 +91,6 @@ def get_jobs_run(
         raise HTTPException(status_code=404, detail=f"jobs_run {run_id} not found")
     # Pydantic model.dump() handles UUIDs / datetimes for JSON.
     return run.model_dump(mode="json")
-
-
-# ── Auth ──────────────────────────────────────────────────────────────────────
-def verify_secret(x_secret_key: str = Header(None)):
-    if x_secret_key != settings.secret_key:
-        raise HTTPException(status_code=401, detail="Invalid secret key")
-    return True
 
 
 # ── Request/Response Models ───────────────────────────────────────────────────
