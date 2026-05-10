@@ -54,6 +54,52 @@ export interface EngagementMetrics {
   notifiedAt?: string
 }
 
+/**
+ * Visual creation brief produced by the G4 image_brief node.
+ * The engine BRIEFS, it does NOT generate. The user picks the provider
+ * and either feeds `prompt` to a text-to-image model OR (preferred when
+ * applicable) pulls a screenshot from `referenceUrl`.
+ *
+ * Source of truth: agents/g4_linkedin_graph.py::IMAGE_BRIEF_SYSTEM
+ */
+export const IMAGE_BRIEF_KINDS = [
+  'reference_news_image',
+  'data_viz',
+  'screenshot_quote',
+  'infographic',
+  'diagram',
+] as const
+export type ImageBriefKind = (typeof IMAGE_BRIEF_KINDS)[number]
+
+export const IMAGE_PROVIDERS = [
+  'dall-e-3',
+  'imagen-3',
+  'midjourney',
+  'stock_photo',
+  'screenshot_only',
+] as const
+export type ImageProvider = (typeof IMAGE_PROVIDERS)[number]
+
+export interface ImageBrief {
+  kind: ImageBriefKind
+  prompt: string                         // text-to-image prompt (under 100 words)
+  compositionNotes: string               // aspect ratio + key composition rule
+  dataAnchors: string[]                  // numbers/claims/quotes the image must illustrate
+  referenceUrl: string | null            // source image / news article URL
+  altText: string                        // accessibility-grade one-sentence description
+  recommendedProvider: ImageProvider
+  aiDisclosureRecommended: boolean       // user should append "Made with X" if true
+  rationale: string                      // one-line "why this kind for this post"
+}
+
+export const IMAGE_BRIEF_KIND_LABEL: Record<ImageBriefKind, string> = {
+  reference_news_image: 'Reference image',
+  data_viz: 'Data visualisation',
+  screenshot_quote: 'Screenshot quote',
+  infographic: 'Infographic',
+  diagram: 'Diagram',
+}
+
 export interface LinkedInDraft {
   id: string
   userId: string
@@ -75,6 +121,7 @@ export interface LinkedInDraft {
   manualCopyAt: string | null
   engagementMetrics: EngagementMetrics | null
   whyItWorks?: string | null
+  imageBrief: ImageBrief | null
   createdAt: string
   updatedAt: string
 }

@@ -97,6 +97,9 @@ class LinkedInState(TypedDict, total=False):
     final_cta: Optional[str]
     final_hashtags: list[str]
 
+    # ─── Image brief (node 5) ───────────────────────────────────────────
+    image_brief: Optional[dict]             # see IMAGE_BRIEF_SYSTEM schema
+
     # ─── Persistence + telemetry ────────────────────────────────────────
     draft_id: Optional[str]                 # set by persist_node
     transcript: Annotated[list[TranscriptTurn], add]
@@ -650,7 +653,176 @@ async def polish_node(state: LinkedInState) -> dict:
 
 
 # ═════════════════════════════════════════════════════════════════════════
-# Node 5 — persist (pure code)
+# Node 5 — image_brief (Sonnet, ~$0.01)
+#
+# Briefs the visual asset for the post. Does NOT generate the image.
+# Output is a structured creation brief the user can either feed to a
+# text-to-image model OR (preferred when applicable) use to pull a real
+# screenshot from the news anchor's source URL.
+#
+# Why brief, not generate:
+#   1. AI-generated LinkedIn images are increasingly recognised and
+#      undermine the post's credibility (audit's "AI tells" rule).
+#   2. Reference screenshots from real news / earnings decks land
+#      harder and cost $0.
+#   3. Generation is provider-specific ($0.04/image varies); briefing
+#      is provider-agnostic and lets the user pick.
+#
+# Bias order (encoded in the system prompt):
+#   reference_news_image > data_viz > screenshot_quote > infographic > diagram
+# ═════════════════════════════════════════════════════════════════════════
+IMAGE_BRIEF_SYSTEM = """You are choosing the visual asset for a LinkedIn post by a senior fintech / payments product leader.
+
+Read the post. Decide what visual will land best for THIS specific post — not generic best practice.
+
+Visual kinds (pick one):
+  - reference_news_image: a known existing image (e.g. the news article's hero photo, an earnings-deck slide, a public dashboard screenshot) — use this when the post cites a specific source. ALMOST ALWAYS the strongest choice when applicable: it's free, credible, and not AI-generated.
+  - data_viz: a chart or numerical comparison — use when the post leans on 2+ specific numbers worth contrasting.
+  - screenshot_quote: an excerpt screenshot from a news article / docs / repo — use when one phrase from a source is the post's anchor.
+  - infographic: a relationship or trade-off explained visually — use when the post explains a concept (use sparingly; AI infographics look generated).
+  - diagram: a flow / system / architecture — use when post explains a process (very rarely the best choice for senior PM posts).
+
+Bias hard toward `reference_news_image` when there's a real source (news_url, earnings deck, press release) that's already credible. Avoid generic AI infographics — they look generated and undermine senior credibility.
+
+When you write the prompt for a generated image:
+  - Be specific about subject, composition, palette, and type style.
+  - Under 100 words.
+  - Editorial / restrained / no clutter (the audience is senior operators, not consumer marketing).
+  - Numbers as visual focal points when applicable.
+  - Reference the user's name / domain only if a portrait is genuinely warranted (rarely).
+
+Output ONLY valid JSON in this exact shape — no prose, no fences:
+{
+  "kind": "reference_news_image" | "data_viz" | "screenshot_quote" | "infographic" | "diagram",
+  "prompt": "<text-to-image prompt; subject, composition, palette, type style; under 100 words>",
+  "composition_notes": "<one line — aspect ratio (default 16:9 for LinkedIn) + the single most important composition rule>",
+  "data_anchors": ["<each specific number, claim, or quoted phrase the image must illustrate>"],
+  "reference_url": "<URL of the news article / source image — null if none applies>",
+  "alt_text": "<one sentence — what the image shows, accessibility-grade>",
+  "recommended_provider": "dall-e-3" | "imagen-3" | "midjourney" | "stock_photo" | "screenshot_only",
+  "ai_disclosure_recommended": true | false,
+  "rationale": "<one line — why this kind for this post>"
+}
+
+`recommended_provider`:
+  - "screenshot_only" when kind == reference_news_image — no generation needed; user pulls from reference_url.
+  - "stock_photo" only when there's a perfect free Unsplash/Pexels match.
+  - generator names otherwise.
+
+`ai_disclosure_recommended`:
+  - true when the user will generate an AI image — they should add "Made with [provider]" at the end of the post.
+  - false when reference_news_image / screenshot_only / stock_photo.
+"""
+
+
+IMAGE_BRIEF_USER_TEMPLATE = """POST (final, after polish):
+
+HOOK:
+{hook}
+
+BODY:
+{body}
+
+CTA: {cta}
+HASHTAGS: {hashtags}
+
+ANGLE: {angle}
+COMPANY ANCHOR: {company_name}
+NEWS SOURCE URL (if any): {source_url}
+NEWS EXCERPT (if any):
+{news_excerpt}
+
+USER VOICE NOTES (one line): {tone_directives}
+"""
+
+
+async def image_brief_node(state: LinkedInState) -> dict:
+    """Pick visual kind + write the creation brief. ~$0.01 on Sonnet."""
+    started = time.perf_counter()
+
+    # Pull the news excerpt + URL from chosen knowledge anchor (if any).
+    chosen_kid = state.get("chosen_knowledge_id")
+    news_excerpt = ""
+    source_url = None
+    if chosen_kid and state.get("candidate_knowledge"):
+        for row in state["candidate_knowledge"]:
+            if str(row.get("id") or "") == str(chosen_kid):
+                news_excerpt = (row.get("content") or "")[:800]
+                source_url = row.get("source_url")
+                break
+
+    user_msg = IMAGE_BRIEF_USER_TEMPLATE.format(
+        hook=state.get("final_hook") or state.get("draft_v1_hook") or "",
+        body=(state.get("final_body") or state.get("draft_v1_body") or "")[:1500],
+        cta=state.get("final_cta") or "(none)",
+        hashtags=", ".join(state.get("final_hashtags") or state.get("draft_v1_hashtags") or []),
+        angle=state.get("chosen_angle") or "industry_analysis",
+        company_name=state.get("chosen_company_name") or "(none)",
+        source_url=source_url or "(none)",
+        news_excerpt=news_excerpt or "(none)",
+        tone_directives=(state.get("voice_profile", {}) or {}).get("tone_directives", ""),
+    )
+
+    try:
+        result = await get_router().ask(
+            provider="anthropic",
+            model=SONNET_MODEL,
+            system=IMAGE_BRIEF_SYSTEM,
+            user=user_msg,
+            response_format="json",
+            temperature=0.4,
+            max_tokens=900,
+            graph="g4",
+            node_name="image_brief",
+        )
+        brief = _parse_json_loose(result.get("text") or "") or {}
+
+        # Light defensive normalisation — never let a malformed brief block persistence.
+        if not isinstance(brief, dict):
+            brief = {}
+        brief.setdefault("kind", "reference_news_image" if source_url else "data_viz")
+        brief.setdefault("prompt", "")
+        brief.setdefault("composition_notes", "")
+        brief.setdefault("data_anchors", [])
+        brief.setdefault("reference_url", source_url)
+        brief.setdefault("alt_text", "")
+        brief.setdefault("recommended_provider",
+                         "screenshot_only" if brief.get("kind") == "reference_news_image" else "dall-e-3")
+        brief.setdefault("ai_disclosure_recommended",
+                         brief.get("kind") not in ("reference_news_image", "screenshot_only", "stock_photo"))
+        brief.setdefault("rationale", "")
+
+        cost = float(result.get("cost_usd") or 0.0)
+        latency = int((time.perf_counter() - started) * 1000)
+
+        return {
+            "image_brief": brief,
+            "cost_usd_total": cost,
+            "latency_ms_total": latency,
+            "transcript": [_make_turn(
+                "image_brief", "anthropic", SONNET_MODEL,
+                f"angle={state.get('chosen_angle')} company={state.get('chosen_company_name')}",
+                {"kind": brief["kind"], "provider": brief["recommended_provider"]},
+                cost, latency,
+            )],
+        }
+    except Exception as e:
+        # Image brief is enhancement, not load-bearing — degrade gracefully
+        # rather than failing the whole graph.
+        logger.exception("image_brief failed; persisting without it")
+        return {
+            "image_brief": None,
+            "transcript": [_make_turn(
+                "image_brief", "anthropic", SONNET_MODEL,
+                "image_brief request",
+                None, 0.0, int((time.perf_counter() - started) * 1000),
+                error=str(e),
+            )],
+        }
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Node 6 — persist (pure code)
 #
 # Writes the final draft into linkedin_drafts with status='draft'. The
 # user reviews at /linkedin and clicks Approve / Reject / Edit.
@@ -671,6 +843,7 @@ async def persist_node(state: LinkedInState) -> dict:
         "status":               "draft",
         "critique":             state.get("critique") or {},
         "polish_round":         1,
+        "image_brief":          state.get("image_brief"),
     }
 
     try:
@@ -719,18 +892,20 @@ def build_g4_graph(checkpointer: Optional[object] = None):
 
     g = StateGraph(LinkedInState)
 
-    g.add_node("pick_angle", pick_angle_node)
-    g.add_node("draft_v1",   draft_v1_node)
-    g.add_node("critique",   critique_node)
-    g.add_node("polish",     polish_node)
-    g.add_node("persist",    persist_node)
+    g.add_node("pick_angle",   pick_angle_node)
+    g.add_node("draft_v1",     draft_v1_node)
+    g.add_node("critique",     critique_node)
+    g.add_node("polish",       polish_node)
+    g.add_node("image_brief",  image_brief_node)
+    g.add_node("persist",      persist_node)
 
     g.set_entry_point("pick_angle")
-    g.add_edge("pick_angle", "draft_v1")
-    g.add_edge("draft_v1",   "critique")
-    g.add_edge("critique",   "polish")
-    g.add_edge("polish",     "persist")
-    g.add_edge("persist",    END)
+    g.add_edge("pick_angle",  "draft_v1")
+    g.add_edge("draft_v1",    "critique")
+    g.add_edge("critique",    "polish")
+    g.add_edge("polish",      "image_brief")
+    g.add_edge("image_brief", "persist")
+    g.add_edge("persist",     END)
 
     if checkpointer is not None:
         return g.compile(checkpointer=checkpointer)
