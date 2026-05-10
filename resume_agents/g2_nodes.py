@@ -113,17 +113,69 @@ async def insider_expert_node(state: ResumeState) -> dict:
     """
     Reads: job, company_persona, master_resume_md
     Outputs: expert_notes — top 5 keywords, 3 cultural signals, 3 things to drop, summary line.
+
+    Phase 2.2.2: now uses pgvector RAG to fetch the top-k most relevant
+    research chunks for the SPECIFIC JD instead of dumping the full
+    static system prompt. Context is sharper, prompt is tighter, latency
+    drops, and the persona's success/failure_patterns get injected
+    inline so the writer downstream can pattern-match against real
+    bullets that historically convert at this company.
     """
     settings = get_settings()
-    persona = state.get("company_persona")
-    if persona and persona.get("system_prompt_template"):
-        system = persona["system_prompt_template"]
-    else:
-        system = INSIDER_EXPERT_FALLBACK_SYSTEM
-
+    persona = state.get("company_persona") or {}
     job = state["job"]
+    company_name = state["company_name"]
+
+    # ─── RAG: top-k relevant research chunks for THIS jd ────────────────
+    # Falls back gracefully if the search RPC errors or returns nothing.
+    rag_block = ""
+    try:
+        from db.client import search_company_knowledge
+        jd_query = f"{job.get('title', '')} {(job.get('description') or '')[:1500]}"
+        chunks = await search_company_knowledge(
+            company_name=company_name,
+            query=jd_query,
+            match_count=5,
+        )
+        if chunks:
+            rag_lines = []
+            for c in chunks:
+                sec = c.get("section", "?")
+                sim = c.get("similarity", 0)
+                content = (c.get("content") or "")[:1000]
+                rag_lines.append(f"### [{sec}] (relevance {sim:.2f})\n{content}")
+            rag_block = "\n\n".join(rag_lines)
+    except Exception as e:
+        logger.warning(f"insider_expert RAG fetch failed for {company_name}: {e}")
+
+    # ─── Persona — system prompt + ATS bank + success/failure patterns ─
+    system = persona.get("system_prompt_template") or INSIDER_EXPERT_FALLBACK_SYSTEM
+    ats_bank = persona.get("ats_keyword_bank") or {}
+    success_patterns = persona.get("success_patterns") or []
+    failure_patterns = persona.get("failure_patterns") or []
+
+    persona_inline = ""
+    if isinstance(ats_bank, dict) and (ats_bank.get("required") or ats_bank.get("boost") or ats_bank.get("banned")):
+        persona_inline += "\n\nATS KEYWORD BANK:\n"
+        if ats_bank.get("required"):
+            persona_inline += f"  Required: {', '.join(ats_bank['required'][:25])}\n"
+        if ats_bank.get("boost"):
+            persona_inline += f"  Boost:    {', '.join(ats_bank['boost'][:25])}\n"
+        if ats_bank.get("banned"):
+            persona_inline += f"  Banned:   {', '.join(ats_bank['banned'][:10])}\n"
+
+    if success_patterns:
+        persona_inline += "\nSUCCESS PATTERNS (bullet templates that historically convert):\n"
+        for p in success_patterns[:8]:
+            persona_inline += f"  ✓ {p}\n"
+
+    if failure_patterns:
+        persona_inline += "\nFAILURE PATTERNS (anti-patterns to avoid):\n"
+        for p in failure_patterns[:8]:
+            persona_inline += f"  ✗ {p}\n"
+
     user = f"""TARGET ROLE:
-{job.get('title', '')} — {state['company_name']}
+{job.get('title', '')} — {company_name}
 {job.get('location', '') or ''}
 
 JOB DESCRIPTION:
@@ -132,11 +184,13 @@ JOB DESCRIPTION:
 CANDIDATE MASTER RESUME (excerpts):
 {state['master_resume_md'][:4000]}
 
+{("MOST RELEVANT COMPANY RESEARCH (pgvector top-5 for this JD):" + chr(10) + rag_block + chr(10)) if rag_block else ""}{persona_inline}
+
 Produce your positioning notes:
-1. Top 5 keywords/phrases this resume MUST contain (use grounded search to verify current language)
-2. Top 3 cultural/strategic signals to weave in (cite recent {state['company_name']} news)
-3. 3 things to DOWNPLAY or remove
-4. The exact summary statement (3-4 lines) you'd put at the top
+1. Top 5 keywords/phrases this resume MUST contain (anchor on the ATS Required bank above; cite specific JD terms where they overlap)
+2. Top 3 cultural/strategic signals to weave in (cite the most relevant research chunks you saw)
+3. 3 things to DOWNPLAY or remove (use Failure Patterns as anti-targets)
+4. The exact summary statement (3-4 lines) you'd put at the top — pattern-match against Success Patterns
 """
 
     result = await get_router().ask(

@@ -78,6 +78,8 @@ class DeepResearchResult:
     sections: dict[str, str]
     system_prompt_template: str
     ats_keyword_bank: dict[str, list[str]]
+    success_patterns: list[str]
+    failure_patterns: list[str]
     persona_quality: str
     cost_usd: float
     latency_ms: int
@@ -182,17 +184,18 @@ async def gather_research(company: str, *, max_per_query: int = 3) -> list[Resea
 
 
 # ─── Synthesis prompt ────────────────────────────────────────────────────
-SYNTH_SYSTEM = """You are a senior fintech recruitment-intelligence analyst. Your job is to take raw web research about a target company and turn it into a strict JSON object that powers an AI resume-building system.
+SYNTH_SYSTEM = """You are a senior fintech recruitment-intelligence analyst with deep insider knowledge of how product/engineering hiring actually works at the world's largest payment companies. Your job is to take raw web research about a target company and turn it into a strict JSON object that powers an AI resume-building system.
 
 Hard rules:
 1. Output ONLY valid JSON. No commentary, no markdown fences, no preamble.
-2. Every field below is REQUIRED. Do not omit any.
-3. Be concrete and specific to the company. No generic fintech boilerplate.
-4. If a section can't be supported by the research, write 1-2 honest sentences about what's missing rather than inventing details.
-5. The persona_quality field is your honest self-assessment of how grounded the output is in the research:
-   - "high"  — 8+ research sources cited, all 13 sections substantive, recruitment intel comes from real Glassdoor / employee reports
-   - "medium" — 4-7 sources, most sections substantive, recruitment intel is reasonable inference from the rest
-   - "low"   — fewer sources, several sections thin or generic
+2. Every field below is REQUIRED. Do not omit any. Empty arrays are NOT acceptable for success_patterns / failure_patterns / ats_keyword_bank.* — fill them from your research + your background knowledge of the company and its peer set.
+3. Be concrete and specific. No generic fintech boilerplate. If you write "scale + impact" you've failed; write "process $1B+ TPV across 5 regulated markets."
+4. If a section can't be supported by the research, fall back to your trained knowledge of the company. The system can't use empty arrays, but it CAN use a confidence-tagged inference.
+5. success_patterns and failure_patterns are critical — these are the bullet structures that drive the G2 writer node's iteration loop. Even with no live outcome data, you MUST infer 4-8 of each from research + peer analogues (e.g., what kind of bullets tend to win at Visa = same as Mastercard = same as American Express + 2 nuances unique to Visa).
+6. The persona_quality field is your honest self-assessment:
+   - "high"   — 5+ research sources cited AND every required field is rich (success/failure patterns each have 6+ items, ATS bank has 15+ required + 15+ boost)
+   - "medium" — 2-5 sources OR most fields rich but a couple thin
+   - "low"    — fewer than 2 sources AND inference-heavy throughout
 """
 
 SYNTH_USER_TEMPLATE = """COMPANY: {company}
@@ -200,30 +203,36 @@ SYNTH_USER_TEMPLATE = """COMPANY: {company}
 RESEARCH SOURCES (from Apify web crawler, ordered by section label):
 {sources_block}
 
-OUTPUT — strict JSON matching this exact shape:
+OUTPUT — strict JSON matching this exact shape. NEVER return empty arrays for success_patterns, failure_patterns, or ats_keyword_bank.*:
 
 {{
   "sections": {{
-    "overview":            "2-4 paragraphs on what {company} does, business model, scale, regions",
-    "news":                "Recent (last 12 months) news bullets — funding, launches, leadership changes",
-    "funding":             "Total raised, last round, lead investors, valuation if disclosed",
-    "culture":             "Work style, values, employee sentiment from Glassdoor/employee reports",
-    "tech_stack":          "Languages, frameworks, infra, payment rails — cite engineering blog/job ads",
-    "strategy":            "Where they're heading: roadmap, market expansion, product direction",
-    "challenges":          "Honest weaknesses, competitive pressure, regulatory exposure",
-    "competitors":         "3-6 named competitors and how {company} differentiates",
-    "recruitment_process": "Concrete: # of interview rounds, recruiter screen, hiring manager, panel, exec, take-home if any. Timeline. Cite Glassdoor.",
-    "resume_dos_donts":    "What to highlight (e.g. specific keywords, scale, metrics) and what to drop. Length and format expectations.",
-    "ats_signals":         "Exact phrases their parser/screener favors. Pulled from job ads.",
-    "interview_format":    "Behavioral / case / technical / system design / take-home — what types appear at what stage.",
-    "hiring_signals":      "What they actually value: pedigree, builder mindset, regulatory experience, scale, specific tech?"
+    "overview":            "3-5 sentences: what {company} does, business model, scale, regions of operation, founding story if relevant",
+    "news":                "Recent (last 12-18 months) news bullets — funding rounds, leadership changes, M&A, product launches, regulatory wins or setbacks. Include dates.",
+    "funding":             "Total raised, last round, lead investors, current valuation, IPO status if disclosed",
+    "culture":             "Work style, stated values, employee sentiment with Glassdoor signals if available; office vs remote; engineering vs business culture",
+    "tech_stack":          "Languages (Go, Python, Java, etc), datastores (Postgres/MySQL/etc + NoSQL where), cloud (AWS/GCP/Azure), payment rails (Visa/Mastercard/UPI/SEPA/etc), iso messaging (8583/20022), tokenization, fraud/AML stack — cite engineering blog or job ads where you can",
+    "strategy":            "Where they're heading: 2-3 year roadmap, geographic expansion, product direction, M&A appetite, AI/ML investment",
+    "challenges":          "Honest weaknesses: competitive pressure, regulatory exposure, growth slowdown, technical debt, leadership turnover",
+    "competitors":         "3-6 named competitors AND how {company} differentiates from each. Avoid generic 'they compete on price' — call out the actual edge.",
+    "recruitment_process": "Concrete funnel: recruiter screen length, hiring manager screen, # of technical/case rounds, panel composition, exec/cross-functional bar-raiser, take-home if any, total timeline (weeks). Cite Glassdoor / Levels / Blind / employee LinkedIn posts where available.",
+    "resume_dos_donts":    "Specific to this company. DOs (3-6): exact things to surface. DON'Ts (3-6): exact things to drop. Length/format expectations. Recruiter pet peeves observed in the wild.",
+    "ats_signals":         "Exact phrases their parser/screener favors — pulled from real job ads. Be specific (e.g., 'PCI DSS Level 1', 'ISO 8583', 'tokenization (CoF)') not generic ('payments experience').",
+    "interview_format":    "Mix of behavioral, case/product, system design, technical coding, take-home — what types appear at what stage. Sample questions if Glassdoor data exists.",
+    "hiring_signals":      "What they actually value (priority-ordered): pedigree (FAANG/IIT?), builder mindset (0→1 vs scale-up), regulatory grit, payments depth, MENA/SEA/EU experience, AI/ML in production, specific languages/tech, equity-aware comp posture"
   }},
-  "system_prompt_template": "A 4-8 paragraph system prompt for an LLM that says 'You are an insider expert at {company} who knows what kinds of resumes get callbacks.' Should reference the company's actual values, vocabulary, ATS signals, and recruitment funnel. This is the prompt the G2 graph's insider_expert node will use.",
+  "system_prompt_template": "A 5-8 paragraph system prompt for an LLM that opens with 'You are an insider expert at {company} who knows exactly what kinds of resumes get callbacks for product/engineering roles.' Reference real company values, vocabulary, ATS signals, recruitment funnel, hiring signals. This is the prompt the G2 graph's insider_expert node will load when tailoring a resume for {company}. Make it dense and prescriptive — no fluff.",
   "ats_keyword_bank": {{
-    "required": ["10-20 phrases that MUST appear in the resume — pull from real job ads and the company's stated tech / domain"],
-    "boost":    ["10-20 phrases that strengthen but aren't mandatory — culture-aligned vocabulary"],
-    "banned":   ["3-8 phrases to AVOID — anti-patterns, generic buzzwords, or things that signal mismatch with this company"]
+    "required": ["15-25 phrases that MUST appear — pull from job ads + tech_stack + payment rails. Format as exact terms or short phrases, not full sentences"],
+    "boost":    ["15-25 phrases that strengthen but aren't mandatory — culture-aligned vocabulary, leadership signals, peer-network terms"],
+    "banned":   ["5-10 phrases to AVOID — anti-patterns ('synergy', '10x', 'rockstar'), incumbent-banking jargon if {company} is a disruptor, generic buzzwords"]
   }},
+  "success_patterns": [
+    "6-10 bullet patterns that historically convert at {company} — i.e., the kind of resume bullets that get hiring managers to schedule a callback. Each pattern should be a SHORT TEMPLATE, not a full bullet. Examples for a payment processor: 'Improved authorization rate by X% across N+ acquirers' / 'Built tokenization pipeline serving $XB+ in volume across regulated markets' / 'Led {{0->1}} payment product launch in <region> with explicit KPI delivery'. Include 1-2 patterns specific to {company} (their unique tech stack or strategic priorities)."
+  ],
+  "failure_patterns": [
+    "6-10 bullet patterns that DO NOT convert at {company} — common mistakes that get resumes filtered out. Each pattern should be a SHORT TEMPLATE. Examples: 'Responsible for managing payment operations' (passive, no scale, no outcome) / 'Improved processes through cross-functional collaboration' (vague, no metric) / 'Worked on banking infrastructure' (no specific rail or compliance signal for a payments company). Include 1-2 patterns specific to {company}'s anti-patterns."
+  ],
   "persona_quality": "high|medium|low"
 }}
 """
@@ -440,13 +449,18 @@ def _upsert_persona(
     company: str,
     system_prompt: str,
     ats_keyword_bank: dict,
+    success_patterns: list[str],
+    failure_patterns: list[str],
     quality: str,
     sources_count: int,
 ) -> dict:
     """Upsert into company_personas. Bumps persona_version if existing.
 
-    Defensive: returns {} on any failure rather than raising. Caller
-    keeps going, persona just doesn't get a row this time.
+    Phase 2.2.2: now also persists success_patterns + failure_patterns
+    (the bullet templates that drive the G2 writer iteration loop).
+    Existing JSONB columns on company_personas — no migration needed.
+
+    Defensive: returns {} on any failure rather than raising.
     """
     from db.client import get_supabase
     try:
@@ -481,11 +495,15 @@ def _upsert_persona(
         "persona_quality": quality,
         "deep_research_sources": sources_count,
         "synthesized_by": "deep_research",
+        "success_patterns_count": len(success_patterns or []),
+        "failure_patterns_count": len(failure_patterns or []),
     }
     payload = {
         "company_name": company,
         "system_prompt_template": system_prompt,
         "ats_keyword_bank": ats_keyword_bank or {},
+        "success_patterns": success_patterns or [],
+        "failure_patterns": failure_patterns or [],
         "last_synthesized_at": datetime.now(timezone.utc).isoformat(),
         "metadata": metadata,
     }
@@ -542,6 +560,12 @@ async def deep_research_persona(company: str) -> DeepResearchResult:
     system_prompt = (parsed.get("system_prompt_template", "") if isinstance(parsed, dict) else "") or ""
     ats_bank = parsed.get("ats_keyword_bank", {}) if isinstance(parsed, dict) else {}
     quality = parsed.get("persona_quality", "low") if isinstance(parsed, dict) else "low"
+    success_patterns = parsed.get("success_patterns", []) if isinstance(parsed, dict) else []
+    failure_patterns = parsed.get("failure_patterns", []) if isinstance(parsed, dict) else []
+    if not isinstance(success_patterns, list):
+        success_patterns = []
+    if not isinstance(failure_patterns, list):
+        failure_patterns = []
 
     if not isinstance(ats_bank, dict):
         ats_bank = {}
@@ -559,7 +583,11 @@ async def deep_research_persona(company: str) -> DeepResearchResult:
 
     # Step 4 — write persona (defensive; never raises)
     try:
-        _upsert_persona(company, system_prompt, ats_bank, quality, len(sources))
+        _upsert_persona(
+            company, system_prompt, ats_bank,
+            success_patterns, failure_patterns,
+            quality, len(sources),
+        )
     except Exception as e:
         logger.warning(f"_upsert_persona[{company}] failed: {type(e).__name__}: {e}")
         notes.append(f"persona_write_error: {type(e).__name__}")
@@ -575,6 +603,8 @@ async def deep_research_persona(company: str) -> DeepResearchResult:
         sections=sections,
         system_prompt_template=system_prompt,
         ats_keyword_bank=ats_bank,
+        success_patterns=success_patterns,
+        failure_patterns=failure_patterns,
         persona_quality=quality,
         cost_usd=cost_usd,
         latency_ms=int((time.perf_counter() - started) * 1000),

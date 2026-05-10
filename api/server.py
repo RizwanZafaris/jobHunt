@@ -2097,6 +2097,8 @@ async def trigger_deep_research(
             "sources_count": result.sources_count,
             "knowledge_sections": list(result.sections.keys()),
             "ats_keyword_bank": result.ats_keyword_bank,
+            "success_patterns_count": len(result.success_patterns),
+            "failure_patterns_count": len(result.failure_patterns),
             "cost_usd": result.cost_usd,
             "latency_ms": result.latency_ms,
             "note": result.note,
