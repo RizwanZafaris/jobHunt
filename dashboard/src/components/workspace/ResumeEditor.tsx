@@ -33,6 +33,7 @@ import { LiveRegion } from '@/components/ui/LiveRegion'
 import {
   editResume,
   fetchJobsRun,
+  fetchWorkspace,
   fullRebuildResume,
   rebuildSection,
   saveResumeEdit,
@@ -131,7 +132,10 @@ export function ResumeEditor({
   onSaved,
 }: ResumeEditorProps) {
   const [markdown, setMarkdown] = useState<string>(initialMarkdown)
-  const [originalMarkdown] = useState<string>(initialMarkdown)
+  // Setter exists so a successful Full rebuild can rebase the "saved"
+  // baseline to the freshly-built resume — clearing dirty state without
+  // unmounting the editor.
+  const [originalMarkdown, setOriginalMarkdown] = useState<string>(initialMarkdown)
   const [showPreview, setShowPreview] = useState(false)
   const [chat, setChat] = useState<EditChatMessage[]>([])
   const [input, setInput] = useState<string>('')
@@ -307,14 +311,79 @@ export function ResumeEditor({
         try {
           const row = await fetchJobsRun(runId)
           if (row.status === 'succeeded') {
-            appendAssistantTurn(
-              'Full rebuild complete. Reload the workspace to view the new resume — '
-                + 'this editor still shows your previous draft.',
-              {},
-            )
-            setStatusMsg(
-              'Full rebuild succeeded. Reload to pick up the new build.',
-            )
+            // Auto-replace path. Refetch the workspace bundle to get the
+            // freshly-built resume artifact + markdown, then either splice
+            // it into the editor (clean state) or ask the user (dirty).
+            try {
+              const ws = await fetchWorkspace(jobId)
+              const fresh = ws.resume
+              const freshMd = (fresh?.user_edited_md ?? fresh?.resume_md ?? '').toString()
+
+              // Compute dirty against the snapshot the user is staring at.
+              // We compare the LIVE markdown to the LAST-SAVED baseline — if
+              // the user has unsaved edits, we ask before clobbering.
+              const editorIsDirty = markdown !== originalMarkdown
+
+              if (!fresh || !freshMd) {
+                // The build succeeded but we couldn't pull the artifact —
+                // fall back to the manual-reload prompt.
+                appendAssistantTurn(
+                  'Full rebuild complete, but the new resume hasn’t synced yet. '
+                    + 'Reload the workspace in a few seconds to view it.',
+                  {},
+                )
+                setStatusMsg(
+                  'Full rebuild succeeded. Reload to pick up the new build.',
+                )
+              } else if (editorIsDirty && freshMd !== markdown) {
+                const proceed = typeof window !== 'undefined'
+                  ? window.confirm(
+                      'Full rebuild is ready. You have unsaved edits in the '
+                      + 'editor — replace them with the rebuilt resume? '
+                      + '(Your unsaved edits will be discarded.)',
+                    )
+                  : true
+                if (proceed) {
+                  setMarkdown(freshMd)
+                  setOriginalMarkdown(freshMd)
+                  onSaved(fresh)
+                  appendAssistantTurn(
+                    'Replaced the editor with the rebuilt resume. '
+                      + 'Your unsaved edits were discarded as confirmed.',
+                    {},
+                  )
+                  setStatusMsg('Editor synced to the rebuilt resume.')
+                } else {
+                  appendAssistantTurn(
+                    'Full rebuild is ready but the editor still shows your '
+                      + 'unsaved draft. Save or discard, then reload to pick '
+                      + 'up the new build.',
+                    {},
+                  )
+                  setStatusMsg(
+                    'Full rebuild succeeded. Editor kept your unsaved edits.',
+                  )
+                }
+              } else {
+                // Clean state (or no diff against fresh) — splice silently.
+                setMarkdown(freshMd)
+                setOriginalMarkdown(freshMd)
+                onSaved(fresh)
+                appendAssistantTurn(
+                  'Full rebuild complete. Editor now shows the rebuilt resume.',
+                  {},
+                )
+                setStatusMsg('Full rebuild applied to the editor.')
+              }
+            } catch (refreshErr) {
+              const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr)
+              appendAssistantTurn(
+                'Full rebuild succeeded but I couldn’t refresh the editor — '
+                  + msg + '. Reload the workspace manually.',
+                {},
+              )
+              setStatusMsg('Full rebuild succeeded. Reload manually to view.')
+            }
             setChatBusy(false)
             setFullRebuildRunId(null)
             return
