@@ -61,6 +61,7 @@ from agents.referral_graph import (
 from agents.resume_edit_assistant import (
     CostCapExceeded,
     quick_tweak,
+    rebuild_section as agent_rebuild_section,
 )
 from api.context import get_current_user
 from api.queue import enqueue_g2_build
@@ -90,6 +91,24 @@ class SaveResumeEditBody(BaseModel):
     build_id: Optional[str] = Field(
         default=None,
         description="Resume build to save under. If omitted, the latest converged build for this job is used.",
+    )
+
+
+class RebuildSectionBody(BaseModel):
+    section: str = Field(min_length=1, max_length=200)
+    edit_intent: str = Field(min_length=1, max_length=2000)
+    current_md: str = Field(min_length=1)
+
+
+class FullRebuildBody(BaseModel):
+    edit_intent: Optional[str] = Field(
+        default=None,
+        max_length=2000,
+        description="Optional human instruction surfaced to the writer brief.",
+    )
+    max_cost_usd: Optional[float] = Field(
+        default=None, ge=0.5, le=20.0,
+        description="Override the per-build cost cap. Default uses settings.g2_max_cost_usd.",
     )
 
 
@@ -456,24 +475,32 @@ async def edit_resume(
     db = get_supabase()
     job = _get_job_for_user(db, job_id=job_id, user_id=user.id)
 
+    # Rebuild-section / full-rebuild now have their own endpoints (the
+    # chat panel routes there directly). Keep these mode codes accepted
+    # in /edit-resume so old clients get a clear redirect, not a 501.
     if body.mode == "rebuild_section":
         raise HTTPException(
-            status_code=501,
+            status_code=400,
             detail={
-                "code": "mode_not_implemented",
+                "code": "use_dedicated_endpoint",
                 "mode": "rebuild_section",
-                "message": "Rebuild-section is wired in the next session. Use Quick tweak for now.",
+                "message": (
+                    "Use POST /workspace/{job_id}/rebuild-section with "
+                    "{section, edit_intent, current_md} — the chat-shape "
+                    "endpoint no longer dispatches rebuilds."
+                ),
             },
         )
     if body.mode == "full_rebuild":
         raise HTTPException(
-            status_code=501,
+            status_code=400,
             detail={
-                "code": "mode_not_implemented",
+                "code": "use_dedicated_endpoint",
                 "mode": "full_rebuild",
                 "message": (
-                    "Full rebuild is wired in the next session. Use the 'Build resume' "
-                    "button on the Resume tab to enqueue a fresh G2 run."
+                    "Use POST /workspace/{job_id}/full-rebuild with "
+                    "{edit_intent?} — the chat-shape endpoint no longer "
+                    "dispatches rebuilds."
                 ),
             },
         )
@@ -518,6 +545,125 @@ async def edit_resume(
         ) from exc
 
     return result
+
+
+# ─── POST /workspace/{job_id}/rebuild-section ──────────────────────────────
+@router.post("/{job_id}/rebuild-section")
+async def rebuild_section_endpoint(
+    job_id: int,
+    body: RebuildSectionBody,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Rebuild ONE H2 section of the resume synchronously.
+
+    Runs the writer → critic → polish mini-graph in
+    `agents.resume_edit_assistant.rebuild_section`. Returns the FULL
+    updated markdown (the rest of the resume is preserved verbatim by
+    markdown-splice).
+
+    Synchronous on purpose: the operation is bounded at 60s, so a long
+    HTTP request is cleaner than enqueue + poll for a flow that always
+    completes within a single tab session. If we ever push this past
+    60s wall-clock we'll switch to the queue path (warm_start_md +
+    rebuild_scope='section' on enqueue_g2_build is already plumbed).
+
+    On timeout: 504-shaped error so the UI can suggest "switch to a
+    smaller section or fall back to Quick tweak".
+    """
+    db = get_supabase()
+    job = _get_job_for_user(db, job_id=job_id, user_id=user.id)
+
+    persona = _get_persona_for_company(db, company_name=job.get("company") or "", user_id=user.id)
+
+    try:
+        result = await agent_rebuild_section(
+            current_md=body.current_md,
+            section=body.section,
+            edit_intent=body.edit_intent,
+            persona=persona,
+            jd={
+                "company": job.get("company"),
+                "title": job.get("title"),
+                "description": job.get("description"),
+            },
+        )
+    except CostCapExceeded as exc:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "cost_cap_exceeded",
+                "message": str(exc),
+            },
+        ) from exc
+    except TimeoutError as exc:
+        # 504-ish: the gateway side timed out before producing the result.
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "code": "rebuild_section_timeout",
+                "message": str(exc),
+            },
+        ) from exc
+    except ValueError as exc:
+        # Empty input, missing section, or malformed model output.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("rebuild_section failed for job %s section=%s", job_id, body.section)
+        raise HTTPException(
+            status_code=502,
+            detail=f"rebuild_section_unavailable: {type(exc).__name__}",
+        ) from exc
+
+    return result
+
+
+# ─── POST /workspace/{job_id}/full-rebuild ─────────────────────────────────
+@router.post("/{job_id}/full-rebuild")
+def full_rebuild_endpoint(
+    job_id: int,
+    body: FullRebuildBody,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Enqueue a full G2 rebuild from scratch.
+
+    Thin wrapper around `enqueue_g2_build(force=True)` so the dedup hash
+    differs from any prior run. The optional `edit_intent` is recorded
+    in the payload and surfaced to the writer node's brief — useful when
+    the user has a north-star instruction ("make this more product-led")
+    but still wants the full ensemble pipeline.
+
+    Returns the jobs_runs id; the UI polls /jobs-runs/{run_id} every ~8s
+    via the same flow as the "Build resume" button on the Resume tab.
+    """
+    db = get_supabase()
+    _get_job_for_user(db, job_id=job_id, user_id=user.id)  # 404 if not theirs
+
+    try:
+        run_id = enqueue_g2_build(
+            user_id=user.id,
+            job_id=job_id,
+            force=True,
+            max_cost_usd=body.max_cost_usd,
+            edit_intent=body.edit_intent,
+            rebuild_scope="full",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"queue_unavailable: {exc}",
+        ) from exc
+
+    return {
+        "run_id": run_id,
+        "status": "queued",
+        "kind": "g2_resume",
+        "job_id": job_id,
+        "force": True,
+        "rebuild_scope": "full",
+        "edit_intent": body.edit_intent,
+        "max_cost_usd": body.max_cost_usd,
+        "poll_url": f"/jobs-runs/{run_id}",
+    }
 
 
 # ─── POST /workspace/{job_id}/save-resume-edit ─────────────────────────────

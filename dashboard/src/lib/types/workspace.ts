@@ -166,6 +166,45 @@ export interface BuildResumeResponse {
   poll_url: string
 }
 
+// ── Rebuild section (synchronous mini-graph) ───────────────────────────
+export interface RebuildSectionRequest {
+  section: string
+  edit_intent: string
+  current_md: string
+}
+
+export interface RebuildSectionResponse {
+  /** Full resume after the section was rebuilt and re-spliced. */
+  updated_md: string
+  /** Chat-style 1-3 sentence explanation. */
+  response: string
+  fixes_applied: string[]
+  cost_usd: number
+  latency_ms: number
+  model: string
+  provider: string
+  /** Echo of the section that was rebuilt. */
+  section: string
+}
+
+// ── Full rebuild (queue G2 force=true) ─────────────────────────────────
+export interface FullRebuildRequest {
+  edit_intent?: string
+  max_cost_usd?: number
+}
+
+export interface FullRebuildResponse {
+  run_id: string
+  status: string
+  kind: string
+  job_id: number
+  force: boolean
+  rebuild_scope: 'full'
+  edit_intent: string | null
+  max_cost_usd: number | null
+  poll_url: string
+}
+
 // ── Save edit ──────────────────────────────────────────────────────────
 export interface SaveResumeEditResponse {
   saved: boolean

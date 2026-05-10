@@ -220,6 +220,8 @@ async def run_g2_graph(
     job_id: int,
     company_name: Optional[str] = None,
     max_cost_usd: Optional[float] = None,
+    warm_start_md: Optional[str] = None,
+    edit_intent: Optional[str] = None,
 ) -> dict:
     """
     Run the G2 graph for one job. Returns the final ResumeState as a dict.
@@ -230,6 +232,19 @@ async def run_g2_graph(
     Pass a different value (e.g. 10.0 for top-tier targets) to relax the
     cap. The orchestrator forces converge with status='cost_capped' if
     cumulative cost exceeds the cap mid-build.
+
+    Phase 2.1 (workspace rebuild): `warm_start_md` lets the writer node
+    seed from an existing resume instead of generating from scratch. The
+    typical use case is "rebuild section" — the chat panel passes the
+    user's current_md as the warm start so the writer's first iteration
+    works in the candidate's existing voice and structure rather than
+    re-deriving it. We bump `iteration` to 1 in the seed state so the
+    polisher runs at least once over the warm start (otherwise the
+    convergence loop could short-circuit at iteration 0 and skip polish).
+
+    `edit_intent` is the human instruction that triggered the rebuild
+    (e.g. "make experience more product-led"). When set, we surface it
+    to the writer node via state so it informs the next-iteration brief.
     """
     from resume_agents.g2_io import load_job, finalize_resume_build
     from config.settings import get_settings
@@ -244,23 +259,42 @@ async def run_g2_graph(
         max_cost_usd if max_cost_usd is not None
         else get_settings().g2_max_cost_usd
     )
+    has_warm_start = bool(warm_start_md and warm_start_md.strip())
     logger.info(
         f"G2 run start: job_id={job_id} company={company_name!r} → canonical={canonical!r}"
         f" cost_cap=${cap:.2f}"
+        f" warm_start={'yes' if has_warm_start else 'no'}"
+        f" edit_intent={'yes' if edit_intent else 'no'}"
     )
 
-    initial_state = {
+    # Defensive: if warm_start_md is present, bump iteration so the
+    # polisher runs at least once over the seeded markdown. Without this,
+    # an iteration=0 path could exit on the first writer pass having just
+    # echoed back the warm start.
+    seed_iteration = 1 if has_warm_start else 0
+    initial_state: dict = {
         "job_id": job_id,
         "company_name": canonical,
         "cost_cap_usd": cap,
         "transcript": [],
-        "iteration": 0,
+        "iteration": seed_iteration,
         "converged": False,
         "cost_capped": False,
         "cost_usd_total": 0.0,
         "latency_ms_total": 0,
     }
+    if has_warm_start:
+        initial_state["warm_start_md"] = warm_start_md
+        # Pre-populate current_draft so the first writer pass has a
+        # starting point even before it emits its own draft.
+        initial_state["current_draft"] = warm_start_md
+    if edit_intent:
+        initial_state["edit_intent"] = edit_intent
     thread_id = f"g2-job-{job_id}"
+    if has_warm_start:
+        # Distinct thread namespace so checkpointer state doesn't collide
+        # with a parallel cold-start build for the same job.
+        thread_id = f"g2-job-{job_id}-rebuild"
 
     graph = _get_graph()
     try:

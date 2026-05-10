@@ -2,8 +2,9 @@
 
 Owner: backend (`api/workspace.py`) + frontend
 (`dashboard/src/components/workspace/*`).
-Status: **Phase 2 shipped.** Quick-tweak resume editor live; rebuild-section
-and full-rebuild are stubs that 501 with a clear "next session" message.
+Status: **Phase 2 shipped + rebuild-section and full-rebuild now wired.**
+All three resume-edit modes (Quick tweak, Rebuild section, Full rebuild)
+are live; PDF/DOCX server-side rendering is still a Phase 3 deliverable.
 
 ## What it is
 
@@ -60,6 +61,8 @@ All under `/workspace`, all gated by `Depends(get_current_user)`:
 | GET    | `/workspace/{job_id}`                  | Bundle for the page                     | ✅ shipped |
 | POST   | `/workspace/{job_id}/build-resume`     | Enqueue G2 (idempotent via queue dedup) | ✅ shipped |
 | POST   | `/workspace/{job_id}/edit-resume`      | Quick tweak (Opus 4.7)                  | ✅ shipped |
+| POST   | `/workspace/{job_id}/rebuild-section`  | Rebuild ONE H2 section synchronously    | ✅ shipped |
+| POST   | `/workspace/{job_id}/full-rebuild`     | Enqueue full G2 rebuild (force=true)    | ✅ shipped |
 | POST   | `/workspace/{job_id}/save-resume-edit` | Persist `user_edited_md`                | ✅ shipped |
 | POST   | `/workspace/{job_id}/mark-applied`     | Move application → applied              | ✅ shipped |
 | GET    | `/workspace/{job_id}/resume.{md,pdf,docx}` | Download (md inline; pdf/docx redirect) | ✅ shipped (md); 🟡 PDF/DOCX redirect-or-501 |
@@ -133,36 +136,105 @@ If the instruction cannot be safely applied without inventing a fact, return:
 | timeout | (router default; ~120s read) |
 | cost cap | $0.10/call (defensive) |
 
-## Rebuild-section + full-rebuild — TODO contract
+## Rebuild-section + full-rebuild — shipped contract
 
-The chat panel exposes 3 mode buttons. Phase 2 ships only the first.
-The other two are present but disabled with a "Coming next session"
-tooltip; the API returns 501 with a structured payload so the UI can
-toast the message cleanly.
+The chat panel exposes 3 mode buttons; all three are live. The original
+"Coming next session" 501 path was replaced by dedicated endpoints —
+`/edit-resume` now 400s with a "use the dedicated endpoint" pointer
+when called with `mode=rebuild_section` or `mode=full_rebuild` to
+preserve a clean back-compat error for stale clients.
 
-### Rebuild section (planned)
+### Rebuild section — `POST /workspace/{job_id}/rebuild-section`
 
-  • Mode key: `rebuild_section`.
-  • Cost target: ~$0.50, ~2-3 min.
-  • Backend: re-invokes the G2 LangGraph at the writer + critic nodes
-    only, with a `warm_start_md` parameter pointing at the current
-    user_edited_md. Persona gate is preserved. We need a new
-    `resume_agents/g2_run.py::run_g2_section_rebuild()` entry that
-    short-circuits the polisher pass once the section is stable.
-  • Section identification: extract from instruction (e.g. "rebuild the
-    Experience section") via a single Sonnet classifier, or take an
-    explicit `section_id` from the UI if we add a dropdown.
-  • Output: same `EditResumeResponse` shape so the UI doesn't branch.
+Synchronous endpoint that runs a 3-call mini-graph (writer → critic →
+polish) over ONE H2 section. The rest of the resume is preserved
+verbatim by markdown-splice; the UI swaps the section in-place on
+success.
 
-### Full rebuild (planned)
+```
+       ┌─────────────────────────────────────────────────────┐
+       │  current_md  +  edit_intent  +  section_name        │
+       └────────────────────────┬────────────────────────────┘
+                                │
+                                ▼
+            ┌─────────────────────────────────────────┐
+            │  extract_section() — heuristic H2 split │
+            │  → (before_md, section_md, after_md)    │
+            └─────────────────────┬───────────────────┘
+                                  │
+                                  ▼
+                            ┌──────────┐
+                            │  WRITER  │  Opus 4.7
+                            └────┬─────┘
+                                 ▼
+                            ┌──────────┐
+                            │  CRITIC  │  Opus 4.7 — emits polish_targets
+                            └────┬─────┘
+                                 ▼
+                       ┌────────────────────┐
+                       │  POLISH (optional) │  Opus 4.7
+                       │  skipped if no     │
+                       │  polish_targets    │
+                       └────────┬───────────┘
+                                ▼
+       ┌─────────────────────────────────────────────────────┐
+       │  splice: before_md + final_section_md + after_md    │
+       └─────────────────────────────────────────────────────┘
+```
 
-  • Mode key: `full_rebuild`.
-  • Cost target: ~$1, ~5 min.
-  • Backend: this is just a thin wrapper around the existing
-    `enqueue_g2_build(force=True)`. No new agent code. The UI will need
-    to switch to the same poll loop the "Build my resume" button uses.
-  • Pre-flight ask: a confirm dialog ("This costs ~$1 and 5 minutes.
-    Use Quick tweak for surgical edits.") to prevent accidental triggers.
+Body: `{ section: string, edit_intent: string, current_md: string }`.
+Response: `{ updated_md, response, fixes_applied, cost_usd, latency_ms,
+model, provider, section }` — same shape as `quick_tweak` so the UI
+treats it identically.
+
+  • Cost cap: $0.60 (defensive). Typical $0.30-0.50 across all 3 calls.
+  • Wall-clock cap: 60s `asyncio.wait_for`. Overrun → 504 `rebuild_section_timeout`.
+  • Polish step is skipped if the critic returns no polish_targets, saving ~$0.10-0.15.
+
+### Section heuristics (`extract_section`)
+
+Heading match strategy, in order:
+  1. exact case-insensitive heading text match
+  2. heading text starts with section_name
+  3. section_name is a substring of heading text
+  4. raise `ValueError` (we'd rather fail loud than splice the wrong block)
+
+Regex: `^\s{0,3}##\s+(.+?)\s*$` (multi-line). The dashboard mirrors this
+in JS via `H2_LINE_RE` in `ResumeEditor.tsx`.
+
+### Full rebuild — `POST /workspace/{job_id}/full-rebuild`
+
+Thin wrapper around `enqueue_g2_build(force=True)`. Returns the
+jobs_runs id; the UI polls `/jobs-runs/{run_id}` every ~8s.
+
+Body: `{ edit_intent?: string, max_cost_usd?: number }`.
+Response: `{ run_id, status, kind, job_id, force: true,
+rebuild_scope: 'full', edit_intent, max_cost_usd, poll_url }`.
+
+  • `force=True` is set unconditionally so the dedup hash differs from
+    any prior run on the same job.
+  • `edit_intent` rides into the queue payload. The worker forwards it
+    to `run_g2_graph(edit_intent=...)` which surfaces it on the writer
+    node's brief.
+  • Cost: ~$1, ~3-5 min.
+  • Pre-flight: the dashboard fires a `window.confirm()` dialog before
+    the call so the user can't accidentally light $1 on fire.
+
+### Warm-start G2 plumbing
+
+The G2 graph now accepts `warm_start_md` and `edit_intent` as optional
+params on `run_g2_graph(...)`. When `warm_start_md` is set:
+  • It pre-populates `current_draft` (so the writer's first iteration
+    works against an existing draft, not a blank page).
+  • `iteration` is bumped to 1 in the seed state — the polisher runs at
+    least once over the warm start, which prevents the convergence loop
+    from short-circuiting at iteration 0.
+  • The thread_id namespace is `g2-job-{id}-rebuild` so the langgraph
+    checkpointer doesn't collide with a parallel cold-start build.
+
+Both fields flow through `enqueue_g2_build` → `worker_run_g2` → into
+the G2 ResumeState, and they're part of the idempotency-key payload so
+"rebuild" doesn't dedup against a prior fresh build.
 
 ## Editor chat persistence — TODO
 

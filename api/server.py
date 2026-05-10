@@ -47,11 +47,13 @@ from api.linkedin import router as linkedin_router  # noqa: E402
 from api.actions import router as actions_router  # noqa: E402  /actions/today (Phase 1)
 from api.workspace import router as workspace_router  # noqa: E402  /workspace/* (Phase 2)
 from api.interview_studio import router as interview_studio_router  # noqa: E402  /interview-studio/* (Phase 3)
+from api.perplexity import router as perplexity_router  # noqa: E402  Perplexity persona recency
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
 app.include_router(workspace_router)
 app.include_router(interview_studio_router)
+app.include_router(perplexity_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

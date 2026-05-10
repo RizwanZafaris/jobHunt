@@ -15,7 +15,11 @@ import type {
   BuildResumeResponse,
   EditResumeRequest,
   EditResumeResponse,
+  FullRebuildRequest,
+  FullRebuildResponse,
   MarkAppliedResponse,
+  RebuildSectionRequest,
+  RebuildSectionResponse,
   SaveResumeEditResponse,
   Workspace,
 } from '../types/workspace'
@@ -119,6 +123,56 @@ export async function editResume(
   })
   if (!res.ok) await throwForStatus(res, 'editResume')
   return (await res.json()) as EditResumeResponse
+}
+
+// ── POST /workspace/{job_id}/rebuild-section ──────────────────────────────
+/**
+ * Rebuild ONE H2 section synchronously. The endpoint runs a 3-call
+ * mini-graph (writer → critic → polish) over just the named section
+ * and returns the full resume markdown after splicing the rebuilt
+ * section back in.
+ *
+ * Wall-clock budget: ~30-60s. The endpoint itself has a 60s cap; if
+ * the pipeline overruns we get a 504-shaped error and the caller
+ * surfaces "switch to a smaller section or fall back to Quick tweak".
+ */
+export async function rebuildSection(
+  jobId: number | string,
+  body: RebuildSectionRequest,
+): Promise<RebuildSectionResponse> {
+  const url = `${baseUrl}/workspace/${jobId}/rebuild-section`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: buildHeaders(),
+    body: JSON.stringify(body),
+    cache: 'no-store',
+  })
+  if (!res.ok) await throwForStatus(res, 'rebuildSection')
+  return (await res.json()) as RebuildSectionResponse
+}
+
+// ── POST /workspace/{job_id}/full-rebuild ─────────────────────────────────
+/**
+ * Enqueue a full G2 rebuild from scratch. Returns immediately with the
+ * jobs_runs id; the caller polls /jobs-runs/{run_id} every ~8s same
+ * as the "Build resume" button on the Resume tab.
+ *
+ * Cost: ~$1, ~3-5 min. Always force=true on the backend so the
+ * idempotency hash differs from any prior run on the same job.
+ */
+export async function fullRebuildResume(
+  jobId: number | string,
+  body?: FullRebuildRequest,
+): Promise<FullRebuildResponse> {
+  const url = `${baseUrl}/workspace/${jobId}/full-rebuild`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: buildHeaders(),
+    body: JSON.stringify(body ?? {}),
+    cache: 'no-store',
+  })
+  if (!res.ok) await throwForStatus(res, 'fullRebuildResume')
+  return (await res.json()) as FullRebuildResponse
 }
 
 // ── POST /workspace/{job_id}/save-resume-edit ─────────────────────────────

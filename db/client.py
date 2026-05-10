@@ -77,7 +77,20 @@ async def search_company_knowledge(
     query: str,
     match_count: int = 5
 ) -> list[dict]:
-    """Semantic search within a company's knowledge base."""
+    """Semantic search within a company's knowledge base.
+
+    Returns rows with: id (uuid), section, content, similarity, scraped_at.
+
+    The `id` column is the company_knowledge primary key; downstream callers
+    (notably resume_agents.g2_nodes.insider_expert_node) embed it back into
+    agent_transcript as `cite:knowledge_id=<uuid>` markers so
+    agents.outcome_to_persona.credit_outcome can attribute outcome credit
+    to the exact rows the resume cited (Phase 3 outcome-conditioned RAG).
+
+    For backwards compatibility with callers that pre-date migration 009,
+    `id` will simply be missing on rows returned by the v1 RPC; we don't
+    raise. Once 009 is applied, every row carries an id.
+    """
     query_embedding = await embed(query)
     db = get_supabase()
 
@@ -86,7 +99,22 @@ async def search_company_knowledge(
         "target_company": company_name,
         "match_count": match_count
     }).execute()
-    return result.data or []
+    rows = result.data or []
+    # Normalise: ensure every row exposes an `id` key (None if RPC v1 still in
+    # place). This lets callers do `row.get("id")` without KeyError handling.
+    out: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        out.append({
+            "id": row.get("id"),
+            "section": row.get("section"),
+            "content": row.get("content"),
+            "similarity": row.get("similarity"),
+            "scraped_at": row.get("scraped_at"),
+            **{k: v for k, v in row.items() if k not in {"id", "section", "content", "similarity", "scraped_at"}},
+        })
+    return out
 
 
 async def upsert_rizwan_profile(section: str, content: str) -> dict:
