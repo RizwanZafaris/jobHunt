@@ -665,7 +665,7 @@ export function ResumeEditor({
                 </ul>
               )}
               <p className="mt-2 text-3xs text-fg-subtle">
-                Type your edit intent above first (e.g. "lead with payments-fraud"),
+                Type your edit intent above first (e.g. &ldquo;lead with payments-fraud&rdquo;),
                 then click the section you want rebuilt. ~30-60s per rebuild.
               </p>
             </div>
