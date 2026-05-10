@@ -53,6 +53,8 @@ export type IconName =
   | 'users'
   | 'clipboard-list'
   | 'bar-chart-3'
+  | 'image'
+  | 'copy'
 
 const PATHS: Record<IconName, React.ReactNode> = {
   search: <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>,
@@ -97,6 +99,8 @@ const PATHS: Record<IconName, React.ReactNode> = {
   users: <><circle cx="9" cy="8" r="3" /><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" /><circle cx="17" cy="9" r="2.5" /><path d="M15 14c1.5-.7 3-1 4-1 2.2 0 4 1.8 4 4" /></>,
   'clipboard-list': <><rect x="6" y="4" width="12" height="17" rx="1" /><path d="M9 4h6v3H9zM10 11h6M10 15h6M10 19h4" /></>,
   'bar-chart-3': <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" />,
+  image: <><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="9" cy="11" r="2" /><path d="m3 17 5-5 4 4 3-3 6 6" /></>,
+  copy: <><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h8" /></>,
 }
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {

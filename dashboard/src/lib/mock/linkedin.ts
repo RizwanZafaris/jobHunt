@@ -84,6 +84,21 @@ export const MOCK_DRAFTS: LinkedInDraft[] = [
     engagementMetrics: null,
     whyItWorks:
       'Opens with a sharp counter-claim, then cashes it with a specific number from the user’s SimPaisa run. The "everyone vs me" frame is contrarian without being smug.',
+    imageBrief: {
+      kind: 'data_viz',
+      prompt:
+        "Editorial two-column comparison chart on a dark navy (#0B1E3F) background. Left column heading 'DEBIT' with the number '14 bps' in 96pt white serif type. Right column heading 'CREDIT' with '$42 / account / yr' in matching weight. Single thin gold rule between columns. Small caption underneath in 14pt: 'issuer-processor unit economics, year one'. No icons, no figures, no clutter. Editorial restraint over visual flair.",
+      compositionNotes:
+        '16:9. Numbers carry the visual weight; type does the work, no decorative imagery.',
+      dataAnchors: ['14 bps debit interchange', '$42 / account year-1 revenue (SimPaisa internal)'],
+      referenceUrl: null,
+      altText:
+        "Side-by-side comparison: 14 basis points on debit interchange versus $42 per account per year on revolving credit, both expressed in large editorial type on a navy background.",
+      recommendedProvider: 'dall-e-3',
+      aiDisclosureRecommended: true,
+      rationale:
+        'Two specific numbers carry the post; reference image unavailable; data_viz lets the numbers BE the visual.',
+    },
     createdAt: '2026-05-10T08:00:00Z',
     updatedAt: '2026-05-10T08:00:00Z',
   },
@@ -111,6 +126,21 @@ export const MOCK_DRAFTS: LinkedInDraft[] = [
     engagementMetrics: null,
     whyItWorks:
       'Frames a high-status news event around a war story only the user could tell. The "third method" beat is a pattern recognition reveal; cheap and authentic.',
+    imageBrief: {
+      kind: 'reference_news_image',
+      prompt:
+        '(none — pull the hero image from the source article instead)',
+      compositionNotes:
+        '16:9 crop of the Stripe announcement hero. Quote-card style: source URL pinned bottom-right.',
+      dataAnchors: ['23 payment methods abstracted by the new Payment Element'],
+      referenceUrl: 'https://stripe.com/blog/payment-element-2026',
+      altText:
+        "Screenshot of Stripe's 2026 Payment Element announcement showing the unified checkout UI for 23 payment methods.",
+      recommendedProvider: 'screenshot_only',
+      aiDisclosureRecommended: false,
+      rationale:
+        'Real source image always beats AI when a credible publisher has already shipped one — no disclosure needed, no AI tells.',
+    },
     createdAt: '2026-05-09T14:00:00Z',
     updatedAt: '2026-05-09T16:00:00Z',
   },
@@ -138,6 +168,21 @@ export const MOCK_DRAFTS: LinkedInDraft[] = [
     engagementMetrics: { likes: 47, comments: 9, views: 2310, recordedAt: '2026-05-09T18:00:00Z' },
     whyItWorks:
       'Buries-the-lede framing forces a re-read of the news. Picks a falsifiable prediction so the post invites disagreement, not just nods.',
+    imageBrief: {
+      kind: 'screenshot_quote',
+      prompt:
+        "Cropped screenshot of PayPal Q1 2026 earnings deck slide 14 showing the branded vs unbranded checkout growth split (6% vs 22%). Add a thin yellow highlight rectangle around the unbranded number. Top-right: small source caption 'PayPal Q1 2026 — slide 14'. Aspect 16:9.",
+      compositionNotes:
+        '16:9. Yellow highlight is the reader\'s eye-anchor — keep it thin (2px) and don\'t add other annotations.',
+      dataAnchors: ['Branded checkout +6%', 'Unbranded checkout +22%'],
+      referenceUrl: 'https://investor.pypl.com/q1-2026-earnings',
+      altText:
+        "Slide 14 of PayPal's Q1 2026 earnings deck showing branded checkout growth at 6% versus unbranded at 22%, with the unbranded figure highlighted.",
+      recommendedProvider: 'screenshot_only',
+      aiDisclosureRecommended: false,
+      rationale:
+        'The post pivots on one specific slide number — show the slide. AI infographic would feel synthetic on a slide-citation post.',
+    },
     createdAt: '2026-05-07T16:00:00Z',
     updatedAt: '2026-05-08T09:14:00Z',
   },

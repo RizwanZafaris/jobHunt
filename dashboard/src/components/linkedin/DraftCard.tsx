@@ -28,6 +28,8 @@ import { clsx } from 'clsx'
 import { Button, Icon, Pill, type PillTone } from '@/components/ui'
 import {
   ANGLE_LABEL,
+  IMAGE_BRIEF_KIND_LABEL,
+  type ImageBrief,
   type LinkedInAngle,
   type LinkedInDraft,
   type LinkedInDraftStatus,
@@ -282,6 +284,22 @@ export function DraftCard({ draft, onChange }: DraftCardProps) {
         </a>
       )}
 
+      {/* Image brief — visual asset recommendation from the G4 image_brief node */}
+      {draft.imageBrief && (
+        <ImageBriefPanel
+          brief={draft.imageBrief}
+          onCopy={(label, text) => {
+            navigator.clipboard?.writeText(text).then(() => {
+              setFeedback(`${label} copied`)
+              setTimeout(() => setFeedback(null), 2000)
+            }).catch(() => {
+              setFeedback(`Couldn't copy ${label.toLowerCase()}`)
+              setTimeout(() => setFeedback(null), 2500)
+            })
+          }}
+        />
+      )}
+
       {/* Footer / actions */}
       <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-border mt-auto">
         {feedback && (
@@ -362,3 +380,137 @@ export function DraftCard({ draft, onChange }: DraftCardProps) {
 }
 
 export default DraftCard
+
+
+/**
+ * ImageBriefPanel — collapsible visual asset brief for a draft.
+ *
+ * Renders the structured ImageBrief produced by the G4 image_brief node.
+ * The engine BRIEFS, never generates — this UI lets the user either:
+ *   1. Click the reference URL (preferred when kind = reference_news_image
+ *      / screenshot_quote — pull the real source image, no AI tells)
+ *   2. Copy the prompt and paste into DALL-E / Imagen / Midjourney
+ *   3. Copy the alt text for accessibility on the LinkedIn post
+ */
+function ImageBriefPanel({
+  brief,
+  onCopy,
+}: {
+  brief: ImageBrief
+  onCopy: (label: string, text: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const isReference = brief.kind === 'reference_news_image' || brief.recommendedProvider === 'screenshot_only'
+  const kindLabel = IMAGE_BRIEF_KIND_LABEL[brief.kind] ?? brief.kind
+
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      className="rounded-md border border-border bg-surface-raised text-2xs overflow-hidden"
+    >
+      <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none hover:bg-surface">
+        <Icon name="image" size={12} aria-hidden />
+        <span className="font-medium text-fg">Visual: {kindLabel}</span>
+        <span className="text-fg-subtle">·</span>
+        <span className="text-fg-subtle truncate">{brief.rationale || '—'}</span>
+        <span className="ml-auto inline-flex items-center gap-1 text-fg-subtle">
+          {isReference ? (
+            <Pill tone="success" size="sm">
+              No AI needed
+            </Pill>
+          ) : (
+            <Pill tone="info" size="sm">
+              {brief.recommendedProvider}
+            </Pill>
+          )}
+          {brief.aiDisclosureRecommended && (
+            <Pill tone="warning" size="sm" title="LinkedIn best-practice: tag AI-generated images">
+              Disclose AI
+            </Pill>
+          )}
+        </span>
+      </summary>
+
+      <div className="px-3 pb-3 pt-1 space-y-2">
+        {/* Reference URL — preferred path when present */}
+        {brief.referenceUrl && (
+          <div className="flex items-center gap-2">
+            <span className="text-fg-subtle w-20 shrink-0">Reference</span>
+            <a
+              href={brief.referenceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-fg hover:underline underline-offset-2 truncate"
+              title={brief.referenceUrl}
+            >
+              {brief.referenceUrl}
+            </a>
+            <button
+              type="button"
+              onClick={() => onCopy('Reference URL', brief.referenceUrl ?? '')}
+              className="ml-auto text-fg-subtle hover:text-fg"
+              aria-label="Copy reference URL"
+            >
+              <Icon name="copy" size={11} />
+            </button>
+          </div>
+        )}
+
+        {/* Image-generation prompt — the core artifact */}
+        {brief.prompt && brief.prompt !== '(none — pull the hero image from the source article instead)' && (
+          <div className="flex items-start gap-2">
+            <span className="text-fg-subtle w-20 shrink-0 pt-0.5">Prompt</span>
+            <p className="text-fg whitespace-pre-wrap leading-snug flex-1">{brief.prompt}</p>
+            <button
+              type="button"
+              onClick={() => onCopy('Prompt', brief.prompt)}
+              className="text-fg-subtle hover:text-fg shrink-0 pt-0.5"
+              aria-label="Copy image prompt"
+            >
+              <Icon name="copy" size={11} />
+            </button>
+          </div>
+        )}
+
+        {/* Composition notes */}
+        {brief.compositionNotes && (
+          <div className="flex items-start gap-2">
+            <span className="text-fg-subtle w-20 shrink-0 pt-0.5">Composition</span>
+            <p className="text-fg-muted whitespace-pre-wrap leading-snug flex-1">
+              {brief.compositionNotes}
+            </p>
+          </div>
+        )}
+
+        {/* Data anchors — what the image must illustrate */}
+        {brief.dataAnchors.length > 0 && (
+          <div className="flex items-start gap-2">
+            <span className="text-fg-subtle w-20 shrink-0 pt-0.5">Anchors</span>
+            <ul className="list-disc list-inside text-fg-muted leading-snug flex-1">
+              {brief.dataAnchors.map((a, i) => (
+                <li key={i}>{a}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Alt text — copied to LinkedIn post for accessibility */}
+        {brief.altText && (
+          <div className="flex items-start gap-2">
+            <span className="text-fg-subtle w-20 shrink-0 pt-0.5">Alt text</span>
+            <p className="text-fg-muted italic flex-1">{brief.altText}</p>
+            <button
+              type="button"
+              onClick={() => onCopy('Alt text', brief.altText)}
+              className="text-fg-subtle hover:text-fg shrink-0 pt-0.5"
+              aria-label="Copy alt text"
+            >
+              <Icon name="copy" size={11} />
+            </button>
+          </div>
+        )}
+      </div>
+    </details>
+  )
+}
