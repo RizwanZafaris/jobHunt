@@ -575,8 +575,29 @@ system prompt. Output ONLY markdown.
         temperature=0.3,
         agent_name="g2.writer",
     )
+
+    # 2026-05-12: STRUCTURAL IDENTITY LOCK — pure-code, no LLM in the loop.
+    # The prompt-level rules tell the writer to copy the header verbatim,
+    # but Anthropic Opus has been observed (production job 103) to ignore
+    # those rules under JD-fit pressure and fabricate identity fields
+    # (UK phone placeholder, swapped city, invented citizenship). This
+    # post-write splice extracts the canonical header from
+    # master_resume_md and REPLACES whatever the writer produced for the
+    # contact block — bypassing the LLM entirely for that section.
+    raw_draft = result.text or ""
+    locked_draft, header_action = _enforce_master_header(
+        raw_draft,
+        state.get("master_resume_md", ""),
+    )
+    fabrication_flags = _scan_for_obvious_fabrications(
+        locked_draft,
+        state.get("master_resume_md", ""),
+    )
     return {
-        "current_draft": result.text,
+        "current_draft": locked_draft,
+        "writer_raw_draft": raw_draft if header_action != "noop" else None,
+        "header_enforcement": header_action,
+        "fabrication_flags": fabrication_flags,
         "cost_usd_total": result.cost_usd,
         "latency_ms_total": result.latency_ms,
         "transcript": [
@@ -586,12 +607,159 @@ system prompt. Output ONLY markdown.
                 provider=result.provider,
                 model=result.model,
                 input_summary=truncate(user),
-                output=result.text,
+                output={
+                    "draft_chars": len(locked_draft),
+                    "header_enforcement": header_action,
+                    "fabrication_flags": fabrication_flags,
+                },
                 cost_usd=result.cost_usd,
                 latency_ms=result.latency_ms,
             )
         ],
     }
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Structural identity + fabrication guards (pure code, no LLM)
+#
+# These run AFTER the writer node and BEFORE the critics, replacing the
+# header verbatim from master_resume_md and surfacing obvious fabrication
+# patterns. Pure code so they cannot be overridden by an LLM instruction.
+# ═════════════════════════════════════════════════════════════════════════
+import re as _re_g2  # local alias to avoid clashing with module-level re
+
+# Forbidden header phrases — added if writer invents them.
+_FORBIDDEN_HEADER_ADDITIONS = (
+    "british citizen",
+    "uae national",
+    "ksa national",
+    "indian national",
+    "pakistani national",
+    "us citizen",
+    "u.s. citizen",
+    "uk citizen",
+    "eu citizen",
+    "immediate availability",
+    "available immediately",
+    "notice period:",
+    "visa status:",
+    "work permit:",
+    "willing to relocate",  # only valid if in master CV
+)
+
+# Telltale placeholder phone formats — the writer should never emit these.
+_PLACEHOLDER_PHONE_PATTERNS = (
+    _re_g2.compile(r"\+\d{1,3}\s*\d?\s*[xX]{2,}", _re_g2.IGNORECASE),  # +44 7XXX XXXXXX
+    _re_g2.compile(r"\[phone\]", _re_g2.IGNORECASE),
+    _re_g2.compile(r"\[contact\]", _re_g2.IGNORECASE),
+    _re_g2.compile(r"\[number\]", _re_g2.IGNORECASE),
+)
+
+
+def _extract_master_header(master_md: str) -> str:
+    """Pull the canonical header block out of master_resume_md.
+
+    Header = everything from the start of the file UP TO the first
+    `## ` line (which marks the start of Summary / Experience / etc).
+    For the seed user this is typically:
+        # Rizwan Zafar — CV
+        **Technical Programme Lead | Chief Product Officer | Senior PM**
+        Dubai, UAE · rizwanzaffar.pk@gmail.com · +971-58-9683970
+        [linkedin.com/in/rizwanzafar](https://linkedin.com/in/rizwanzafar)
+        ---
+    Returns "" if the master CV doesn't have an H1 header — the caller
+    treats that as "skip enforcement, fall back to writer's output".
+    """
+    if not master_md:
+        return ""
+    lines = master_md.splitlines()
+    # Find first `## ` line (start of body sections); header is everything before.
+    end_idx = None
+    for i, line in enumerate(lines):
+        if line.startswith("## "):
+            end_idx = i
+            break
+    if end_idx is None:
+        return ""
+    # Trim trailing horizontal rule / blank lines so the splice is clean.
+    header_lines = lines[:end_idx]
+    while header_lines and header_lines[-1].strip() in ("", "---", "***", "___"):
+        header_lines.pop()
+    return "\n".join(header_lines).rstrip()
+
+
+def _enforce_master_header(draft: str, master_md: str) -> tuple[str, str]:
+    """Replace whatever the writer produced for the header with the canonical
+    header from master_resume_md.
+
+    Returns (locked_draft, action_tag) where action_tag is one of:
+        "replaced"        — header was different, replaced verbatim
+        "preserved"       — writer already had the canonical header
+        "noop"            — master CV had no parseable header (no enforcement)
+        "no_body"         — writer's draft had no body section to splice onto
+
+    Pure code, no LLM round-trip — runs in microseconds, no cost.
+    """
+    if not draft.strip():
+        return draft, "noop"
+
+    canonical = _extract_master_header(master_md)
+    if not canonical:
+        return draft, "noop"
+
+    # Find where the writer's body starts (first `## `).
+    body_match = _re_g2.search(r"(?m)^## ", draft)
+    if not body_match:
+        return draft, "no_body"
+
+    writer_header = draft[: body_match.start()].rstrip()
+    body = draft[body_match.start():]
+
+    if writer_header.strip() == canonical.strip():
+        return draft, "preserved"
+
+    return f"{canonical}\n\n{body}", "replaced"
+
+
+def _scan_for_obvious_fabrications(draft: str, master_md: str) -> list[dict]:
+    """Catch the easy fabrication patterns without an LLM round-trip.
+
+    This is the structural counterpart to the FACT VERIFIER LLM node
+    (next ship). Today we catch the highest-confidence patterns:
+      - Placeholder phone formats (+44 7XXX XXXXXX, [phone], etc.)
+      - Forbidden header additions (British Citizen, Immediate
+        Availability, Visa Status:) if not in master CV
+    The LLM-based FACT VERIFIER (planned) will scan the body for
+    invented metrics + employer-location mismatches that can't be
+    regex-detected without per-fact context.
+    """
+    if not draft:
+        return []
+
+    master_lower = (master_md or "").lower()
+    draft_lower = draft.lower()
+    flags: list[dict] = []
+
+    # Placeholder phone formats.
+    for pat in _PLACEHOLDER_PHONE_PATTERNS:
+        m = pat.search(draft)
+        if m:
+            flags.append({
+                "kind": "placeholder_phone",
+                "text": m.group(0),
+                "fix": "use the candidate's real phone from master CV",
+            })
+
+    # Forbidden header additions — only flag if NOT in master.
+    for phrase in _FORBIDDEN_HEADER_ADDITIONS:
+        if phrase in draft_lower and phrase not in master_lower:
+            flags.append({
+                "kind": "fabricated_header_field",
+                "text": phrase,
+                "fix": f"remove '{phrase}' — not in master CV",
+            })
+
+    return flags
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -661,6 +829,17 @@ async def _run_ats_critic(
     # high on fabricated resumes (ATS A:95, ATS B:92 on a resume that
     # invented a UK phone number, "British Citizen", and metrics like
     # "390M+ mobile wallets" that weren't in the source CV).
+    #
+    # Pre-flagged fabrications (from the pure-code _scan_for_obvious_fabrications
+    # helper run after writer_node) are surfaced so the critic doesn't have
+    # to re-discover them and so its score reflects them.
+    prescanned_flags = state.get("fabrication_flags") or []
+    prescanned_block = (
+        "\n\nPRE-SCANNED FABRICATION FLAGS (pure-code structural scan already "
+        "found these — escalate them as fabrications in your output):\n"
+        + json.dumps(prescanned_flags, indent=2)
+        if prescanned_flags else ""
+    )
     user = f"""MASTER CV (source of truth — flag anything in the draft that
 isn't supported here):
 {state.get('master_resume_md', '')}
@@ -671,7 +850,7 @@ JOB DESCRIPTION:
 {(state['job'].get('description') or '')[:4000]}
 
 CURRENT RESUME DRAFT (the artefact you are critiquing):
-{state['current_draft']}
+{state['current_draft']}{prescanned_block}
 
 Score and critique. Run the FABRICATION CHECK from the system prompt
 exhaustively. Return strict JSON only.
@@ -1086,6 +1265,19 @@ async def polisher_node(state: ResumeState) -> dict:
     # Step 2 FACT VERIFY can actually compare against the source of truth.
     # Before this, the polisher only saw the JD + draft + critic feedback,
     # so it had no way to catch fabricated identity facts.
+    prescanned = state.get("fabrication_flags") or []
+    prescanned_block = (
+        "\n\nPRE-SCANNED STRUCTURAL FABRICATION FLAGS (from pure-code scan; "
+        "your Step-2 FACT VERIFY MUST remove every one of these from "
+        "final_resume_md):\n" + json.dumps(prescanned, indent=2)
+        if prescanned else ""
+    )
+    header_action = state.get("header_enforcement", "noop")
+    header_block = (
+        f"\n\nHEADER ENFORCEMENT NOTE: the writer's contact block was "
+        f"replaced verbatim from master CV (action={header_action!r}). "
+        f"DO NOT modify the header — it is already canonical."
+    )
     user = f"""MASTER CV (source of truth for IDENTITY VERIFY + FACT VERIFY):
 {state.get('master_resume_md', '')}
 
@@ -1101,7 +1293,7 @@ CURRENT DRAFT (the artefact to polish — apply Steps 1-3 then score):
 {state['current_draft']}
 
 CRITIC FEEDBACK (merged, including any fabrications flagged):
-{json.dumps(state.get('merged_critique', {}), indent=2)[:2000]}
+{json.dumps(state.get('merged_critique', {}), indent=2)[:2000]}{prescanned_block}{header_block}
 
 Run Steps 1-4 from the system prompt. Strict JSON only."""
 
