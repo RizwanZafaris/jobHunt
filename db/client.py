@@ -117,13 +117,40 @@ async def search_company_knowledge(
     return out
 
 
-async def upsert_rizwan_profile(section: str, content: str) -> dict:
-    """Store a section of Rizwan's profile with embedding."""
+async def upsert_rizwan_profile(
+    section: str,
+    content: str,
+    user_id: str | None = None,
+) -> dict:
+    """Store a section of Rizwan's profile with embedding.
+
+    2026-05-12 fix: when migration 001_multi_tenancy added `user_id NOT NULL`
+    to rizwan_profile, the upsert here kept its v1 payload shape
+    (section/content/embedding only) and Postgres rejected every INSERT
+    branch of the upsert with code 23502 — silently crashing every
+    pipeline.run() call at startup. Surfaced 2026-05-12 in Railway logs
+    while running JobScout v2.
+
+    user_id defaults to the seed-user UUID via env override so the call
+    sites in agents/rizwan_agent.py don't need plumbing. In multi-tenant
+    mode the caller can pass an explicit user_id.
+    """
     embedding = await embed(content)
+    if user_id is None:
+        import os
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
     db = get_supabase()
     result = db.table("rizwan_profile").upsert(
-        {"section": section, "content": content, "embedding": embedding},
-        on_conflict="section"
+        {
+            "section": section,
+            "content": content,
+            "embedding": embedding,
+            "user_id": user_id,
+        },
+        on_conflict="section",
     ).execute()
     return result.data[0] if result.data else {}
 
