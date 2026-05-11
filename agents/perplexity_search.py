@@ -329,3 +329,174 @@ async def verify_claim(claim: str, context: str = "") -> dict[str, Any]:
         "model": MODEL_RECENCY,
         "raw_tokens": {"input": in_tok, "output": out_tok},
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JobScout v2 — per-target curated job discovery
+# ═══════════════════════════════════════════════════════════════════════════
+async def discover_jobs(
+    company_name: str,
+    *,
+    target_archetypes: list[str] | None = None,
+    industry_hint: str = "fintech / payments / financial technology",
+    company_domain: str | None = None,
+) -> dict[str, Any]:
+    """Per-target curated job discovery via Perplexity Sonar.
+
+    This is the JobScout v2 discovery primary. Asks Sonar a focused
+    question: "What product/engineering jobs is {company} hiring right
+    now?" with strong domain + content constraints so we get URLs that
+    actually resolve to JD pages.
+
+    Args:
+        company_name:        the target company (e.g. "Marqeta", "Visa")
+        target_archetypes:   role types to focus on (e.g.
+                              ["Senior Product Manager",
+                               "Head of Product",
+                               "Group Product Manager"])
+                              Defaults to the standard PM family.
+        industry_hint:       narrows the entity (same disambiguation
+                              pattern as recency_check)
+        company_domain:      if known, helps Perplexity ground its
+                              answers on the company's own careers page
+
+    Returns:
+        {
+            "company_name": str,
+            "candidates": list[{
+                "url": str,
+                "title": str,
+                "published_at": str | None,
+                "snippet": str | None,
+            }],
+            "cost_usd": float,
+            "model": str,
+            "raw_tokens": {input, output},
+        }
+
+    The caller is expected to feed each `candidate` into
+    `agents.job_validation.validate_candidate` BEFORE persisting — the
+    safeguards there (URL existence, domain whitelist, JD fingerprint,
+    expiry scan, archetype filter, freshness, cross-source confidence)
+    drop hallucinated and stale candidates.
+
+    Cost: typical ~$0.005 per call. 71 targets × daily = ~$0.35/day.
+    """
+    archetypes = target_archetypes or [
+        "Senior Product Manager",
+        "Group Product Manager",
+        "Lead Product Manager",
+        "Head of Product",
+        "Chief Product Officer",
+        "VP Product",
+        "Director of Product",
+        "Principal Product Manager",
+        "Product Manager",
+        "Technical Program Manager",
+    ]
+    archetype_str = " · ".join(archetypes)
+    domain_clause = (
+        f"The company's careers page is at https://{company_domain}/careers "
+        f"or similar; prefer URLs from {company_domain}, an ATS host "
+        f"(boards.greenhouse.io, jobs.ashbyhq.com, jobs.lever.co, "
+        f"smartrecruiters.com, *.myworkdayjobs.com, recruiting.adp.com), "
+        f"or linkedin.com/jobs/view/. "
+    ) if company_domain else ""
+
+    system = (
+        f"You are a research assistant helping a senior product manager find "
+        f"jobs at a specific company. The target company is \"{company_name}\" "
+        f"— specifically the company / brand operating in the {industry_hint} "
+        f"industry, NOT any similarly-named travel / immigration / consumer-"
+        f"product term that may share the name (e.g. for 'Visa' this means "
+        f"the payments company NASDAQ:V, NOT US travel visas).\n\n"
+        f"Your job: list every CURRENTLY OPEN job posting at {company_name} "
+        f"that matches any of these role families: {archetype_str}.\n\n"
+        f"Strict citation rules — return ONLY URLs from these sources:\n"
+        f"  - The company's own careers / jobs pages (the canonical company "
+        f"    domain).\n"
+        f"  - Known ATS hosts: boards.greenhouse.io/{{slug}}/jobs/{{id}}, "
+        f"    jobs.ashbyhq.com/{{slug}}/{{id}}, jobs.lever.co/{{slug}}/{{id}}, "
+        f"    jobs.smartrecruiters.com, *.myworkdayjobs.com, "
+        f"    recruiting.adp.com.\n"
+        f"  - linkedin.com/jobs/view/{{numeric-id}} — actual job detail URLs.\n"
+        f"{domain_clause}\n"
+        f"DO NOT include: travel.state.gov, .edu pages, aggregator pages "
+        f"(indeed.com/jobs, glassdoor.com, levels.fyi, dice.com), generic "
+        f"careers-home pages without specific job IDs, search-result pages, "
+        f"company news / blog / press releases.\n\n"
+        f"Each URL you return MUST be a direct link to a SINGLE job posting "
+        f"(not a search result, not a careers home, not an article). The URL "
+        f"must include a specific job ID or slug, not just /careers or "
+        f"/jobs.\n\n"
+        f"If you cannot find at least 3 OPEN jobs at {company_name} matching "
+        f"the archetype list, say so explicitly — never pad with off-topic "
+        f"citations or made-up URLs."
+    )
+
+    user = (
+        f"List every currently OPEN job posting at {company_name} (the "
+        f"{industry_hint} company) that matches: {archetype_str}.\n\n"
+        f"Output format — STRICT, one job per line:\n"
+        f"  TITLE: <exact job title>\n"
+        f"  URL: <direct job-posting URL with ID/slug>\n"
+        f"  POSTED: <ISO date if known, else 'unknown'>\n"
+        f"---\n\n"
+        f"Then end with a Citations: section listing every URL on its own line."
+    )
+
+    payload = await _post_chat(model=MODEL_RECENCY, system=system, user=user)
+    in_tok, out_tok = _extract_token_usage(payload)
+    content = _extract_content(payload)
+    citations = _normalise_citations(payload)
+
+    # Parse the structured "TITLE: ... URL: ... POSTED: ..." blocks.
+    # We're tolerant — Sonar sometimes adds extra markup; we just pull the
+    # three fields per block.
+    candidates: list[dict[str, Any]] = []
+    blocks = content.split("---") if content else []
+    for block in blocks:
+        title_match = _re.search(r"TITLE\s*:\s*(.+)", block, _re.IGNORECASE)
+        url_match = _re.search(r"URL\s*:\s*(\S+)", block, _re.IGNORECASE)
+        posted_match = _re.search(r"POSTED\s*:\s*(\S+)", block, _re.IGNORECASE)
+        if not (title_match and url_match):
+            continue
+        url = url_match.group(1).strip().rstrip(".,;)")
+        if not url.startswith(("http://", "https://")):
+            continue
+        title = title_match.group(1).strip()
+        posted = posted_match.group(1).strip() if posted_match else None
+        if posted in ("unknown", "n/a", "N/A", "-", "none"):
+            posted = None
+        candidates.append({
+            "url": url,
+            "title": title,
+            "published_at": posted,
+            "snippet": None,
+        })
+
+    # Fallback: if no structured blocks parsed but we got citations,
+    # use citations as candidates (with title=company name + role hint).
+    if not candidates and citations:
+        for c in citations:
+            url = c.get("url")
+            if not url or not url.startswith(("http://", "https://")):
+                continue
+            candidates.append({
+                "url": url,
+                "title": c.get("title") or f"{company_name} — product role",
+                "published_at": c.get("published_at"),
+                "snippet": c.get("snippet"),
+            })
+
+    return {
+        "company_name": company_name,
+        "candidates": candidates,
+        "cost_usd": _estimate_cost(MODEL_RECENCY, in_tok, out_tok),
+        "model": MODEL_RECENCY,
+        "raw_tokens": {"input": in_tok, "output": out_tok},
+    }
+
+
+# Lazy-import re inside the module so the top of the file stays clean.
+import re as _re  # noqa: E402
