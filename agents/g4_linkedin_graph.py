@@ -106,6 +106,10 @@ class LinkedInState(TypedDict, total=False):
     cost_usd_total: Annotated[float, add]
     latency_ms_total: Annotated[int, add]
     error: Optional[str]
+    # 2026-05-12 (G4-5): exposed so api/linkedin.py can render the draft
+    # with a "polish failed; v1 body shipped as-is" annotation.
+    polish_status: Optional[str]            # "ok" | "failed" | None (not yet run)
+    polish_error: Optional[str]
 
 
 def _make_turn(
@@ -123,8 +127,18 @@ def _make_turn(
 # Models
 # ═════════════════════════════════════════════════════════════════════════
 # Cheap critic / picker: Sonnet. Heavy generator: Opus.
-SONNET_MODEL = "claude-sonnet-4-6"
-OPUS_MODEL   = "claude-opus-4-7"
+# 2026-05-12: now read from settings so we can A/B without redeploying.
+# Fall back to hardcoded values if settings aren't loadable (e.g. during
+# `python -c "from agents.g4_linkedin_graph import ..."` smoke tests
+# without env). See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §G4-3.
+try:
+    from config.settings import get_settings as _g4_get_settings
+    _g4_s = _g4_get_settings()
+    SONNET_MODEL = _g4_s.g4_sonnet_model
+    OPUS_MODEL   = _g4_s.g4_opus_model
+except Exception:
+    SONNET_MODEL = "claude-sonnet-4-6"
+    OPUS_MODEL   = "claude-opus-4-7"
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -623,18 +637,26 @@ async def polish_node(state: LinkedInState) -> dict:
             agent_name="g4.polish",
         )
     except Exception as e:
-        logger.exception("polish failed")
-        # Fail-soft: keep draft_v1.
+        # 2026-05-12 (G4-5): emit polish_status=failed into the transcript so
+        # boss_agent's weekly audit can surface polish failure-rate trends.
+        # The fail-soft (reuse draft_v1) is the correct call; what was missing
+        # is observability — a 7/20 polish failure rate was invisible.
+        logger.exception("polish failed — reusing draft_v1 verbatim")
+        error_summary = str(e)[:200]
         return {
             "final_hook":     state.get("draft_v1_hook", ""),
             "final_body":     state.get("draft_v1_body", ""),
             "final_cta":      state.get("draft_v1_cta"),
             "final_hashtags": state.get("draft_v1_hashtags") or [],
+            "polish_status":  "failed",
+            "polish_error":   error_summary,
             "transcript": [_make_turn(
                 "polish", "anthropic", OPUS_MODEL,
-                user_msg[:200], None, 0.0,
+                user_msg[:200],
+                {"status": "failed", "error": error_summary},
+                0.0,
                 int((time.perf_counter() - started) * 1000),
-                error=str(e),
+                error=error_summary,
             )],
         }
 
@@ -643,6 +665,7 @@ async def polish_node(state: LinkedInState) -> dict:
         "final_body":     parsed.get("body", "").strip(),
         "final_cta":      (parsed.get("cta") or None),
         "final_hashtags": [h for h in (parsed.get("hashtags") or []) if isinstance(h, str)][:4],
+        "polish_status":  "ok",
         "transcript": [_make_turn(
             "polish", result.provider, result.model,
             user_msg[:200], parsed, result.cost_usd, result.latency_ms,
@@ -953,18 +976,28 @@ async def run_g4_graph(
     )
     voice_profile: dict = (voice_rows.data or [{}])[0]
     if not voice_profile:
-        # Soft default — extractor populates this lazily.
+        # 2026-05-12 (G4-6): neutral cold-start defaults — only the universal
+        # anti-AI-tell guardrails. The seed user's persona-specific phrasing
+        # (e.g. "plainspoken senior PM, never humble-brags") used to leak
+        # here, meaning user #2 got user #1's voice until they ran the
+        # voice extractor. Now any new user gets a neutral baseline and the
+        # extractor populates user-specific tone the first time it runs.
+        # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §G4-6.
         voice_profile = {
             "tone_directives": (
-                "plainspoken, specific, opinionated; never humble-brags; "
-                "uses concrete metrics; avoids em-dashes-everywhere AI tells"
+                "specific, evidence-led, avoids hype; no em-dashes-everywhere "
+                "AI tells; never opens with 'I'm thrilled to' / 'Excited to'"
             ),
             "avoid_phrases": [
                 "delve", "tapestry", "unpack", "journey",
                 "at the end of the day", "a testament to",
+                "in today's fast-paced world", "navigate the complexities",
+                "in this digital age",
             ],
             "example_posts": [],
             "profile_md": "",
+            "_default_voice_in_use": True,  # surfaced so the UI can prompt
+                                            # the user to run the extractor.
         }
 
     # ── candidate knowledge rows ─────────────────────────────────────

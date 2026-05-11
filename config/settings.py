@@ -122,6 +122,15 @@ class Settings(BaseSettings):
     #   min_quality= to that function.
     g3_min_persona_quality: str = Field("medium", env="G3_MIN_PERSONA_QUALITY")
 
+    # ── G4 LinkedIn Engine ─────────────────────────────────────────────────
+    # 2026-05-12: surfaced from hardcoded constants in agents/g4_linkedin_graph.py
+    # so A/B model swaps don't require a redeploy.
+    # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §G4-3.
+    g4_sonnet_model: str = Field("claude-sonnet-4-6", env="G4_SONNET_MODEL")
+    g4_opus_model:   str = Field("claude-opus-4-7",   env="G4_OPUS_MODEL")
+    # Hard cap per draft (Phase 2 — currently advisory; full pre-call cap in followup PR).
+    g4_max_cost_usd: float = Field(0.15, env="G4_MAX_COST_USD")
+
     # Phase 1.10: cost alerts (daily check + weekly digest).
     #   Daily check fires after the boss audit at 22:00 GST. Compares
     #   today's cumulative spend (from agent_call_log) against

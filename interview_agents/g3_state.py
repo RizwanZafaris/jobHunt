@@ -52,6 +52,11 @@ class InterviewPrepState(TypedDict, total=False):
     behavioral_questions: list[dict]   # [{question, competency, importance}]
     technical_questions: list[dict]    # [{question, competency, importance}]
     domain_questions: list[dict]       # [{question, competency, importance}]
+    # 2026-05-12 (G3-3): non-empty if a predictor's JSON parse failed. Each
+    # entry is a short tag like "behavioral_predictor:json_parse_failed".
+    # Surfaced in the compiled prep pack so partial preps (13/20 questions
+    # instead of 20) are visible to the user, not silent.
+    predictor_warnings: Annotated[list[str], add]
 
     # ─── Merged + matched ───────────────────────────────────────────────
     likely_questions: list[dict]       # union(3 predictors), deduped, sorted, capped at 20
