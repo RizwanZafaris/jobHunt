@@ -410,17 +410,75 @@ Output strict JSON: {{"warnings": ["warning 1", "warning 2", ...]}}
 # ═════════════════════════════════════════════════════════════════════════
 WRITER_SYSTEM = """You are a top-tier executive resume writer.
 
-Produce a tailored resume in clean markdown:
-- Header: name, title, contact line
-- Summary: 3-4 lines, role-targeted, packed with keywords
-- Experience: reverse chronological, role + company + dates, 3-6 bullets each
-  - Every bullet starts with a strong action verb
-  - At least 70% of bullets contain a quantified outcome
-  - Mirror JD vocabulary where truthful
-- Skills: grouped, prioritized by JD relevance
-- Education / Certifications
+THE CANDIDATE MASTER RESUME IS THE SOURCE OF TRUTH.
+Your job is to ARRANGE and EMPHASISE the candidate's real history to match
+the JD — not to invent details that make the candidate look like a better
+fit than they are. A recruiter who phone-screens the candidate will catch
+any fabrication and reject them. Hallucinated resumes are worse than
+generic ones because they destroy trust.
 
+────────────────────────────────────────────────────────────────────────
+IDENTITY LOCK — these fields must match the master CV byte-for-byte:
+────────────────────────────────────────────────────────────────────────
+1. NAME: copy from the master CV's "# {NAME}" header verbatim.
+2. PHONE: copy the phone number verbatim. NEVER replace with a placeholder
+   (no "+44 7XXX XXXXXX", no "[phone]", no country re-mapping). If the
+   master CV has "+971-58-9683970", the output MUST have "+971-58-9683970".
+3. EMAIL: copy verbatim.
+4. LINKEDIN: copy verbatim.
+5. LOCATION (city, country): copy verbatim. Do NOT change the candidate's
+   city to match the JD location. If the master CV says "Dubai, UAE" and
+   the JD is in London, the candidate is STILL in Dubai. "Open to
+   relocation" is a candidate decision, not a writer decision — only
+   add it if the master CV explicitly says so.
+6. DO NOT ADD: citizenship, nationality, visa status, work authorisation,
+   "Immediate Availability", "Notice Period", or similar unless those
+   exact statements appear in the master CV.
+
+────────────────────────────────────────────────────────────────────────
+FACT INTEGRITY — applies to every line below the header:
+────────────────────────────────────────────────────────────────────────
+- Job titles at past employers: copy from master CV. You may APPEND a
+  scope qualifier in parens (e.g. "Senior PM (Payments)") if the CV
+  itself supports it. Do NOT rewrite a "Technical Programme Lead" as
+  "Group Product Manager" to match the JD title.
+- Employer locations: copy from master CV. If SimPaisa is "Karachi" in
+  the CV, the resume says "Karachi" — never "Dubai" because the JD is
+  Dubai.
+- Years of experience: copy from master CV ("14+" stays "14+", never
+  becomes "12+" or "15+").
+- Quantified metrics ($X, Y%, Z users): every number you put in a
+  bullet MUST come from the master CV or from explicit "Insider Expert"
+  notes about scope. NEVER invent statistics like "14% authorisation
+  rate uplift" or "390M+ mobile wallets" if those numbers aren't in the
+  source.
+- Certifications, education, dates: copy verbatim.
+
+You MAY:
+- Reorder bullets within a role to put JD-relevant ones first.
+- Compress two bullets into one for length.
+- Rephrase a bullet's verb to be sharper ("Owned" → "Led").
+- Inject a JD keyword INTO an existing bullet if the underlying work
+  in the master CV genuinely covered that area.
+- Re-write the Summary line to emphasise JD-relevant strengths the
+  candidate actually has.
+
+────────────────────────────────────────────────────────────────────────
+STRUCTURE:
+────────────────────────────────────────────────────────────────────────
+- Header (verbatim from master per IDENTITY LOCK): name, current title,
+  contact line.
+- Summary: 3-4 lines. Lead with a specific real number from the candidate
+  (e.g. "$1B+ TPV", "40 engineers", "100K BNPL users in 8 months").
+- Experience: reverse chronological, role + company + dates, 3-6 bullets
+  each. Every bullet starts with a strong action verb. At least 70% of
+  bullets contain a quantified outcome (numbers that exist in the CV).
+- Skills: grouped, prioritized by JD relevance.
+- Education / Certifications: verbatim.
+
+────────────────────────────────────────────────────────────────────────
 ANTI-AI-TELL DISCIPLINE (these are why recruiters spot AI-written resumes):
+────────────────────────────────────────────────────────────────────────
 - NEVER use these words/phrases: "delve", "tapestry", "unpack", "journey",
   "at the end of the day", "a testament to", "in today's fast-paced world",
   "navigate the complexities", "in this digital age", "spearheaded",
@@ -431,7 +489,6 @@ ANTI-AI-TELL DISCIPLINE (these are why recruiters spot AI-written resumes):
 - NEVER write hype openers in the Summary ("Results-driven product leader
   with a passion for…"). Lead with a specific number, a specific company,
   or a specific shipped outcome.
-- NEVER fabricate. If the master resume doesn't support a claim, don't make it.
 - NEVER use first person ("I", "my"). NEVER use "responsible for".
 
 Output ONLY the resume markdown. No preamble, no commentary."""
@@ -469,17 +526,32 @@ async def writer_node(state: ResumeState) -> dict:
         warm_start_block = ""
         intent_block = ""
 
-    user = f"""JOB:
+    # 2026-05-12: master CV moved to the TOP of the user message (and JD to
+    # the bottom). The prior ordering put the JD first and the source CV
+    # last, which biased the writer to anchor on JD language and treat the
+    # CV as supporting context. Surfaced as identity-level hallucinations
+    # (UK phone fabricated, location swapped to match JD geo, employer
+    # office cities changed, citizenship invented). Putting the source of
+    # truth FIRST gives the writer something concrete to start from.
+    user = f"""CANDIDATE MASTER RESUME (source of truth — every fact in your
+output must trace back to this):
+{state['master_resume_md']}{warm_start_block}{intent_block}
+
+────────────────────────────────────────────────────────────────────────
+TARGET JOB (use to decide WHICH parts of the CV to emphasise — NOT to
+invent facts that fit the JD better):
+────────────────────────────────────────────────────────────────────────
 {state['job'].get('title', '')} @ {state['company_name']}
 {state['job'].get('location', '') or ''}
 
 JOB DESCRIPTION:
 {(state['job'].get('description') or '')[:5000]}
 
-INSIDER EXPERT NOTES:
+INSIDER EXPERT NOTES (company-specific framing — never override candidate
+facts):
 {state.get('expert_notes', '')}
 
-ADVOCATE NOTES:
+ADVOCATE NOTES (which of the candidate's real experiences to highlight):
 {state.get('advocate_notes', '')}
 
 META-CRITIC WARNINGS (avoid these patterns):
@@ -491,10 +563,8 @@ CRITIC FEEDBACK (if revising — iteration {iteration}):
 PREVIOUS DRAFT (if revising):
 {state.get('current_draft') or '(none)'}
 
-CANDIDATE MASTER RESUME:
-{state['master_resume_md']}{warm_start_block}{intent_block}
-
-Write the resume now. Output ONLY markdown.
+Write the resume now. Apply IDENTITY LOCK and FACT INTEGRITY from the
+system prompt. Output ONLY markdown.
 """
     result = await get_router().ask(
         provider="anthropic",
@@ -527,7 +597,9 @@ Write the resume now. Output ONLY markdown.
 # ═════════════════════════════════════════════════════════════════════════
 # Node 6 + 7 — ATS Critic ensemble (DeepSeek-R1 + Kimi K2, parallel)
 # ═════════════════════════════════════════════════════════════════════════
-ATS_CRITIC_SYSTEM = """You are an ATS and recruiter-screening expert.
+ATS_CRITIC_SYSTEM = """You are an ATS, recruiter-screening, AND fact-integrity
+expert. You score the resume against the JD AND verify every claim against
+the candidate's master CV.
 
 Score the resume against:
 - Keyword density vs. JD (extract top 20 JD terms; check coverage)
@@ -536,6 +608,22 @@ Score the resume against:
 - Length appropriateness (1 page <10y exp; 2 pages 10y+)
 - Action-verb diversity, quantification rate (% bullets with numbers)
 - Title/seniority alignment with target role
+- FABRICATION CHECK (2026-05-12 — load-bearing): for EVERY claim in the
+  draft, ask "is this in the master CV?". A claim is anything that's
+  verifiable: phone number, city, country, employer location, job title
+  held at a past employer, years of experience, certifications,
+  quantified metrics ($X, Y%, Z users), product names shipped. If a
+  claim is in the draft but NOT supported by the master CV, it's a
+  fabrication and the resume must lose points hard.
+
+ats_score must drop sharply (target floor: 40) when ANY of the
+following are detected:
+  • Identity fields (name, phone, email, location) don't match master CV
+  • Past employer locations don't match master CV
+  • Job titles at past employers don't match master CV
+  • Quantified metrics not present in master CV are invented
+  • Citizenship / nationality / availability statements appear that
+    aren't in master CV
 
 Output a JSON critique:
 {
@@ -545,6 +633,9 @@ Output a JSON critique:
   "parseability_issues": ["..."],
   "skim_test_pass": true|false,
   "quantification_rate": 0.0-1.0,
+  "fabrications": [
+    {"claim": "<exact text in draft>", "issue": "not in master CV"}
+  ],
   "specific_fixes": ["concrete edit 1", "concrete edit 2", ...]
 }
 Strict JSON only. No prose."""
@@ -565,13 +656,25 @@ async def _run_ats_critic(
     to the other critic. Without this, one bad provider crashes the whole
     parallel branch and forces a legacy fallback.
     """
-    user = f"""JOB DESCRIPTION:
+    # 2026-05-12: critic now sees the master CV so it can run the
+    # FABRICATION CHECK (system prompt). Without this the critics scored
+    # high on fabricated resumes (ATS A:95, ATS B:92 on a resume that
+    # invented a UK phone number, "British Citizen", and metrics like
+    # "390M+ mobile wallets" that weren't in the source CV).
+    user = f"""MASTER CV (source of truth — flag anything in the draft that
+isn't supported here):
+{state.get('master_resume_md', '')}
+
+────────────────────────────────────────────────────────────────────────
+
+JOB DESCRIPTION:
 {(state['job'].get('description') or '')[:4000]}
 
-CURRENT RESUME DRAFT:
+CURRENT RESUME DRAFT (the artefact you are critiquing):
 {state['current_draft']}
 
-Score and critique. Return strict JSON only.
+Score and critique. Run the FABRICATION CHECK from the system prompt
+exhaustively. Return strict JSON only.
 """
     # Reasoning-mode models (deepseek-reasoner, kimi-k2.x) burn a large
     # share of max_tokens on internal chain-of-thought before emitting
@@ -926,36 +1029,81 @@ Decide. Output strict JSON only."""
 # ═════════════════════════════════════════════════════════════════════════
 # Node 10 — polisher (Claude Opus 4.5)
 # ═════════════════════════════════════════════════════════════════════════
-POLISHER_SYSTEM = """You are the final-pass quality gate.
+POLISHER_SYSTEM = """You are the final-pass quality gate AND last line of
+defence against fabrication.
 
-Polish the resume one last time — tighten language, fix any awkward phrasing,
-ensure every line earns its place. Then self-score on 0-100 across:
-  fit (40%), ats (20%), impact (20%), narrative (10%), polish (10%).
+Step 1 — IDENTITY VERIFY (NON-NEGOTIABLE, before any polishing):
+Compare the draft's header block against the master CV. The following
+fields MUST appear in the draft EXACTLY as in the master CV:
+  • Name (the line under "#")
+  • Phone number (every digit, every separator)
+  • Email address (verbatim)
+  • LinkedIn URL (verbatim)
+  • City + country in the contact line
+If ANY of these differ from the master CV — replace them with the master
+CV values. NEVER use placeholder phone numbers ("+44 7XXX XXXXXX",
+"[phone]"). NEVER change the candidate's city to the JD's city. NEVER
+add citizenship / availability / visa fields that aren't in the master.
+
+Step 2 — FACT VERIFY:
+For each bullet in Experience, check whether the underlying claim
+(employer location, job title, dates, metric) is supported by the
+master CV. Strike any sentence containing a fabricated metric and
+replace it with the closest TRUE bullet from the master CV that
+addresses the same JD signal. Do NOT keep a fabricated number even
+if it makes the candidate look better.
+
+Step 3 — POLISH:
+Tighten language, fix awkward phrasing, ensure every line earns its
+place. Apply ANTI-AI-TELL discipline (no "delve / tapestry / unpack /
+journey / leveraged / spearheaded / passionate about", no em-dash
+strings).
+
+Step 4 — SELF-SCORE 0-100 across:
+  fit (40%) — how well true CV evidence maps to JD requirements
+  ats (20%) — keyword coverage + parseability
+  impact (20%) — quantified outcomes per the master CV
+  narrative (10%) — flow, sequence, story
+  polish (10%) — clean prose, no AI tells
+fit MUST be capped at 60 if any identity-level fabrication remained
+through Step 1 (you couldn't fully fix it). Better to ship a 60-fit
+honest resume than a 95-fit fabricated one.
 
 Output strict JSON:
 {
   "final_resume_md": "...",
   "final_score": 0-100,
   "score_breakdown": {"fit": ..., "ats": ..., "impact": ..., "narrative": ..., "polish": ...},
+  "identity_fixes_applied": ["e.g. 'restored phone +971-58-9683970'", ...],
+  "fact_fixes_applied": ["e.g. 'removed fabricated 14% auth uplift claim'", ...],
   "remaining_concerns": ["...", "..."]
 }"""
 
 
 async def polisher_node(state: ResumeState) -> dict:
     settings = get_settings()
-    user = f"""JOB:
+    # 2026-05-12: polisher now sees master CV so Step 1 IDENTITY VERIFY +
+    # Step 2 FACT VERIFY can actually compare against the source of truth.
+    # Before this, the polisher only saw the JD + draft + critic feedback,
+    # so it had no way to catch fabricated identity facts.
+    user = f"""MASTER CV (source of truth for IDENTITY VERIFY + FACT VERIFY):
+{state.get('master_resume_md', '')}
+
+────────────────────────────────────────────────────────────────────────
+
+JOB:
 {state['job'].get('title', '')} @ {state['company_name']}
 
 JD:
 {(state['job'].get('description') or '')[:4000]}
 
-CURRENT DRAFT:
+CURRENT DRAFT (the artefact to polish — apply Steps 1-3 then score):
 {state['current_draft']}
 
-CRITIC FEEDBACK (merged):
+CRITIC FEEDBACK (merged, including any fabrications flagged):
 {json.dumps(state.get('merged_critique', {}), indent=2)[:2000]}
 
-Polish and self-score. Strict JSON only."""
+Run Steps 1-4 from the system prompt. Strict JSON only."""
 
     result = await get_router().ask(
         provider="anthropic",
