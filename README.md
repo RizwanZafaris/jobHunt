@@ -1,204 +1,349 @@
-# 🚀 Rizwan's AI Job Hunt System v2 — Multi-Agent Edition
+# jobHunt — AI Job Landing System
 
-Built on top of [career-ops](https://github.com/santifer/career-ops) with:
-- **Supabase** — persistent vector memory (pgvector) + job tracker database
-- **Railway** — backend API deployment (FastAPI)
-- **Vercel** — optional frontend dashboard deployment
-- **Multi-LLM router** — Anthropic (Claude Opus 4.5) · OpenAI (GPT) · Google (Gemini 2.5 Pro) · DeepSeek (R1+V3) · Moonshot (Kimi K2)
-- **LangGraph** — G2 Resume Builder graph (12 nodes, ensemble ATS critic)
-- **Playwright** — portal scanning (Greenhouse, Ashby, Lever, Workday, Bayt, GulfTalent)
+> **Outcome-conditioned, peer-network-aware, persona-evolved job hunt.**
+> Every resume, email, and LinkedIn post improves based on real interview
+> outcomes from your peer graph — and a three-layer RAG pipeline that
+> nobody in the competitive set runs.
 
-## What's in this codebase (12 phases on main)
+Built for **Rizwan Zafar** (user #1, lifetime plan) today; multi-tenant
+SaaS-ready tomorrow.
 
-| Phase | What | Status |
-|---|---|---|
-| 0 | Multi-LLM router (5 providers) + agent_call_log + company_personas + resume_builds + outcomes schema | merged |
-| 1 | G2 Resume Builder LangGraph (12 nodes, behind `USE_G2_GRAPH` flag) | merged |
-| 1.5 | Outcome-logging UI on `/jobs/[id]` (closes the learning loop) | merged |
-| 1.6 | PersonaSynthesizer weekly cron (Sun 03:00 GST) | merged |
-| 1.7 | `/personas` dashboard page | merged |
-| 1.8 | `/costs` dashboard page | merged |
-| 1.9 | `agent_call_log` perf hardening + `/costs/health` endpoint | merged |
-| 1.10 | Cost-budget alerts (daily threshold + Sunday digest, Slack/SendGrid) | merged |
-| 1.11 | Per-build cost cap (`G2_MAX_COST_USD`, default $5) | merged |
-| 1.12 | Persona quality gate (refuses low-quality personas without `force=true`) | merged |
-| 1.13 | Persona bulk-regenerate by quality tier on `/personas` | merged |
-| 1.14 | Cost-alerter audit history table on `/costs` | merged |
-| 2 | G3 Interview Prep LangGraph (7 logical / 9 actual nodes, behind `USE_G3_GRAPH` flag) | branch |
+**Status: 2026-05-11** — production stack is live on Railway + Supabase
++ Vercel. 71 target companies, ~3,500 rows of company knowledge, 12 G2
+nodes shipping resumes at ~$1 / 5 min, G3 interview studio + tutor
+ready, G4 LinkedIn engine with image briefs producing one draft per
+weekday, Perplexity recency-check validated end-to-end at $0.005/call.
 
-Deeper docs: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/G2_RESUME_BUILDER_GRAPH.md`](docs/G2_RESUME_BUILDER_GRAPH.md) · [`docs/PERF.md`](docs/PERF.md) · [`docs/LIVE_DB_AUDIT.md`](docs/LIVE_DB_AUDIT.md) · [`docs/SECURITY.md`](docs/SECURITY.md)
+---
 
-## Activating G2 (the new Resume Builder graph)
+## What makes this different
 
-The graph is dormant until you flip three things on Railway:
+Three product wedges that no competitor combines:
 
-1. **Set the new API keys** (Settings → Variables on Railway):
-   ```
-   GOOGLE_API_KEY=...        # Gemini 2.5 Pro (insider expert + meta-critic)
-   DEEPSEEK_API_KEY=...      # R1 (ATS critic)
-   KIMI_API_KEY=...          # K2 (ensemble ATS critic)
-   ```
+1. **Outcome-conditioned RAG** — every G2 build emits `cite:knowledge_id=<uuid>` markers; when you log an interview win/loss the `outcome_to_persona` worker propagates Bayesian credit back to the specific knowledge rows that drove the callback. Personas evolve from real outcomes, not vibes. (Migration 008/009, `agents/outcome_to_persona.py`.)
+2. **Peer-network referral graph** — your LinkedIn CSV import seeds a `people / employments / edges / target_company_employees` schema with a NetworkX Dijkstra path-finder that returns warm-intro paths (1–2 hops, geometric-mean strength scoring). `/network` UI surfaces top intros per target. (Migration 004, `agents/referral_graph.py`.)
+3. **Three-layer enrichment pipeline** — the persona for each target company is fed by **three independent sources**:
+   - **Apify** (depth scrape) — long-form pages, blog posts, Glassdoor reviews
+   - **Perplexity** (recency + strategy) — Sonar for last-30-day news, Sonar-pro for monthly strategic posture
+   - **Apollo** (firmographic + hiring intel) — enrichment + open-jobs index + people search
 
-2. **Flip the master switch**:
-   ```
-   USE_G2_GRAPH=true
-   ```
+Each layer writes to `company_knowledge` with a distinct `metadata.source` so the credit assignment can attribute outcomes back to which signal source mattered.
 
-3. **Redeploy** so Railway picks up the new requirements.txt entries (`langgraph`, `google-genai`, `langgraph-checkpoint-postgres`, `langchain-core`):
-   ```bash
-   railway up
-   ```
-
-Optional but recommended:
-```
-SUPABASE_DB_URL=postgresql://...    # crash-recovery for langgraph checkpointer
-SLACK_WEBHOOK_URL=https://hooks...  # cost-alert dispatch (Phase 1.10)
-G2_MAX_COST_USD=5.0                 # per-build hard cap (Phase 1.11)
-G2_MIN_PERSONA_QUALITY=medium       # quality gate (Phase 1.12)
-DAILY_COST_ALERT_USD=20             # alert threshold (Phase 1.10)
-```
-
-After activation, trigger your first build via:
-- **Dashboard**: any job at score ≥ 85 → "🎯 Generate Tailored Resume" button
-- **API**: `POST /jobs/{id}/generate-resume` (with `?force=true` to bypass persona gate, `?max_cost_usd=10` to relax cap)
-- **CLI**: `python main.py --now --skip-scout`
-
-Watch the build land in real-time on `/costs` (calls flowing into `agent_call_log`) and inspect the result on `/jobs/[id]` (resume + cover email + outcome logger).
+---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        BOSS AGENT (nightly)                         │
-│   Audits all company agents · freshness check · sends daily digest  │
-└──────────────────────┬──────────────────────────────────────────────┘
-                       │
-     ┌─────────────────┼─────────────────┐
-     │                 │                 │
-┌────▼────┐    ┌───────▼──────┐   ┌─────▼────────┐
-│  JOB    │    │   COMPANY    │   │  INTERVIEW   │
-│  SCOUT  │    │   AGENT(s)   │   │    AGENT     │
-│ GPT-4.1 │    │ Claude Opus  │   │ Claude Opus  │
-│ 9am run │    │ one/company  │   │ on-demand    │
-└────┬────┘    └───────┬──────┘   └─────┬────────┘
-     │                 │                │
-     │         ┌───────▼──────┐         │
-     │         │ RIZWAN AGENT │         │
-     │         │ Claude Opus  │         │
-     └────────►│ fills gaps   │◄────────┘
-               │ builds CV    │
-               └───────┬──────┘
-                       │
-         ┌─────────────▼──────────────┐
-         │   SUPABASE (pgvector)      │
-         │  company_knowledge table   │
-         │  jobs table · applications │
-         │  rizwan_profile · stories  │
-         └────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            jobHunt System                                    │
+│                                                                              │
+│   /today  ──►  /applications/[id]/workspace ──► /interview-studio  ──►       │
+│       │              │                                  │                    │
+│       │              ├── Role overview                  ├── Prep material    │
+│       │              ├── Resume (G2 graph)              ├── Concept ladder   │
+│       │              │   • view / download              ├── Tutor chat       │
+│       │              │   • edit (Quick / Rebuild section/ Full)              │
+│       │              ├── Network (warm-intro paths)     └── Outcome logger   │
+│       │              ├── Interview prep stub                  │              │
+│       │              └── Apply checklist                      │              │
+│       │                                                       ▼              │
+│       └── LinkedIn post (G4) ── image_brief ── Copy & paste   outcome→       │
+│                                                              persona evolve  │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Backend (FastAPI on Railway, port 8080)
+  api/server.py            ◄── routers: network, linkedin, actions, workspace,
+                                interview_studio, perplexity, apollo
+  api/queue.py + worker.py ◄── Redis + RQ durable queue (replaces BackgroundTasks)
+  agents/                  ◄── 18 graphs / workers (see Agents table)
+
+Database (Supabase Postgres + pgvector)
+  Multi-tenant from day 1: 22 user-owned tables × 88 RLS policies
+  10 migrations applied this session (see db/migrations/)
+
+Dashboard (Next.js 14 App Router on Vercel)
+  /today /targets /applications /network /insights /admin
+  /applications/[id]/workspace + /interview-studio
+  /linkedin + /jobs/[id]
 ```
+
+Deep docs: [`docs/AUDIT_360_SYNTHESIS.md`](docs/AUDIT_360_SYNTHESIS.md) (6-expert audit + P0/P1/P2 roadmap) · [`docs/SPRINT_1_STATUS.md`](docs/SPRINT_1_STATUS.md) (decisions log) · [`docs/AUDIT_2026_05_10.md`](docs/AUDIT_2026_05_10.md) (cost + quality audit) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/G2_RESUME_BUILDER_GRAPH.md`](docs/G2_RESUME_BUILDER_GRAPH.md) · [`docs/G3_INTERVIEW_PREP_GRAPH.md`](docs/G3_INTERVIEW_PREP_GRAPH.md) · [`docs/SECURITY.md`](docs/SECURITY.md)
+
+API surface docs: [`api/AUTH.md`](api/AUTH.md) · [`api/QUEUE.md`](api/QUEUE.md) · [`api/WORKSPACE.md`](api/WORKSPACE.md) · [`api/INTERVIEW_STUDIO.md`](api/INTERVIEW_STUDIO.md) · [`api/LINKEDIN.md`](api/LINKEDIN.md) · [`api/NETWORK.md`](api/NETWORK.md)
+
+---
+
+## What's in this codebase
+
+### Sprint phases (2026-05-08 → 2026-05-11)
+
+| Phase | What | Status |
+|---|---|---|
+| 0     | Multi-LLM router (5 providers) · agent_call_log · company_personas · resume_builds · outcomes schema | merged |
+| 1.0–1.16 | G2 Resume Builder graph (12 nodes) · PersonaSynthesizer · cost cap · persona-quality gate · cost-budget alerts · `/personas` `/costs` dashboards | merged |
+| 2     | G3 Interview Prep graph (7 nodes) behind `USE_G3_GRAPH` flag | merged |
+| **G1.5 + Path A** | Deep-research persona builder (Apify + Gemini long-context, success/failure patterns) | merged |
+| **Sprint 1 P0** | Multi-tenancy (22 tables, 88 RLS policies) · durable Redis+RQ queue · eval harness · auth scaffold (`RIZWAN_SINGLE_USER_MODE`) · config-drift detector · IA collapse 7→5 tabs + `/today` home | merged |
+| **P1.1 Referral graph** | `people / employments / edges / target_company_employees` schema · NetworkX Dijkstra path-finder · LinkedIn CSV import · warm-intro email drafter · `/network` UI | merged |
+| **P1.2 LinkedIn engine** | 5-node G4 LangGraph (pick_angle → draft → critique → polish → image_brief → persist) · voice extractor · scheduler · content calendar `/linkedin` | merged |
+| **P1.3 Outcome credits + persona versions** | `knowledge_outcome_credits` ledger · `persona_versions` history · `outcome_to_persona.credit_outcome` worker · `cite:knowledge_id` markers in G2 | merged |
+| **Phase 1 — `/today`** | Ranked action queue: 6 card kinds (resume_ready, score_high_no_resume, score_below_threshold, stale_application, persona_stale, linkedin_post_due) · job revalidator | merged |
+| **Phase 2 — Workspace** | `/applications/[id]/workspace` 5-tab page · Quick tweak / Rebuild section / Full rebuild chat editor · auto-replace on rebuild | merged |
+| **Phase 3 — Interview Studio** | `/applications/[id]/interview-studio` 3-pane studio · concept ladder (basics → intermediate → advanced) · tutor chat · outcome logger | merged |
+| **Perplexity layer** | `recency_check` (Sonar) · `strategic_posture` (Sonar-pro) · `verify_claim` · persona news-tracking columns · disambiguation prompt for brand-vs-policy ambiguity | merged |
+| **Apollo layer** | `enrich_organization` (firmographic) · `get_organization_job_postings` · `search_people` (paid plan) · `search_companies` (paid plan) · DB hook into `company_knowledge` | merged |
+
+### Database migrations applied this session (production Supabase)
+
+```
+2026_05_10_001  multi_tenancy (22 tables × 4 RLS policies each = 88 policies)
+2026_05_10_002  application_status enum normalisation (ES + EN variants)
+2026_05_10_003  jobs_runs (durable queue ledger)
+2026_05_10_004  referral graph (people, employments, edges, target_company_employees)
+2026_05_10_005  linkedin_drafts + posting_schedule + voice_profile
+2026_05_10_006  linkedin_drafts.image_brief column
+2026_05_10_007  jobs.posting_closed_at + last_validated_at + validation_status
+2026_05_10_008  knowledge_outcome_credits + persona_versions + interview_tutor_messages + company_knowledge.outcome_score
+2026_05_10_009  search_company_knowledge v2 (returns id UUID for citation markers)
+2026_05_10_010  company_personas news-tracking columns (last_news_check_at, last_strategic_posture_md, ...)
+```
+
+All 32 production tables have RLS enabled (`boss_audit_log` intentionally excluded — admin/global).
+
+---
 
 ## Agents
 
-| Agent | Model (today) | Role | Trigger |
-|-------|---------------|------|---------|
-| JobScoutAgent | GPT-4.1 | Scans portals, scores jobs | Daily 09:00 |
-| CompanyAgent | Claude Opus 4.5 | Deep company expert, reviews resume gaps | Per company, reused forever |
-| RizwanAgent | Claude Opus 4.5 | Represents Rizwan, fills gaps via dialogue | Per application |
-| InterviewAgent | Claude Opus 4.5 | STAR prep, likely questions, negotiation | Per high-score job |
-| BossAgent | Claude Opus 4.5 | Orchestrator, freshness audit, daily digest | Daily 21:00 |
-| **PersonaSynthesizer** | Gemini 2.5 Pro (fallback Claude) | Per-company persona refresh from outcomes + transcripts | **Sun 03:00 weekly** |
-| **CostAlerter** | (rule-based, no LLM) | Daily spend-threshold check + weekly digest via Slack/SendGrid | **Daily 22:00 + Sun 09:00** |
+| Agent | Model | Role | Trigger |
+|---|---|---|---|
+| **JobScoutAgent** | GPT-4.1 | Scans portals, scores jobs against persona | Daily 09:00 |
+| **CompanyAgent** | Claude Opus | Deep company expert; reviews resume gaps | Per company |
+| **RizwanAgent** | Claude Opus | Represents the user; fills gaps via dialogue | Per application |
+| **InterviewAgent** *(legacy)* | Claude Opus | STAR prep, likely Qs, salary negotiation | Per high-score job |
+| **BossAgent** | Claude Opus | Orchestrator; freshness audit; daily digest | Daily 21:00 |
+| **PersonaSynthesizer** | Gemini 2.5 Pro (fallback Claude) | Per-company persona refresh from outcomes + transcripts | Sun 03:00 weekly |
+| **persona_deep_research** | Gemini 2.5 Pro + Apify | Deep persona build: 6-10 success_patterns + 6-10 failure_patterns + ~20 ATS keywords | One-shot per company; refresh on demand |
+| **G2 graph (12 nodes)** | Multi-LLM ensemble | Resume builder; insider_expert emits `cite:knowledge_id=<uuid>` for outcome attribution | `/workspace/{id}/build-resume` ~$1, ~5 min |
+| **G3 graph (7 nodes)** | Multi-LLM ensemble | Interview prep pack (likely Qs, STAR, hooks, red flags, salary) | `/workspace/{id}` → Interview Prep tab |
+| **G4 LinkedIn graph (5 nodes)** | Sonnet + Opus | News-anchored post drafter; pick_angle → draft → critique → polish → image_brief → persist; never auto-posts | Manual or scheduled (Mon/Wed/Fri 09:00) |
+| **interview_tutor** | Claude Opus | 3-level concept ladder tutor; cites prep-pack sections | `/interview-studio/{id}/tutor-chat` |
+| **outcome_to_persona** | Claude Opus | Bayesian credit assignment: outcome event → cited knowledge rows → `outcome_score` update → persona evolution | After every outcome log + Sunday cron |
+| **perplexity_search** | Sonar / Sonar-pro | Recency check + strategic posture + claim verification; with brand-vs-policy disambiguation | Weekly recency + monthly strategic per persona |
+| **persona_news_check** | (orchestrator) | Wraps Perplexity, filters fresh anchors, writes `company_knowledge` rows | `/perplexity/check-news/{company}` or batch |
+| **apollo_enrich** | Apollo REST | Firmographic enrichment + open-jobs index + people seed for referral graph | `/apollo/enrich/{company}` |
+| **referral_graph** | NetworkX | Dijkstra path-finder; geometric-mean strength scoring; LinkedIn CSV import | On CSV upload + on demand |
+| **intro_email_agent** | Claude Opus | Warm-intro email drafts (to introducer, not target) | Per warm-intro path |
+| **resume_edit_assistant** | Claude Opus | Quick tweak / Rebuild section / Full rebuild | `/workspace/{id}/edit-resume` |
+| **job_validator** | (HTTP HEAD) | Revalidates jobs.url; marks `posting_closed_at`; 6-hour cache | Every 30 min (APScheduler) |
+| **linkedin_voice_extractor** | Claude Opus | One-shot bootstrap of `linkedin_voice_profile` from cv.md | Onboarding |
+| **linkedin_scheduler** | (sweeper) | Notifies user when scheduled draft is due (V1 manual paste; future Buffer) | Every 30 min |
+| **orphan_reaper** | (sweeper) | Marks `jobs_runs` rows running >15 min as failed; retries with backoff | Every 5 min |
+| **CostAlerter** | (rule-based) | Daily threshold + Sunday digest (Slack/SendGrid) | Daily 22:00 + Sun 09:00 |
 
-When `USE_G2_GRAPH=true`, resume builds for jobs scoring ≥ 85 route through a 12-node LangGraph (`resume_agents/g2_*.py`) with ensemble ATS critic (DeepSeek-R1 + Kimi K2) and cost cap. See `docs/G2_RESUME_BUILDER_GRAPH.md`.
+---
+
+## API endpoints (FastAPI, all auth-gated via `X-Secret-Key` header)
+
+| Surface | Endpoints |
+|---|---|
+| **System** | `GET /` · `GET /health` · `GET /jobs-runs/{run_id}` (polling) |
+| **Today** | `GET /actions/today?limit=N` |
+| **Workspace (Phase 2)** | `GET /workspace/{job_id}` · `POST /workspace/{job_id}/build-resume` · `POST /workspace/{job_id}/edit-resume` · `POST /workspace/{job_id}/save-resume-edit` · `POST /workspace/{job_id}/rebuild-section` · `POST /workspace/{job_id}/full-rebuild` · `POST /workspace/{job_id}/mark-applied` |
+| **Interview Studio (Phase 3)** | `GET /interview-studio/{application_id}` · `POST /interview-studio/{application_id}/tutor-chat` · `POST /interview-studio/{application_id}/log-outcome` · `POST /interview-studio/{application_id}/build-prep-pack` |
+| **LinkedIn engine (P1.2)** | `POST /linkedin/drafts/generate` · `GET /linkedin/drafts` · `GET/PATCH /linkedin/drafts/{id}` · `POST /linkedin/drafts/{id}/{approve,copy,reject}` · `GET/PUT /linkedin/voice-profile` · `GET/PUT /linkedin/posting-schedule` |
+| **Network / referrals (P1.1)** | `GET /network/paths?target_company_id=` · `GET /network/people` · `POST /network/people` · `POST /network/import/linkedin-csv` (multipart) · `POST /network/edges` · `GET /network/target-coverage` |
+| **Perplexity** | `POST /perplexity/check-news/{company_name}` · `POST /perplexity/strategic-posture/{company_name}` · `POST /perplexity/verify-claim` |
+| **Apollo** | `POST /apollo/enrich/{company_name}` · `POST /apollo/enrich-raw` · `POST /apollo/job-postings` · `POST /apollo/search-people` *(paid plan)* · `POST /apollo/search-companies` *(paid plan)* |
+| **Legacy / pipeline** | `POST /pipeline/run` · `POST /pipeline/evaluate` · `GET /jobs` · `GET /companies` · `POST /jobs/{id}/generate-resume` · `POST /personas/deep-research` · `POST /personas/refresh-news` · `POST /boss/audit` · `GET /digest/latest` · `GET /costs/by-resume-build` |
+
+---
 
 ## Setup
 
 ### 1. Install dependencies
 ```bash
-cd job_hunt_v2
+git clone https://github.com/RizwanZafaris/jobHunt
+cd jobHunt
 pip install -r requirements.txt
-npm install   # for playwright + career-ops scripts
+cd dashboard && npm install && cd -
 ```
 
-### 2. Set API keys in .env
+### 2. Configure env
 ```bash
 cp .env.example .env
-# Fill in: ANTHROPIC_API_KEY, OPENAI_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_KEY, SERPER_API_KEY
+# Fill at minimum:
+#   ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / DEEPSEEK_API_KEY / KIMI_API_KEY
+#   SUPABASE_URL / SUPABASE_SERVICE_KEY / SUPABASE_DB_URL
+#   APIFY_TOKEN (deep research) · SERPER_API_KEY (search)
+#   PERPLEXITY_API_KEY (P1.3 recency layer)
+#   APOLLO_API_KEY (firmographic + hiring layer)
+#   REDIS_URL=redis://localhost:6379/0 (queue)
+#   RIZWAN_SINGLE_USER_MODE=1 (short-circuits auth to user_001 for self-use)
+#   API_SECRET_KEY=<choose-a-strong-secret>
+```
+Then run the config-drift check:
+```bash
+python scripts/check-prod-config.py
 ```
 
-### 3. Set up Supabase
+### 3. Apply migrations to Supabase
+On a Supabase branch first (recommended):
 ```bash
-python db/setup_schema.py   # Creates all tables + pgvector extension
+chmod +x db/migrations/APPLY.sh
+DATABASE_URL=postgres://...branch...supabase.co:5432/postgres ./db/migrations/APPLY.sh
+psql "$DATABASE_URL" -f db/seeds/user_001.sql
 ```
+All 10 migrations are idempotent and transactional. Or apply individually via Supabase MCP `apply_migration`.
 
-### 4. Configure your profile
+### 4. Boot services
 ```bash
-# Edit config/profile.yml with your details
-# Or run: python main.py --onboard
-```
+# API service
+python main.py --api
+#   or in production: START_MODE=api railway up
 
-### 5. Run
-```bash
-# Full pipeline now
-python main.py --now
+# Queue worker (separate process)
+python -m api.worker
 
-# Start daily scheduler (09:00 job search + 21:00 boss audit)
+# Scheduler (cron daemon — separate service)
 python main.py --scheduler
+#   or: START_MODE=scheduler railway up
 
-# Target specific company
-python main.py --company "Tabby" --now
-
-# Interview prep for a job
-python main.py --interview-prep --job-id 42
-
-# Deploy to Railway
-railway up
+# Dashboard (Next.js)
+cd dashboard && npm run dev
 ```
+
+### 5. First-time setup
+```bash
+python main.py --onboard                                        # CV → profile_master
+python -m agents.linkedin_voice_extractor --user-id 00000000-0000-0000-0000-000000000001 --cv-path cv.md
+# Optional: upload your LinkedIn connections CSV via the /network UI
+# Optional: trigger persona refresh for all companies
+#   POST /perplexity/check-news/all   ~$0.40 for 71 companies
+```
+
+---
+
+## Environment variables
+
+| Var | Purpose | Tier |
+|---|---|---|
+| `ANTHROPIC_API_KEY` · `OPENAI_API_KEY` · `GOOGLE_API_KEY` · `DEEPSEEK_API_KEY` · `KIMI_API_KEY` | 5-LLM router | required |
+| `SUPABASE_URL` · `SUPABASE_SERVICE_KEY` · `SUPABASE_DB_URL` | DB + pgvector + langgraph checkpointer | required |
+| `API_SECRET_KEY` | Backend secret used by `X-Secret-Key` header | required |
+| `RIZWAN_SINGLE_USER_MODE` | `1` short-circuits all auth to user_001 (default during self-use) | required |
+| `REDIS_URL` | Queue connection (`redis://localhost:6379/0` for local) | required for queue |
+| `APIFY_TOKEN` | Deep-research scraper | recommended |
+| `PERPLEXITY_API_KEY` | Recency + strategic posture layer | recommended |
+| `APOLLO_API_KEY` | Firmographic enrichment layer | optional |
+| `SERPER_API_KEY` | Search fallback | recommended |
+| `SUPABASE_JWT_SECRET` | JWT verification when `RIZWAN_SINGLE_USER_MODE=0` | needed for multi-tenant pivot |
+| `G2_MAX_COST_USD` | Per-build cost cap (default `5.0`) | optional |
+| `G2_MIN_PERSONA_QUALITY` | Quality gate (`low` / `medium` / `high`; default `medium`) | optional |
+| `DAILY_COST_ALERT_USD` | Cost-alerter daily threshold (default `20`) | optional |
+| `SLACK_WEBHOOK_URL` | Cost-alert dispatch | optional |
+| `SENDGRID_API_KEY` · `SENDGRID_FROM_EMAIL` | Email alerts | optional |
+| `WORKER_CONCURRENCY` | RQ worker pool size (default `1`) | optional |
+| `PERPLEXITY_MODEL_RECENCY` · `PERPLEXITY_MODEL_STRATEGIC` | Override Sonar / Sonar-pro | optional |
+| `APOLLO_BASE_URL` · `APOLLO_HTTP_TIMEOUT` | Apollo HTTP defaults | optional |
+| `JOB_VALIDATOR_STALE_HOURS` | Validator cache (default `6`) | optional |
+| `ORPHAN_REAPER_INTERVAL_MIN` | Reaper sweep cadence (default `5`) | optional |
+
+Full reference: [`.env.example`](.env.example)
+
+---
 
 ## Deployment
 
-### Railway — TWO services
+### Railway — three services off the same image
 
-The system uses two Railway services backed by the same code:
-
-1. **API service** (`START_MODE=api`) — serves FastAPI on port 8000 for the dashboard
-2. **Scheduler service** (`START_MODE=scheduler`) — runs the cron jobs:
+1. **API** (`START_MODE=api`) — FastAPI on port 8080 (auto-configured by Railway)
+2. **Worker** (uses `Dockerfile.worker`) — `python -m api.worker` long-running
+3. **Scheduler** (`START_MODE=scheduler`) — cron daemon:
    - Daily 09:00 GST · `JobScoutAgent.run()`
    - Daily 21:00 GST · `BossAgent.run()`
-   - Daily 22:00 GST · `CostAlerter.check_daily_spend()` *(Phase 1.10)*
-   - Sun 03:00 GST · `PersonaSynthesizer.run()` *(Phase 1.6)*
-   - Sun 09:00 GST · `CostAlerter.send_weekly_digest()` *(Phase 1.10)*
+   - Daily 22:00 GST · `CostAlerter.check_daily_spend()`
+   - Sun 03:00 GST · `PersonaSynthesizer.run()`
+   - Sun 09:00 GST · `CostAlerter.send_weekly_digest()`
+   - Every 30 min · `agents/job_validator.py` revalidates JD URLs
+   - Every 30 min · `agents/linkedin_scheduler.py` notifies on scheduled drafts
+   - Every 5 min · `agents/orphan_reaper.py` reaps stuck `jobs_runs`
+4. **Redis plugin** — provides `REDIS_URL`
 
-Both services need the same env vars. If you only run the API service, the crons never fire — you'd have to trigger them via API endpoints (`/alerts/check`, `/personas/synthesize`) or the CLI (`python main.py --persona-synth`, `--alert-check`, `--weekly-digest`).
+All four services share the same env vars (set once at the project level).
+
+### Vercel — dashboard
 
 ```bash
-railway login
-railway init
-railway up --service api
-railway up --service scheduler   # separate service, same image, START_MODE=scheduler
+cd dashboard && vercel deploy --prod
 ```
+**Project Settings:**
+- Root Directory: `dashboard`
+- Production Branch: `main`
+- Environment Variables: `NEXT_PUBLIC_API_URL=https://<your-railway-app>.up.railway.app` and `API_SECRET_KEY=<same as Railway>`
+- Deployment Protection: **Disabled** for the public production deploy (the dashboard's `/api/proxy/*` route is the only path that holds the secret; public read access is fine for self-use)
 
-### Vercel (Dashboard)
-```bash
-cd dashboard && vercel deploy
-```
+---
 
-The dashboard surfaces:
-- `/` — pipeline stats + jobs table
-- `/companies` — target companies + research intel
-- `/applications` — kanban board
-- `/personas` — 33 company personas with quality tiers + bulk regenerate *(Phase 1.7 + 1.13)*
-- `/costs` — LLM telemetry + per-provider health + alert history *(Phase 1.8 + 1.9 + 1.14)*
-- `/profile/*` — master profile, keywords, sources, recommendations
-- `/jobs/[id]` — full job detail + outcome logger *(Phase 1.5)*
+## Dashboard routes
 
-## Output Files
+| Route | What |
+|---|---|
+| `/today` | Ranked action queue — what to do right now |
+| `/applications` | Application kanban |
+| `/applications/[id]/workspace` | 5-tab workspace (Role / Resume / Network / Interview Prep / Apply) |
+| `/applications/[id]/interview-studio` | 3-pane studio (Prep / Tutor chat / Outcome logger) |
+| `/linkedin` | Content calendar — drafts, scheduled, posted |
+| `/network` | Warm-intro paths + LinkedIn CSV import |
+| `/insights` | Personas + Costs + System (Boss agent audit) |
+| `/companies` · `/companies/[name]` | Target companies + research intel |
+| `/jobs/[id]` · `/jobs/[id]/resume` | Per-job detail + outcome logger |
+| `/personas/[name]` | Per-company persona (success/failure patterns + ATS bank + version history) |
+| `/profile` · `/profile/keywords` · `/profile/recommendations` · `/profile/sources` | Master profile surfaces |
+| `/admin` | Allowlist-gated admin panel (Boss, eval reports, queue) |
+
+---
+
+## Cost model
+
+| Operation | Provider | Typical cost | Cadence |
+|---|---|---|---|
+| G2 resume build | Anthropic + DeepSeek + Kimi + Gemini (12-node ensemble) | ~$1 / build | Per application |
+| G2 Quick tweak | Claude Opus (single call) | ~$0.05 | Per edit |
+| G2 Rebuild section | 3-node mini-graph (Opus writer + critic + polish) | ~$0.30–0.50 | Per section edit |
+| G3 interview prep | Multi-LLM ensemble | ~$0.50 | Per interview round |
+| G4 LinkedIn draft | Sonnet + Opus + Sonnet critic + Opus polish + Sonnet image_brief | ~$0.15 / draft | 3× / week |
+| Perplexity recency | Sonar | ~$0.005 / company | Weekly × 71 = ~$1.50/mo |
+| Perplexity strategic | Sonar-pro | ~$0.012 / company | Monthly × 71 = ~$0.85/mo |
+| Apollo enrich | Apollo (1 credit) | ~$0.10 / call | Per target (one-shot) |
+| Persona deep-research | Apify + Gemini long-context | ~$0.20 / company | Refresh on demand |
+
+**Steady-state monthly burn:** ~$30–80 (Anthropic dominated; Perplexity ~$2.50 incremental; Apollo gated on credits). Audit identifies 40–60% reduction available from prompt caching, Sonnet-for-critics, and conditional ensemble fan-out — see [`docs/AUDIT_2026_05_10.md`](docs/AUDIT_2026_05_10.md).
+
+---
+
+## What's parked
+
+- **Apollo paid-plan upgrade** — enables `/search-people` (referral-graph seeding) and `/search-companies` (canonical org_id lookup). Free plan returns 402.
+- **Hybrid resume edit auto-replace edge case** — currently auto-replaces on Full rebuild success with confirm-if-dirty; mid-edit Quick-tweak doesn't auto-apply yet (component state).
+- **Chrome browser scrape integration** — code path possible via `Claude in Chrome` MCP but no extension currently connected. Apify covers the same use cases for now.
+- **Multi-tenant pivot endpoint wiring** — 65 endpoints in `api/server.py` still use service-role; `Depends(get_current_user)` ready but not yet wired. Recipe in [`api/AUTH.md`](api/AUTH.md).
+- **Audit Tier-1 cost cuts** — prompt caching, Sonnet swaps, Haiku for orchestration. Documented, not implemented.
+- **Outcome-driven persona evolution dashboard** — schema in place (`persona_versions` table); UI surface not yet built.
+
+---
+
+## Output files (legacy, kept for back-compat)
 
 | Location | Contents |
-|----------|----------|
-| `output/resumes/` | Tailored .docx + .pdf per job |
+|---|---|
+| `output/resumes/` | Tailored `.docx` + `.pdf` per job |
 | `output/reports/` | Evaluation reports, email drafts |
 | `output/interview_prep/` | STAR story banks, likely questions |
 | Supabase `jobs` table | All discovered jobs with scores |
-| Supabase `company_knowledge` | Company intelligence (pgvector) |
+| Supabase `company_knowledge` | Multi-source RAG (Apify + Perplexity + Apollo, tagged via `metadata.source`) |
 | Supabase `applications` | Application tracking |
+| Supabase `resume_builds` | Every G2 build with full transcript + cost telemetry + user edits |
+| Supabase `interview_outcomes` · `resume_outcomes` | The data flywheel — drives `outcome_score` on knowledge rows + persona evolution |
+| Supabase `linkedin_drafts` · `linkedin_voice_profile` · `linkedin_posting_schedule` | LinkedIn engine state |
+| Supabase `people` · `employments` · `edges` · `target_company_employees` | Referral graph |
