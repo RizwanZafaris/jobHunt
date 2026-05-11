@@ -36,6 +36,45 @@ logger = logging.getLogger(__name__)
 # The USE_JOBSCOUT_V2_DISCOVERY env flag and the legacy v1 URL-only validator
 # were removed on 2026-05-12 — v2 (Perplexity per-target + 7 safeguards) is
 # now the only discovery + validation path. Setting the env var has no effect.
+# 2026-05-12: hard geo allowlist applied BEFORE the GPT-4.1 scoring step.
+# JobScout v1 logged scoring weights for geo but didn't pre-filter, so the
+# ATS scan (e.g. Stripe's 491 Greenhouse jobs) flooded scoring with US
+# Dublin/SF/Remote roles. With this filter the scoring step only ever sees
+# jobs whose location is empty (unknown — give scoring a chance), explicitly
+# Remote (geo-flexible), or in one of the user's named target countries.
+#
+# Match is substring-insensitive against location/title/description, so
+# "Dubai, UAE" and "Hybrid - Singapore" both pass; "Dublin, Ireland" and
+# "New York, NY" both drop. Empty-string locations (Perplexity sometimes
+# doesn't extract one) are PASSED so the GPT-4.1 scorer gets a chance.
+TARGET_LOCATION_TOKENS = (
+    "dubai", "abu dhabi", "uae", "united arab emirates",
+    "saudi arabia", "riyadh", "jeddah", "ksa",
+    "qatar", "doha",
+    "bahrain", "manama",
+    "london", "united kingdom", " uk ", ", uk", "uk)",
+    "singapore",
+    "remote", "hybrid",
+)
+
+
+def _is_target_geo(job: dict) -> bool:
+    """Pre-filter on user's target geos (UAE/KSA/Qatar/UK/Singapore + Remote).
+
+    Returns True if the job's location/title/description contains any
+    target geo token — case-insensitive substring match. Returns True
+    when location is empty so unknown-geo jobs aren't auto-dropped (let
+    the scoring step decide based on title + description).
+    """
+    loc = (job.get("location") or "").strip().lower()
+    if not loc:
+        # Unknown location → don't drop here; let scoring evaluate.
+        return True
+    # Some ATS feeds glue multiple locations together ("US-Remote, Singapore");
+    # any token match is good enough.
+    return any(tok in loc for tok in TARGET_LOCATION_TOKENS)
+
+
 def _classify_serper_source(url: str) -> str:
     """Map a Serper-discovered URL to a discovery_sources tag.
 
@@ -191,10 +230,21 @@ class JobScoutAgent(BaseAgent):
 
         # 1. ATS API direct scans (portals.yml-driven, priority-aware)
         ats_jobs = await self._scan_ats_portals()
-        for j in ats_jobs:
+        # 2026-05-12: hard geo pre-filter — Stripe alone returns 491
+        # Greenhouse jobs and most are US/Dublin. The GPT-4.1 scoring
+        # weights geo, but with thousands of off-geo candidates flooding
+        # the scoring step, junk scored 43-73 was leaking through. Drop
+        # ATS jobs whose location is explicitly NOT in the user's target
+        # set (UAE/KSA/Qatar/UK/Singapore/Remote). Empty locations pass.
+        ats_geo_filtered = [j for j in ats_jobs if _is_target_geo(j)]
+        ats_dropped = len(ats_jobs) - len(ats_geo_filtered)
+        for j in ats_geo_filtered:
             j.setdefault("_discovery_source", "ats_" + (j.get("ats_type") or "unknown"))
-        all_jobs.extend(ats_jobs)
-        self.log(f"   ATS APIs: {len(ats_jobs)} jobs found")
+        all_jobs.extend(ats_geo_filtered)
+        self.log(
+            f"   ATS APIs: {len(ats_geo_filtered)} jobs after geo filter "
+            f"(dropped {ats_dropped} non-target-geo jobs from {len(ats_jobs)} raw)"
+        )
 
         # 2. Serper web search
         serper_jobs = await self._search_serper(target_company, target_role)
@@ -941,10 +991,16 @@ Jobs to score:
 SCORING (0-100, strict):
 - Role type: CPO/Head of Product/VP Product = 25; Senior/Group PM = 20; Program Manager/PMO = 15; adjacent = 8; wrong = 0
 - Domain: fintech/payments/BNPL/digital banking/issuer/acquirer = 20; embedded finance/BaaS = 18; general tech = 5
-- Location: UAE/KSA/Qatar = 20; UK/EU = 15; Remote = 18; Asia = 8; US visa-required = 5
+- Location (the candidate's named target geos — strictly enforced):
+    * UAE / KSA / Qatar / Singapore = 20  (primary target wedge)
+    * UK / London = 15                    (secondary wedge)
+    * Remote (truly geo-flexible) = 18
+    * Other Asia (HK / India / Thailand / Vietnam) = 5
+    * EU outside UK (Dublin / Amsterdam / Berlin) = 5
+    * US (visa-required, off-wedge) = -20  ← was +5, now actively penalised
 - Seniority: Senior/Head/Director/Chief = 20; mid = 10; junior = 0
 - Company brand: tier-1 (Stripe/Adyen/Wise/Visa/Mastercard/Marqeta/Plaid/Revolut/Tabby/Airwallex) = +15
-- Red flags: UAE Nationals only = -40; entry-level/grad = -30; commission-only = -30
+- Red flags: UAE Nationals only = -40; entry-level/grad = -30; commission-only = -30; US-only role = -30
 
 ARCHETYPE: classify by JD focus (not just title)
 - CPO / Head of Product / VP Product: full P&L + roadmap ownership signals
@@ -1124,7 +1180,13 @@ Certifications: PMP, PMI-ACP, CSPO, CSM
             "Qatar", "Doha",
             "Bahrain", "Manama",
             "London", "United Kingdom", "UK",
-            "Remote", "Hybrid"
+            # 2026-05-12: added Singapore to target-location list. User's
+            # explicit geo wedge is UAE / KSA / Qatar / UK / Singapore.
+            # Without Singapore here, the Singapore-based Adyen Product
+            # Manager - Payments role landed at match_score 61 (Asia tier)
+            # instead of the 80+ that the user's primary geo deserves.
+            "Singapore",
+            "Remote", "Hybrid",
         ]
         for loc in locations:
             if loc.lower() in text.lower():

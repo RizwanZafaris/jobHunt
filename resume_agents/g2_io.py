@@ -252,18 +252,33 @@ def create_resume_build(
     job_id: int,
     company_name: str,
     persona_version: Optional[int] = None,
+    user_id: Optional[str] = None,
 ) -> dict:
     """
     INSERT a new resume_builds row in 'running' state. Returns the row
     (so the graph can stash the uuid in state.resume_build_id).
+
+    2026-05-12: bug #6 surfaced when JobScout v2 ran end-to-end and
+    Phase 2 (G2 graph) tried to start a resume build. resume_builds
+    gained user_id NOT NULL in the multi-tenancy migration, but this
+    writer wasn't updated. Same pattern as the upsert_rizwan_profile +
+    upsert_job + upsert_company fixes. user_id defaults via env override
+    so the LangGraph entry node doesn't have to plumb it through state.
     """
+    import os
     from db.client import get_supabase
+    if user_id is None:
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
     payload = {
         "job_id": job_id,
         "company_name": company_name,
         "persona_version": persona_version,
         "status": "running",
         "iterations": 0,
+        "user_id": user_id,
     }
     result = get_supabase().table("resume_builds").insert(payload).execute()
     rows = result.data or []
