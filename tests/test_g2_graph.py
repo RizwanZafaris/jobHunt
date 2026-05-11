@@ -524,3 +524,222 @@ class TestPersonaQualityGate:
         # Garbage min_quality string — should default to 'medium' and block
         result = check_persona_quality_gate("Visa", min_quality="ULTRA_PREMIUM")
         assert result.verdict == "blocked"
+
+
+# ─── Audit §5.3 — adaptive ATS critic ensemble ────────────────────────────
+class TestAdaptiveAtsCriticB:
+    """The _should_skip_ats_critic_b helper decides whether the Kimi K2
+    critic (~$0.05/iter) needs to run this turn or can be safely skipped
+    in favour of A's prior-iteration signal. ats_critic_b_node uses this
+    to early-return a sentinel that merge_critique already handles.
+    """
+
+    def test_iter0_always_runs_both(self):
+        """Baseline iteration: we always want both signals."""
+        from resume_agents.g2_nodes import _should_skip_ats_critic_b
+        state = {"iteration": 0, "critic_a": {"ats_score": 99}}
+        skip, reason = _should_skip_ats_critic_b(state)
+        assert skip is False
+        assert reason == "iter0_baseline"
+
+    def test_no_prior_critic_a_runs_b(self):
+        """If we don't have any prior A signal yet, can't skip B."""
+        from resume_agents.g2_nodes import _should_skip_ats_critic_b
+        state = {"iteration": 1, "critic_a": {}}
+        skip, reason = _should_skip_ats_critic_b(state)
+        assert skip is False
+        assert reason == "no_prior_critic_a"
+
+    def test_prior_critic_a_failed_runs_b(self):
+        """Provider/parse error on A means B is the only signal — run it."""
+        from resume_agents.g2_nodes import _should_skip_ats_critic_b
+        state = {
+            "iteration": 1,
+            "critic_a": {"ats_score": 0, "_provider_error": True},
+        }
+        skip, reason = _should_skip_ats_critic_b(state)
+        assert skip is False
+        assert reason == "prior_critic_a_failed"
+
+    def test_low_score_runs_b(self):
+        """If A scored below the 60 floor, B's second opinion is wanted."""
+        from resume_agents.g2_nodes import _should_skip_ats_critic_b
+        state = {"iteration": 2, "critic_a": {"ats_score": 55, "fabrications": []}}
+        skip, reason = _should_skip_ats_critic_b(state)
+        assert skip is False
+        assert "below_floor" in reason
+
+    def test_fabrications_flagged_runs_b(self):
+        """A flagged fabrications → high-stakes; verify with B."""
+        from resume_agents.g2_nodes import _should_skip_ats_critic_b
+        state = {
+            "iteration": 2,
+            "critic_a": {
+                "ats_score": 85,
+                "fabrications": [{"claim": "x", "issue": "not in master CV"}],
+            },
+        }
+        skip, reason = _should_skip_ats_critic_b(state)
+        assert skip is False
+        assert "fabrications" in reason
+
+    def test_high_score_no_fabs_iter_gt_0_skips(self):
+        """The hot path: A clean and confident, iter > 0 → skip B."""
+        from resume_agents.g2_nodes import _should_skip_ats_critic_b
+        state = {
+            "iteration": 2,
+            "critic_a": {"ats_score": 95, "fabrications": []},
+        }
+        skip, reason = _should_skip_ats_critic_b(state)
+        assert skip is True
+        assert "adaptive_skip" in reason
+        assert "prior_score_a=95" in reason
+
+    @pytest.mark.asyncio
+    async def test_node_returns_sentinel_when_skipping(self):
+        """ats_critic_b_node returns a sentinel critic_b WITHOUT making
+        an LLM call when the skip condition holds. Transcript records
+        the skip reason so the decision is observable."""
+        from resume_agents.g2_nodes import ats_critic_b_node
+        state = {
+            "iteration": 2,
+            "critic_a": {"ats_score": 95, "fabrications": []},
+        }
+        out = await ats_critic_b_node(state)
+        b = out["critic_b"]
+        assert b["ats_score"] == 0
+        assert b["_skipped_adaptive"] is True
+        assert "adaptive_skip" in b["_skip_reason"]
+        # No cost incurred — the skip is the whole point.
+        assert "cost_usd_total" not in out
+        # Transcript turn records the decision (observability requirement).
+        turn = out["transcript"][0]
+        assert turn["node"] == "ats_critic_b"
+        assert turn["output"]["skipped"] is True
+        assert turn["cost_usd"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_merge_critique_defers_to_a_when_b_skipped(self):
+        """merge_critique already handles ats_score=0 by deferring to the
+        other critic. The sentinel from skip path uses ats_score=0, so
+        merge falls back to A cleanly — score and missing_keywords come
+        from A only."""
+        from resume_agents.g2_nodes import merge_critique_node
+        state = {
+            "iteration": 2,
+            "critic_a": {
+                "ats_score": 95,
+                "missing_keywords": ["k1"],
+                "specific_fixes": ["fix from A"],
+                "skim_test_pass": True,
+                "fabrications": [],
+            },
+            "critic_b": {
+                "ats_score": 0,
+                "missing_keywords": [],
+                "specific_fixes": [],
+                "_skipped_adaptive": True,
+                "_skip_reason": "adaptive_skip:iter=2,prior_score_a=95,fabrications=0",
+            },
+        }
+        out = await merge_critique_node(state)
+        merged = out["merged_critique"]
+        # A's score carries the merge — B contributes ats_score=0 sentinel.
+        assert merged["ats_score"] == 95
+        # B's empty missing_keywords don't pollute A's list.
+        assert "k1" in merged["missing_keywords"]
+        # A's fixes carry through.
+        assert any("fix from A" in f for f in merged["specific_fixes"])
+
+
+# ─── Audit §5.4 — meta-critic transcript trim ─────────────────────────────
+class TestMetaCriticSummarize:
+    """_summarize_past_transcript compresses each past build to a compact
+    (iteration, node, model, score, fix, fab) digest so the meta-critic
+    LLM call doesn't carry 50K-char raw blobs.
+    """
+
+    def test_resume_builds_shape_compresses_turns(self):
+        from resume_agents.g2_nodes import _summarize_past_transcript
+        build = {
+            "source": "resume_builds",
+            "polisher_score": 92,
+            "finalized_at": "2026-05-10T12:34:56+00:00",
+            "agent_transcript": [
+                {
+                    "node": "ats_critic_a",
+                    "iteration": 0,
+                    "model": "deepseek-reasoner",
+                    "output": {
+                        "ats_score": 88,
+                        "specific_fixes": ["add token keyword", "quantify Daraz"],
+                        "fabrications": [],
+                    },
+                },
+                {
+                    "node": "polisher",
+                    "iteration": 0,
+                    "model": "claude-opus-4-5",
+                    "output": {"final_score": 92},
+                },
+            ],
+        }
+        out = _summarize_past_transcript(build)
+        assert out["source"] == "resume_builds"
+        assert out["polisher_score"] == 92
+        assert out["n_turns"] == 2
+        turns = out["turns"]
+        assert turns[0]["n"] == "ats_critic_a"
+        assert turns[0]["s"] == 88
+        # Fixes preview is forwarded (truncated list).
+        assert turns[0]["fix"] is not None
+        assert len(turns[0]["fix"]) <= 4
+        # final_score recognised as a score signal too.
+        assert turns[1]["n"] == "polisher"
+        assert turns[1]["s"] == 92
+
+    def test_agent_conversations_fallback_shape(self):
+        """Cold-start shape: a single conversational row, not a turn list."""
+        from resume_agents.g2_nodes import _summarize_past_transcript
+        build = {
+            "source": "agent_conversations",
+            "speaker": "rizwan",
+            "message": "x" * 500,
+            "gap_identified": True,
+            "gap_filled": False,
+        }
+        out = _summarize_past_transcript(build)
+        assert out["source"] == "agent_conversations"
+        assert out["speaker"] == "rizwan"
+        # Snippet is truncated to bound the prompt size.
+        assert len(out["snippet"]) <= 240
+
+    def test_handles_missing_output(self):
+        """Turns without an output dict don't crash the summariser."""
+        from resume_agents.g2_nodes import _summarize_past_transcript
+        build = {
+            "source": "resume_builds",
+            "agent_transcript": [
+                {"node": "writer", "iteration": 0, "output": "raw text not dict"},
+                {"node": "entry", "iteration": 0},
+            ],
+        }
+        out = _summarize_past_transcript(build)
+        # Both turns produce a row with score=None — none of them crash.
+        assert out["n_turns"] == 2
+        assert out["turns"][0]["s"] is None
+        assert out["turns"][1]["s"] is None
+
+    @pytest.mark.asyncio
+    async def test_meta_critic_cold_start_unchanged(self):
+        """Cold-start path (no past transcripts) is preserved — no LLM
+        call, hand-coded warnings. This guards against regressions when
+        we change the past-builds prompt path."""
+        from resume_agents.g2_nodes import meta_critic_node
+        state = {"company_name": "NewCo", "past_transcripts": []}
+        out = await meta_critic_node(state)
+        warnings = out["meta_critic_warnings"]
+        assert isinstance(warnings, list)
+        assert len(warnings) >= 1
+        # No cost on cold start (no LLM call).
+        assert "cost_usd_total" not in out
