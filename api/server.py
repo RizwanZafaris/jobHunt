@@ -198,8 +198,21 @@ async def root():
 
 
 @app.get("/health")
+@limiter.exempt
 async def health():
-    """Railway health check endpoint."""
+    """Railway health check endpoint.
+
+    Exempted from rate limiting — Railway's healthchecker hits this every
+    few seconds and would otherwise trip the 60/min default during a slow
+    rolling restart.
+    """
+    return {"status": "healthy", "timestamp": date.today().isoformat()}
+
+
+@app.get("/healthz")
+@limiter.exempt
+async def healthz():
+    """Kubernetes-style health probe alias for /health (also exempt from rate limiting)."""
     return {"status": "healthy", "timestamp": date.today().isoformat()}
 
 
@@ -338,8 +351,10 @@ async def debug_provider_ping(
 
 
 @app.post("/pipeline/run")
+@limiter.limit(RATE_LIMITS["background_jobs"])
 async def run_pipeline(
-    request: PipelineRunRequest,
+    request: Request,
+    body: PipelineRunRequest,
     background_tasks: BackgroundTasks,
     _auth=Depends(verify_secret)
 ):
@@ -348,9 +363,9 @@ async def run_pipeline(
         from pipeline import JobHuntPipeline
         pipeline = JobHuntPipeline()
         await pipeline.run(
-            target_company=request.company,
-            target_role=request.role,
-            skip_scout=request.skip_scout,
+            target_company=body.company,
+            target_role=body.role,
+            skip_scout=body.skip_scout,
         )
 
     background_tasks.add_task(_run)
@@ -1445,7 +1460,9 @@ async def trigger_company_research(
 
 
 @app.post("/pipeline/run-targets")
+@limiter.limit(RATE_LIMITS["background_jobs"])
 async def run_pipeline_targets(
+    request: Request,
     background_tasks: BackgroundTasks,
     _auth=Depends(verify_secret),
 ):
@@ -1522,7 +1539,9 @@ async def reclassify_existing_jobs(
 
 
 @app.post("/jobs/{job_id}/generate-resume")
+@limiter.limit(RATE_LIMITS["llm_generation"])
 async def generate_resume_for_job(
+    request: Request,
     job_id: int,
     background_tasks: BackgroundTasks,
     max_cost_usd: Optional[float] = None,
@@ -1630,7 +1649,9 @@ async def generate_resume_for_job(
 # ── G3 Interview Prep Graph (Phase 2) ─────────────────────────────────────
 
 @app.post("/jobs/{job_id}/prep-interview")
+@limiter.limit(RATE_LIMITS["llm_generation"])
 async def prep_interview_for_job(
+    request: Request,
     job_id: int,
     background_tasks: BackgroundTasks,
     application_id: Optional[str] = None,
