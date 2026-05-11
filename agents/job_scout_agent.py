@@ -32,13 +32,10 @@ from db.client import upsert_job, upsert_company, get_company_by_name, get_supab
 logger = logging.getLogger(__name__)
 
 
-# ─── JobScout v2 helpers (2026-05-11) ──────────────────────────────────────
-def _v2_discovery_enabled() -> bool:
-    """Feature flag — defaults ON. Set USE_JOBSCOUT_V2_DISCOVERY=0 to disable."""
-    import os
-    return os.environ.get("USE_JOBSCOUT_V2_DISCOVERY", "1") not in ("0", "false", "False", "")
-
-
+# ─── JobScout v2 helpers (2026-05-11; v1 deleted 2026-05-12) ───────────────
+# The USE_JOBSCOUT_V2_DISCOVERY env flag and the legacy v1 URL-only validator
+# were removed on 2026-05-12 — v2 (Perplexity per-target + 7 safeguards) is
+# now the only discovery + validation path. Setting the env var has no effect.
 def _classify_serper_source(url: str) -> str:
     """Map a Serper-discovered URL to a discovery_sources tag.
 
@@ -207,14 +204,13 @@ class JobScoutAgent(BaseAgent):
         all_jobs.extend(serper_jobs)
         self.log(f"   Serper: {len(serper_jobs)} jobs found")
 
-        # 2.5. JobScout v2 — per-target Perplexity discovery (covers the 65
-        # currently-under-served targets that have no explicit Serper query)
-        if _v2_discovery_enabled():
-            perplexity_jobs = await self._discover_via_perplexity(target_company)
-            for j in perplexity_jobs:
-                j.setdefault("_discovery_source", "perplexity_sonar")
-            all_jobs.extend(perplexity_jobs)
-            self.log(f"   Perplexity: {len(perplexity_jobs)} candidates discovered")
+        # 2.5. Perplexity per-target discovery (covers the 65 currently-
+        # under-served targets that have no explicit Serper query).
+        perplexity_jobs = await self._discover_via_perplexity(target_company)
+        for j in perplexity_jobs:
+            j.setdefault("_discovery_source", "perplexity_sonar")
+        all_jobs.extend(perplexity_jobs)
+        self.log(f"   Perplexity: {len(perplexity_jobs)} candidates discovered")
 
         # 3. Deduplicate — by URL first, then by company+title+location hash
         unique_jobs = self._deduplicate(all_jobs)
@@ -224,15 +220,11 @@ class JobScoutAgent(BaseAgent):
         fresh_jobs = await self._filter_already_known(unique_jobs)
         self.log(f"   Fresh (not already in DB): {len(fresh_jobs)}")
 
-        # 5. JobScout v2 — run the 7 hallucination/quality safeguards on every
-        # candidate. confidence_score < 50 → DROP (per Q1=A decision).
-        # Falls back to legacy URL validation when v2 disabled.
-        if _v2_discovery_enabled():
-            valid_jobs = await self._validate_with_safeguards(fresh_jobs)
-            self.log(f"   Validated (v2 safeguards passed): {len(valid_jobs)}")
-        else:
-            valid_jobs = await self._validate_job_urls(fresh_jobs)
-            self.log(f"   Valid (legacy v1 URL check): {len(valid_jobs)}")
+        # 5. Run the 7 hallucination/quality safeguards on every candidate.
+        # confidence_score < 50 → DROP (per Q1=A decision). Legacy v1 URL-only
+        # validator was deleted 2026-05-12; this is the only validation path.
+        valid_jobs = await self._validate_with_safeguards(fresh_jobs)
+        self.log(f"   Validated (7 safeguards passed): {len(valid_jobs)}")
 
         # 6. GPT-4.1 pre-scoring
         scored_jobs = await self._score_jobs_batch(valid_jobs)
@@ -728,14 +720,14 @@ class JobScoutAgent(BaseAgent):
         and `discovery_sources`. URLs that resolved through redirects get
         normalised to the final URL.
         """
-        try:
-            from agents.job_validation import (
-                DiscoveredJob,
-                validate_candidate,
-            )
-        except ImportError:
-            logger.warning("job_validation not available; falling back to legacy URL check")
-            return await self._validate_job_urls(jobs)
+        # 2026-05-12: v1 fallback removed — if agents.job_validation can't be
+        # imported, that's a deployment bug and we should fail loudly rather
+        # than silently degrade to URL-only validation (which produces lower-
+        # quality jobs that would then ship to /today indistinguishably).
+        from agents.job_validation import (
+            DiscoveredJob,
+            validate_candidate,
+        )
 
         # Build a map of company_name → domains (for safeguard #2 whitelist).
         db = get_supabase()
@@ -814,45 +806,6 @@ class JobScoutAgent(BaseAgent):
             self.log(f"   Detected closed postings: {len(closed_urls)}")
 
         return validated
-
-    async def _validate_job_urls(self, jobs: list[dict]) -> list[dict]:
-        """
-        Check each job URL to detect expired postings.
-        Uses HTTP status + content-based expiry signal detection.
-        Returns only valid (non-expired) jobs.
-
-        Legacy v1 validator — kept as fallback when USE_JOBSCOUT_V2_DISCOVERY
-        is disabled. v2 uses _validate_with_safeguards instead.
-        """
-        valid = []
-        expired_urls = []
-
-        # Run checks concurrently in batches of 10
-        semaphore = asyncio.Semaphore(10)
-
-        async def check_one(job: dict) -> Optional[dict]:
-            url = job.get("url", "")
-            if not url or url.startswith("manual-"):
-                return job  # Skip manual entries
-
-            async with semaphore:
-                is_valid, reason = await self._check_url_validity(url)
-                if is_valid:
-                    return job
-                else:
-                    logger.info(f"Expired/invalid URL ({reason}): {url}")
-                    expired_urls.append(url)
-                    return None
-
-        results = await asyncio.gather(*[check_one(j) for j in jobs], return_exceptions=True)
-        for r in results:
-            if r is not None and not isinstance(r, Exception):
-                valid.append(r)
-
-        if expired_urls:
-            self.log(f"   ⚠️  {len(expired_urls)} expired URLs filtered out", style="yellow")
-
-        return valid
 
     async def _check_url_validity(self, url: str) -> tuple[bool, str]:
         """

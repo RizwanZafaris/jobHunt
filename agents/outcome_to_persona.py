@@ -73,7 +73,11 @@ SCORE_MIN = 0.0
 SCORE_MAX = 1.0
 
 # Persona evolution model.
-EVOLVE_MODEL = "claude-opus-4-5-20251101"
+# 2026-05-12 right-sizing: this is a "propose minimal JSON edits to a banked
+# persona" task, not deep reasoning. Sonnet 4.6 matches Opus 4.5 at ~5× less.
+# EVOLVE_SYSTEM_PROMPT explicitly cages the model to micro-edits, which is
+# exactly what Sonnet is good at. See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §32.
+EVOLVE_MODEL = "claude-sonnet-4-6"
 EVOLVE_PROVIDER = "anthropic"
 EVOLVE_MAX_COST_USD = 1.0
 

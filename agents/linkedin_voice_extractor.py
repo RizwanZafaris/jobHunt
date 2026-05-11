@@ -32,7 +32,11 @@ from db.client import get_supabase
 logger = logging.getLogger(__name__)
 
 
-EXTRACTOR_MODEL = "claude-opus-4-7"
+# 2026-05-12 right-sizing: distilling a voice profile from a CV is structured
+# JSON extraction with a rich system prompt — Sonnet 4.6 has been observed
+# to match Opus 4.7 here. Used once per user at onboarding so the saving is
+# modest, but the prompt complexity doesn't warrant Opus.
+EXTRACTOR_MODEL = "claude-sonnet-4-6"
 
 
 # ─── Default avoid-phrases shipped with every new profile ────────────────

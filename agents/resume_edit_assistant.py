@@ -76,9 +76,13 @@ QUICK_TWEAK_TEMPERATURE = 0.2  # surgical, not creative
 # headroom for a critic retry without blowing the cap.
 REBUILD_SECTION_COST_CAP_USD = 0.60
 REBUILD_SECTION_TIMEOUT_S = 60
+# 2026-05-12 right-sizing: writer still gets Opus (load-bearing rewrite work),
+# but critic + polish are JSON-classification and surgical-edit tasks where
+# Sonnet matches. Cuts rebuild_section cost from ~$0.60 ceiling to ~$0.25.
+# See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §40.
 REBUILD_SECTION_WRITER_MODEL = "claude-opus-4-7"
-REBUILD_SECTION_CRITIC_MODEL = "claude-opus-4-7"
-REBUILD_SECTION_POLISH_MODEL = "claude-opus-4-7"
+REBUILD_SECTION_CRITIC_MODEL = "claude-sonnet-4-6"
+REBUILD_SECTION_POLISH_MODEL = "claude-sonnet-4-6"
 
 # ─── System prompt (THIS IS THE LOAD-BEARING TEXT) ────────────────────────
 # Reviewed by the user — kept in this file so prompt edits live with the

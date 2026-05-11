@@ -39,8 +39,12 @@ logger = logging.getLogger(__name__)
 
 # ─── tunables ─────────────────────────────────────────────────────────────
 TUTOR_MAX_COST_USD = 0.20            # Hard per-turn cap (audit P1.3 spirit).
-TUTOR_MAX_TOKENS_OUT = 1500          # ~ $0.11 at Opus 4.5 output pricing.
-TUTOR_MODEL_DEFAULT = "claude-opus-4-5-20251101"
+TUTOR_MAX_TOKENS_OUT = 1500          # ~ $0.022 at Sonnet 4.6 output pricing.
+# 2026-05-12 right-sizing: Sonnet 4.6 matches Opus 4.5 on chat tutoring at
+# ~5× less cost. Average tutoring response is 800-1500 tokens; the deep-
+# reasoning premium of Opus isn't justified for this surface.
+# See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §G3-1 (tutor portion).
+TUTOR_MODEL_DEFAULT = "claude-sonnet-4-6"
 TUTOR_PROVIDER_DEFAULT = "anthropic"
 TUTOR_HISTORY_TURNS = 8              # Last 8 turns (~16 messages) of context.
 

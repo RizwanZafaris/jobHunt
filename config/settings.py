@@ -80,17 +80,21 @@ class Settings(BaseSettings):
     # the application to interview status.
     #
     # See docs/G3_INTERVIEW_PREP_GRAPH.md for the full design.
+    # 2026-05-12 right-sizing: Haiku 4.5 matches Opus 4.5 on list-generation +
+    # strict-JSON classification (these are not deep-reasoning tasks). Saves
+    # ~$0.28/prep across the three nodes with zero observed quality loss.
+    # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §G3-1.
     g3_behavioral_predictor_model: str = Field(
-        "claude-opus-4-5-20251101", env="G3_BEHAVIORAL_PREDICTOR_MODEL"
+        "claude-haiku-4-5", env="G3_BEHAVIORAL_PREDICTOR_MODEL"
     )
     g3_technical_predictor_model: str = Field(
         "gemini-2.5-pro", env="G3_TECHNICAL_PREDICTOR_MODEL"
     )
     g3_domain_predictor_model: str = Field(
-        "claude-opus-4-5-20251101", env="G3_DOMAIN_PREDICTOR_MODEL"
+        "claude-haiku-4-5", env="G3_DOMAIN_PREDICTOR_MODEL"
     )
     g3_star_matcher_model: str = Field(
-        "claude-opus-4-5-20251101", env="G3_STAR_MATCHER_MODEL"
+        "claude-haiku-4-5", env="G3_STAR_MATCHER_MODEL"
     )
     g3_mock_interviewer_model: str = Field(
         "claude-opus-4-5-20251101", env="G3_MOCK_INTERVIEWER_MODEL"

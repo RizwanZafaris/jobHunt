@@ -44,7 +44,12 @@ logger = logging.getLogger(__name__)
 
 
 # ── Defaults ──────────────────────────────────────────────────────────────
-DEFAULT_MODEL: str = "claude-opus-4-7"
+# 2026-05-12 right-sizing: drafting a 90-140-word email is exactly the kind
+# of constrained creative-writing task where Sonnet 4.6 matches or exceeds
+# Opus 4.7. At <10% the cost. The prompt itself does the heavy lifting
+# (banned em-dashes, "hope this finds you well", forwardable structure).
+# See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §44.
+DEFAULT_MODEL: str = "claude-sonnet-4-6"
 DEFAULT_PROVIDER = "anthropic"
 DEFAULT_MAX_COST_USD: float = 0.05
 DEFAULT_MAX_TOKENS: int = 1200
