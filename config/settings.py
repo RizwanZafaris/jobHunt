@@ -47,7 +47,16 @@ class Settings(BaseSettings):
     g2_writer_model: str = Field("claude-opus-4-5-20251101", env="G2_WRITER_MODEL")
     g2_ats_critic_a_model: str = Field("deepseek-reasoner", env="G2_ATS_CRITIC_A_MODEL")
     g2_ats_critic_b_model: str = Field("kimi-k2.5", env="G2_ATS_CRITIC_B_MODEL")
-    g2_orchestrator_model: str = Field("claude-opus-4-5-20251101", env="G2_ORCHESTRATOR_MODEL")
+    # 2026-05-12 right-sizing (audit §5.2): orchestrator's only job is to read
+    # merged_critique JSON, decide converged-or-not against fixed rules, and
+    # emit a JSON decision. That's classification work — Sonnet 4.6 matches
+    # Opus accuracy at ~5× less cost. Hard convergence gates (score/fixes/
+    # banned/persona) in orchestrator_node already backstop the LLM decision,
+    # so downgrade risk is bounded. Saves ~$0.10/build × ~20 builds/mo ≈ $24/mo.
+    # TODO(2026-05): run a golden-eval comparison of Sonnet vs Opus orchestrator
+    # decisions on the next ~5 builds; if any divergence on converge calls,
+    # revisit (likely fixable by tightening ORCHESTRATOR_SYSTEM in g2_nodes.py).
+    g2_orchestrator_model: str = Field("claude-sonnet-4-6", env="G2_ORCHESTRATOR_MODEL")
     g2_polisher_model: str = Field("claude-opus-4-5-20251101", env="G2_POLISHER_MODEL")
 
     # G2 graph control
