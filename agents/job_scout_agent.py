@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import date, datetime
 from typing import Optional
@@ -30,6 +31,17 @@ from config.settings import get_settings
 from db.client import upsert_job, upsert_company, get_company_by_name, get_supabase
 
 logger = logging.getLogger(__name__)
+
+
+def _serper_enabled() -> bool:
+    """Read USE_SERPER env var; default OFF.
+
+    Gated 2026-05-12 (audit §5.7): Perplexity per-target discovery + ATS APIs
+    cover the 71 target companies effectively, and Serper's 15 generic queries
+    add marginal value while currently hitting "Not enough credits" every run.
+    Set USE_SERPER=1 to re-enable. Accepts: 1, true, yes, on (case-insensitive).
+    """
+    return os.environ.get("USE_SERPER", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
 # ─── JobScout v2 helpers (2026-05-11; v1 deleted 2026-05-12) ───────────────
@@ -187,6 +199,12 @@ class JobScoutAgent(BaseAgent):
     Scans portals for PM/Head of Product/PMO jobs.
     Uses GPT-4.1 for fit pre-scoring.
     Validates job URLs for expiry before storing.
+
+    Discovery sources (run() in order): ATS APIs → Serper web search →
+    Perplexity per-target. Serper is gated behind the `USE_SERPER` env
+    var (default OFF as of 2026-05-12 audit §5.7) — set USE_SERPER=1 to
+    re-enable for broad discovery. Perplexity per-target + ATS scans
+    cover the 71 target companies effectively without it.
     """
 
     def __init__(self):
@@ -246,13 +264,19 @@ class JobScoutAgent(BaseAgent):
             f"(dropped {ats_dropped} non-target-geo jobs from {len(ats_jobs)} raw)"
         )
 
-        # 2. Serper web search
-        serper_jobs = await self._search_serper(target_company, target_role)
-        for j in serper_jobs:
-            # Classify by URL host so we know which sources cleared validation
-            j.setdefault("_discovery_source", _classify_serper_source(j.get("url", "")))
-        all_jobs.extend(serper_jobs)
-        self.log(f"   Serper: {len(serper_jobs)} jobs found")
+        # 2. Serper web search (gated 2026-05-12 — audit §5.7).
+        # Default OFF: Perplexity per-target + ATS APIs cover the 71 targets
+        # without Serper's 15 generic queries (which currently 400 on credits
+        # anyway). Set USE_SERPER=1 to re-enable for broad discovery.
+        if _serper_enabled():
+            serper_jobs = await self._search_serper(target_company, target_role)
+            for j in serper_jobs:
+                # Classify by URL host so we know which sources cleared validation
+                j.setdefault("_discovery_source", _classify_serper_source(j.get("url", "")))
+            all_jobs.extend(serper_jobs)
+            self.log(f"   Serper: {len(serper_jobs)} jobs found")
+        else:
+            self.log("   Serper: skipped (USE_SERPER=0)")
 
         # 2.5. Perplexity per-target discovery (covers the 65 currently-
         # under-served targets that have no explicit Serper query).
