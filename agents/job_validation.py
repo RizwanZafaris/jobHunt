@@ -421,7 +421,21 @@ async def validate_candidate(
         )
 
     # Safeguard #2 — domain whitelist
-    if not _domain_in_whitelist(final_url, target_company_domains):
+    #
+    # 2026-05-12: bypass for ATS-sourced candidates. The whitelist exists
+    # to catch HALLUCINATED URLs from unstructured sources (Perplexity /
+    # Serper). URLs from authoritative ATS APIs (Greenhouse, Ashby, Lever,
+    # SmartRecruiters, Workday) can't be hallucinated by construction —
+    # they came from a structured API call, not LLM free-text.
+    #
+    # Surfaced in production today (2026-05-12): every Greenhouse-hosted
+    # company that brands its job URLs through its own domain (e.g.
+    # `https://stripe.com/jobs/search?gh_jid=...`, `jobs.adyen.com/...`)
+    # was getting rejected because (a) those hosts aren't in the static
+    # ATS_HOSTS list, and (b) `companies.domain` is NULL for every target
+    # in the seed data. All 13 fresh Marqeta-run candidates were lost.
+    is_ats_source = candidate.source.startswith("ats_")
+    if not is_ats_source and not _domain_in_whitelist(final_url, target_company_domains):
         return ValidationResult(
             candidate=candidate,
             rejected_reason="domain_mismatch",
