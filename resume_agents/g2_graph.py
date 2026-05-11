@@ -11,11 +11,11 @@ Layout:
                            ▼
                         writer  ◄──────┐  loop (max iter)
                            │           │
-              ┌────────────┴───────────┐
-              │                        │
-        ats_critic_a            ats_critic_b
-              │                        │
-              └─────────┬──────────────┘
+              ┌────────────┼─────────────┐
+              │            │             │
+        ats_critic_a  ats_critic_b  persona_critic
+              │            │             │
+              └─────────┬──┴─────────────┘
                         ▼
                   merge_critique
                         │
@@ -24,9 +24,11 @@ Layout:
                         │        │
                         └────────┘ not converged → writer
 
-Two parallel fan-outs (entry → expert+advocate, writer → critic_a+critic_b)
-make this a true graph rather than a chain. LangGraph waits for both branches
-before proceeding to the join node.
+THREE-way fan-out at writer → ats_critic_a + ats_critic_b + persona_critic.
+LangGraph waits for all three before the join (merge_critique). The
+persona_critic (2026-05-12) is the company-specific recruiter critic —
+scores the draft against THIS company's banned / required / success-pattern
+/ failure-pattern bank, which the ATS critics don't see.
 """
 from __future__ import annotations
 import logging
@@ -41,6 +43,7 @@ from resume_agents.g2_nodes import (
     writer_node,
     ats_critic_a_node,
     ats_critic_b_node,
+    persona_critic_node,
     merge_critique_node,
     orchestrator_node,
     polisher_node,
@@ -68,18 +71,19 @@ def build_g2_graph(checkpointer: Optional[object] = None):
 
     g = StateGraph(ResumeState)
 
-    g.add_node("entry",          entry_node)
-    g.add_node("insider_expert", insider_expert_node)
-    g.add_node("advocate",       advocate_node)
-    g.add_node("meta_critic",    meta_critic_node)
-    g.add_node("writer",         writer_node)
-    g.add_node("ats_critic_a",   ats_critic_a_node)
-    g.add_node("ats_critic_b",   ats_critic_b_node)
-    g.add_node("merge_critique", merge_critique_node)
-    g.add_node("orchestrator",   orchestrator_node)
-    g.add_node("polisher",       polisher_node)
-    g.add_node("cover_email",    cover_email_node)
-    g.add_node("export",         export_node)
+    g.add_node("entry",           entry_node)
+    g.add_node("insider_expert",  insider_expert_node)
+    g.add_node("advocate",        advocate_node)
+    g.add_node("meta_critic",     meta_critic_node)
+    g.add_node("writer",          writer_node)
+    g.add_node("ats_critic_a",    ats_critic_a_node)
+    g.add_node("ats_critic_b",    ats_critic_b_node)
+    g.add_node("persona_critic",  persona_critic_node)  # 2026-05-12
+    g.add_node("merge_critique",  merge_critique_node)
+    g.add_node("orchestrator",    orchestrator_node)
+    g.add_node("polisher",        polisher_node)
+    g.add_node("cover_email",     cover_email_node)
+    g.add_node("export",          export_node)
 
     g.set_entry_point("entry")
 
@@ -93,11 +97,15 @@ def build_g2_graph(checkpointer: Optional[object] = None):
 
     g.add_edge("meta_critic", "writer")
 
-    # Parallel branch 2: writer fans out to critic_a + critic_b
+    # Parallel branch 2: writer fans out to THREE critics
+    # 2026-05-12: persona_critic added as a third parallel sibling.
+    # LangGraph waits for all three to complete before running merge_critique.
     g.add_edge("writer", "ats_critic_a")
     g.add_edge("writer", "ats_critic_b")
-    g.add_edge("ats_critic_a", "merge_critique")
-    g.add_edge("ats_critic_b", "merge_critique")
+    g.add_edge("writer", "persona_critic")
+    g.add_edge("ats_critic_a",  "merge_critique")
+    g.add_edge("ats_critic_b",  "merge_critique")
+    g.add_edge("persona_critic","merge_critique")
 
     g.add_edge("merge_critique", "orchestrator")
 
