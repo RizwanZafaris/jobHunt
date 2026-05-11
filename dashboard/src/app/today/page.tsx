@@ -22,7 +22,11 @@ export const metadata = {
   description: 'A single ranked list answering: what should I do right now?',
 }
 
-const VISIBLE_LIMIT = 5
+// Was 5 — bumped to 10 (2026-05-11) after production data showed users had
+// 6 resume_ready cards in the top 6 (Adyen ×3, Adecco, Finkraft, Ventula),
+// pushing high-score targets like Visa (rank 10) and Marqeta (rank 13)
+// below the visible fold. 10 covers the score≥85 band comfortably.
+const VISIBLE_LIMIT = 10
 
 interface FetchOutcome {
   ok: boolean
