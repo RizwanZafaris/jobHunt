@@ -16,13 +16,11 @@ from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel
 import os
 
-from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 
 from config.settings import get_settings
-from api.rate_limits import RATE_LIMITS
+from api.rate_limits import RATE_LIMITS, limiter
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -56,10 +54,6 @@ app.add_middleware(
 # TODO(multi-tenant): switch key from get_remote_address to a user_id-aware
 # key function once we leave single-user mode (per-IP throttles a whole
 # household behind NAT). See docs/AUDIT_REVIEW_EXTERNAL_2026_05_12.md §3.6.
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=[RATE_LIMITS["default"]],
-)
 app.state.limiter = limiter
 
 
