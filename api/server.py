@@ -10,13 +10,19 @@ import logging
 from typing import Optional
 from datetime import date, datetime, timezone
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel
 import os
 
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from slowapi.util import get_remote_address
+
 from config.settings import get_settings
+from api.rate_limits import RATE_LIMITS
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -35,6 +41,56 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Rate limiting (P1-3) ─────────────────────────────────────────────────────
+# slowapi keyed on remote IP, with a global default of 60/minute applied by
+# SlowAPIMiddleware to every route automatically. High-risk routes (LLM
+# generation, queue enqueue, data import) override the default via the
+# @limiter.limit decorator — see RATE_LIMITS in api/rate_limits.py and the
+# decorated routes below + in api/workspace.py, api/linkedin.py, api/network.py.
+#
+# /health and /healthz are exempted (Railway's healthcheck hits /health every
+# few seconds and would otherwise trip the default 60/min on a slow restart).
+#
+# TODO(multi-tenant): switch key from get_remote_address to a user_id-aware
+# key function once we leave single-user mode (per-IP throttles a whole
+# household behind NAT). See docs/AUDIT_REVIEW_EXTERNAL_2026_05_12.md §3.6.
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[RATE_LIMITS["default"]],
+)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Return a structured 429 with Retry-After in both header and body.
+
+    The body shape `{"detail": "...", "retry_after": <seconds>}` is the
+    contract the dashboard's fetch wrapper looks for when deciding whether
+    to retry with backoff. Falls back to `60` when slowapi doesn't surface
+    a window stat (e.g. memory backend race).
+    """
+    retry_after = 60
+    try:
+        # slowapi's exc.limit is a Limit wrapper whose .limit is a RateLimitItem
+        # with a `get_expiry()` method returning the window length in seconds.
+        retry_after = int(exc.limit.limit.get_expiry())
+    except Exception:
+        pass
+    response = JSONResponse(
+        status_code=429,
+        content={
+            "detail": "Rate limit exceeded",
+            "retry_after": retry_after,
+        },
+    )
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
+app.add_middleware(SlowAPIMiddleware)
 
 
 # ── Path C routers (P1.1 referral graph + P1.2 LinkedIn engine) ───────────────
