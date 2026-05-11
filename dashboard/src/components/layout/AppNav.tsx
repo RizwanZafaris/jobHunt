@@ -26,10 +26,16 @@ interface NavItem {
   icon: IconName
 }
 
+// 2026-05-12: added /linkedin to the primary nav. The G4 LinkedIn engine
+// produces drafts that surface on /today only when there's an approved
+// scheduled-for-today draft. Without a top-level entry point, users
+// couldn't reach the LinkedIn content calendar to approve / schedule
+// drafts in the first place — circular dead-zone.
 const PRIMARY: NavItem[] = [
   { href: '/today',        label: 'Today',        icon: 'sun' },
   { href: '/targets',      label: 'Targets',      icon: 'target' },
   { href: '/applications', label: 'Applications', icon: 'clipboard-list' },
+  { href: '/linkedin',     label: 'LinkedIn',     icon: 'sparkles' },
   { href: '/network',      label: 'Network',      icon: 'users' },
   { href: '/insights',     label: 'Insights',     icon: 'bar-chart-3' },
 ]
