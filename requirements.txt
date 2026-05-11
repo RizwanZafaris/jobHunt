@@ -60,6 +60,13 @@ python-jose[cryptography]>=3.3
 # Referral graph (P1.1 — in-memory Dijkstra over user-scoped people/edges)
 networkx>=3.4
 
+# Rate limiting (P1-3 — slowapi keyed on remote IP; tiered per-endpoint limits)
+# See docs/AUDIT_REVIEW_EXTERNAL_2026_05_12.md §3.6 and
+# docs/SYSTEM_AUDIT_2026_05_12.md §6.2.
+# TODO(multi-tenant): switch key from get_remote_address to user_id once we
+# leave single-user mode (per-IP throttles a whole household behind NAT).
+slowapi>=0.1.9
+
 # Email
 sendgrid>=6.11.0
 
