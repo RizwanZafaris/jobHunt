@@ -701,6 +701,311 @@ async def ats_critic_b_node(state: ResumeState) -> dict:
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# Node 7b — persona_critic (Sonnet 4.6, ~$0.02/iter)
+#
+# 2026-05-12: the persona was previously only fed INTO the writer (via
+# insider_expert). Nothing in the graph ever asked "did the writer's draft
+# actually respect THIS company's banned / required / success / failure
+# bank?". So a Visa draft could include "Crypto", "Move fast and break
+# things", or omit "ISO 8583" / "VisaNet" without any critic flagging it.
+#
+# This node is the persona-as-critic. Runs in parallel with the two ATS
+# critics. Output flows into merge_critique like any other critique.
+# When persona_score is low, orchestrator routes back to the writer with
+# explicit persona feedback.
+# ═════════════════════════════════════════════════════════════════════════
+PERSONA_CRITIC_SYSTEM = """You are a recruiter for ONE specific company. You
+score a resume draft against THIS COMPANY'S persona — its banned terms,
+required terms, success-pattern bullet shapes, and failure-pattern bullet
+shapes. You do NOT score against the JD; that's the ATS critics' job.
+Your axis is "would this resume read as written-by-an-insider, or written-
+by-a-generic-applicant?".
+
+What you receive:
+1. The company's name + persona (system_prompt_template + ats_keyword_bank
+   {banned, required, boost} + success_patterns array + failure_patterns
+   array)
+2. The master CV (source of truth for what the candidate has actually done)
+3. The current draft
+
+What you score:
+- banned_keyword_hits  — any draft text that contains a `banned` token.
+                        Each hit = severity P0 (recruiter rejects the
+                        resume in the 6-second skim).
+- required_coverage    — for each `required` keyword: is it in the draft?
+                        Coverage % = matched / total required.
+- boost_coverage       — for each `boost` keyword: is it in the draft?
+                        (Soft signal — not all need to appear.)
+- success_pattern_match — for each draft bullet in Experience, does it
+                        roughly mirror the SHAPE of a success_pattern
+                        (specific noun + verb + quantified metric)?
+                        Count how many.
+- failure_pattern_match — for each draft bullet, does it match the SHAPE
+                        of a failure_pattern (vague / generic / unquantified)?
+                        Count how many.
+- persona_alignment_score (0-100)
+  Formula: 100
+           − 20 × banned_keyword_hits
+           − 30 × (1 − required_coverage)
+           − 10 × (failure_pattern_matches > 0 ? failure_pattern_matches : 0)
+           + 5  × (success_pattern_matches > total_bullets / 2 ? 1 : 0)
+  Clamped to [0, 100].
+
+When persona is empty / not loaded, return a neutral score of 60 with
+`persona_loaded: false` so downstream nodes know to weight your output
+lightly.
+
+Output STRICT JSON only — no prose, no fences:
+{
+  "persona_loaded": true|false,
+  "persona_alignment_score": 0-100,
+  "banned_keyword_hits": [{"keyword": "...", "where_found": "<bullet|summary|header>"}],
+  "required_keyword_coverage": {"total": N, "matched": M, "ratio": 0.0-1.0,
+                                  "missing": ["..."]},
+  "boost_keyword_coverage": {"total": N, "matched": M, "ratio": 0.0-1.0},
+  "success_pattern_matches": N,
+  "failure_pattern_matches": N,
+  "specific_fixes": ["concrete edit — replace 'X' with 'Y' style bullet",
+                     "add required keyword 'ISO 8583' in Experience section",
+                     ...]
+}
+"""
+
+
+def _persona_banned_scan(draft: str, persona: dict) -> list[dict]:
+    """Pure-code regex scan for banned keywords. Runs BEFORE the LLM critic
+    to surface zero-cost early signal. Pure substring case-insensitive
+    match — no LLM round-trip.
+    """
+    if not draft or not persona:
+        return []
+    bank = persona.get("ats_keyword_bank") or {}
+    banned = [b for b in (bank.get("banned") or []) if isinstance(b, str) and b.strip()]
+    draft_lower = draft.lower()
+    hits: list[dict] = []
+    for kw in banned:
+        if kw.lower() in draft_lower:
+            hits.append({
+                "keyword": kw,
+                "fix": f"persona bans '{kw}' — remove from draft",
+            })
+    return hits
+
+
+def _persona_required_coverage(draft: str, persona: dict) -> dict:
+    """Pure-code coverage of `required` ATS keywords. Returns {missing, ratio}.
+    Same case-insensitive substring match used by `_persona_banned_scan`.
+    """
+    if not draft or not persona:
+        return {"matched": 0, "total": 0, "ratio": 0.0, "missing": []}
+    bank = persona.get("ats_keyword_bank") or {}
+    required = [r for r in (bank.get("required") or []) if isinstance(r, str) and r.strip()]
+    draft_lower = draft.lower()
+    matched: list[str] = []
+    missing: list[str] = []
+    for kw in required:
+        if kw.lower() in draft_lower:
+            matched.append(kw)
+        else:
+            missing.append(kw)
+    return {
+        "matched": len(matched),
+        "total": len(required),
+        "ratio": (len(matched) / len(required)) if required else 0.0,
+        "missing": missing,
+    }
+
+
+async def persona_critic_node(state: ResumeState) -> dict:
+    """Score the draft against the company's persona.
+
+    Runs in parallel with ats_critic_a + ats_critic_b. Output flows into
+    merge_critique via the new `persona_critique` state field.
+
+    Cost: ~$0.02/iter on Sonnet 4.6 (cheap by design — this is a focused
+    scoring task, not an open-ended generation).
+    """
+    settings = get_settings()
+    persona = state.get("company_persona") or {}
+    iteration = state.get("iteration", 0)
+    started = time.perf_counter()
+
+    # Pre-compute pure-code signals BEFORE the LLM call. Surface to the
+    # critic so it doesn't have to re-discover them, and so the result
+    # holds even if the LLM call fails (sentinel return path below).
+    banned_hits = _persona_banned_scan(state.get("current_draft", ""), persona)
+    required_cov = _persona_required_coverage(state.get("current_draft", ""), persona)
+
+    if not persona:
+        # Cold start / no persona row for this company. Return neutral so
+        # merge_critique knows to weight us at zero rather than treating
+        # this branch as failed.
+        return {
+            "persona_critique": {
+                "persona_loaded": False,
+                "persona_alignment_score": 60,
+                "banned_keyword_hits": [],
+                "required_keyword_coverage": {
+                    "total": 0, "matched": 0, "ratio": 0.0, "missing": []
+                },
+                "boost_keyword_coverage": {"total": 0, "matched": 0, "ratio": 0.0},
+                "success_pattern_matches": 0,
+                "failure_pattern_matches": 0,
+                "specific_fixes": [],
+                "_neutral_no_persona": True,
+            },
+            "transcript": [
+                make_turn(
+                    node="persona_critic",
+                    iteration=iteration,
+                    input_summary="(no persona for this company; skipped LLM call)",
+                    output={"persona_loaded": False, "score": 60},
+                    cost_usd=0.0,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                )
+            ],
+        }
+
+    company_name = state.get("company_name", "")
+    ats_bank = persona.get("ats_keyword_bank") or {}
+    success_patterns = persona.get("success_patterns") or []
+    failure_patterns = persona.get("failure_patterns") or []
+
+    persona_block = json.dumps(
+        {
+            "company_name": company_name,
+            "system_prompt_template": (persona.get("system_prompt_template") or "")[:1200],
+            "ats_keyword_bank": ats_bank,
+            "success_patterns": success_patterns,
+            "failure_patterns": failure_patterns,
+        },
+        indent=2,
+    )
+    prescan_block = json.dumps(
+        {
+            "pure_code_banned_hits": banned_hits,
+            "pure_code_required_coverage": required_cov,
+        },
+        indent=2,
+    )
+
+    user = f"""COMPANY PERSONA (source of recruiter idiom):
+{persona_block}
+
+────────────────────────────────────────────────────────────────────────
+
+MASTER CV (what the candidate has actually done — facts only):
+{state.get('master_resume_md', '')}
+
+────────────────────────────────────────────────────────────────────────
+
+CURRENT RESUME DRAFT (the artefact you are scoring):
+{state.get('current_draft', '')}
+
+────────────────────────────────────────────────────────────────────────
+
+PURE-CODE PRESCAN (regex hits — surface and escalate):
+{prescan_block}
+
+────────────────────────────────────────────────────────────────────────
+
+Score and critique against THIS company's persona. Strict JSON only."""
+
+    try:
+        result = await get_router().ask(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            system=PERSONA_CRITIC_SYSTEM,
+            messages=[{"role": "user", "content": user}],
+            max_tokens=1500,
+            temperature=0.2,
+            agent_name="g2.persona_critic",
+            json_response=True,
+        )
+    except Exception as e:
+        logger.exception("persona_critic LLM call failed")
+        # Sentinel — return pure-code prescan as the score so merge_critique
+        # still sees persona-shaped feedback even if LLM is down.
+        sentinel_score = max(0, 100 - 20 * len(banned_hits)
+                                 - int(30 * (1 - required_cov["ratio"])))
+        return {
+            "persona_critique": {
+                "persona_loaded": True,
+                "persona_alignment_score": sentinel_score,
+                "banned_keyword_hits": banned_hits,
+                "required_keyword_coverage": required_cov,
+                "boost_keyword_coverage": {"total": 0, "matched": 0, "ratio": 0.0},
+                "success_pattern_matches": 0,
+                "failure_pattern_matches": 0,
+                "specific_fixes": [f["fix"] for f in banned_hits]
+                                 + [f"add missing required keyword: {kw}"
+                                    for kw in required_cov.get("missing", [])[:5]],
+                "_llm_failed": str(e)[:200],
+            },
+            "transcript": [
+                make_turn(
+                    node="persona_critic",
+                    iteration=iteration,
+                    provider="anthropic",
+                    model="claude-sonnet-4-6",
+                    input_summary=truncate(user),
+                    output={"error": str(e)[:200],
+                            "fallback_score": sentinel_score},
+                    cost_usd=0.0,
+                    latency_ms=int((time.perf_counter() - started) * 1000),
+                    error=str(e)[:300],
+                )
+            ],
+        }
+
+    try:
+        parsed = _parse_json_loose(result.text)
+    except Exception as e:
+        logger.warning(f"persona_critic JSON parse failed: {e}")
+        parsed = {
+            "persona_loaded": True,
+            "persona_alignment_score": 60,
+            "banned_keyword_hits": banned_hits,
+            "required_keyword_coverage": required_cov,
+            "specific_fixes": [],
+            "_parse_failed": str(e)[:200],
+        }
+
+    # Belt-and-suspenders: if LLM somehow missed pure-code banned hits,
+    # union them in.
+    llm_banned = parsed.get("banned_keyword_hits") or []
+    llm_banned_kws = {b.get("keyword", "").lower() for b in llm_banned if isinstance(b, dict)}
+    for hit in banned_hits:
+        if hit["keyword"].lower() not in llm_banned_kws:
+            llm_banned.append({"keyword": hit["keyword"], "where_found": "(regex)"})
+    parsed["banned_keyword_hits"] = llm_banned
+
+    return {
+        "persona_critique": parsed,
+        "cost_usd_total": float(result.cost_usd or 0.0),
+        "latency_ms_total": int(result.latency_ms or 0),
+        "transcript": [
+            make_turn(
+                node="persona_critic",
+                iteration=iteration,
+                provider=result.provider,
+                model=result.model,
+                input_summary=truncate(user),
+                output={
+                    "persona_alignment_score": parsed.get("persona_alignment_score"),
+                    "n_banned_hits": len(llm_banned),
+                    "required_ratio": (parsed.get("required_keyword_coverage") or {}).get("ratio"),
+                    "failure_pattern_matches": parsed.get("failure_pattern_matches"),
+                    "success_pattern_matches": parsed.get("success_pattern_matches"),
+                },
+                cost_usd=result.cost_usd,
+                latency_ms=result.latency_ms,
+            )
+        ],
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # Node 8 — merge_critique (pure code)
 # ═════════════════════════════════════════════════════════════════════════
 def _norm_keyword(kw: str) -> str:
@@ -709,15 +1014,23 @@ def _norm_keyword(kw: str) -> str:
 
 async def merge_critique_node(state: ResumeState) -> dict:
     """
-    Merge critic_a + critic_b into one critique:
-      - ats_score   = min(a, b)             — be strict
-      - missing_keywords = union, deduped
-      - specific_fixes   = union, deduped (loose token-set similarity)
-      - parseability_issues = union
-      - quantification_rate = min(a, b)
+    Merge critic_a + critic_b + persona_critique into one critique:
+      - ats_score              = min(a, b)        — be strict
+      - persona_score          = persona_critique.persona_alignment_score
+      - missing_keywords       = union(ATS critics) + persona.required.missing
+      - specific_fixes         = union(all three) — persona fixes prepended
+                                  (banned-keyword fixes are P0 — recruiter
+                                  rejects the resume in the 6-sec skim)
+      - parseability_issues    = union(ATS critics)
+      - quantification_rate    = min(a, b)
+      - persona_banned_hits    = persona_critique.banned_keyword_hits
+                                  (surfaced separately so the orchestrator
+                                  can short-circuit on banned-keyword
+                                  violations even if ATS score is high)
     """
     a = state.get("critic_a") or {}
     b = state.get("critic_b") or {}
+    p = state.get("persona_critique") or {}
 
     score_a = a.get("ats_score") or 0
     score_b = b.get("ats_score") or 0
@@ -730,18 +1043,36 @@ async def merge_critique_node(state: ResumeState) -> dict:
     else:
         merged_score = min(score_a, score_b)
 
+    persona_score = int(p.get("persona_alignment_score") or 0)
+    persona_loaded = bool(p.get("persona_loaded"))
+    banned_hits = p.get("banned_keyword_hits") or []
+
+    # 2026-05-12: persona-shaped missing keywords flow into the same
+    # `missing_keywords` bucket the writer reads, so it picks them up on
+    # the next iteration without separate plumbing.
+    req_cov = p.get("required_keyword_coverage") or {}
+    persona_missing_required = [
+        f"{kw} (persona-required)" for kw in (req_cov.get("missing") or [])[:8]
+    ]
+
     missing = list({
         _norm_keyword(k)
-        for k in (a.get("missing_keywords", []) + b.get("missing_keywords", []))
+        for k in (
+            a.get("missing_keywords", [])
+            + b.get("missing_keywords", [])
+            + persona_missing_required
+        )
         if k
     })
 
-    # Dedupe specific_fixes by exact match first; tokenset overlap dedup is a TODO
+    # Persona fixes prepended — banned-keyword violations are P0 (recruiter
+    # rejects the resume in 6 seconds). Then ATS critics' fixes.
+    persona_fixes = list(p.get("specific_fixes") or [])
     fixes_a = a.get("specific_fixes", []) or []
     fixes_b = b.get("specific_fixes", []) or []
     seen: set[str] = set()
     fixes: list[str] = []
-    for f in fixes_a + fixes_b:
+    for f in persona_fixes + fixes_a + fixes_b:
         key = (f or "").strip().lower()[:120]
         if key and key not in seen:
             seen.add(key)
@@ -757,6 +1088,9 @@ async def merge_critique_node(state: ResumeState) -> dict:
 
     merged = {
         "ats_score": merged_score,
+        "persona_score": persona_score,
+        "persona_loaded": persona_loaded,
+        "persona_banned_hits": banned_hits,
         "missing_keywords": missing,
         "specific_fixes": fixes,
         "parseability_issues": parseability,
@@ -773,6 +1107,9 @@ async def merge_critique_node(state: ResumeState) -> dict:
                 iteration=state.get("iteration", 0),
                 output={
                     "merged_score": merged_score,
+                    "persona_score": persona_score,
+                    "persona_loaded": persona_loaded,
+                    "n_banned_hits": len(banned_hits),
                     "n_missing_keywords": len(missing),
                     "n_specific_fixes": len(fixes),
                     "score_a": score_a,
@@ -789,10 +1126,13 @@ async def merge_critique_node(state: ResumeState) -> dict:
 ORCHESTRATOR_SYSTEM = """You are a debate moderator.
 
 Decide whether the resume is converged enough to send to the polisher.
-Convergence rules:
-- merged ATS score >= 95 AND <= 2 outstanding specific_fixes  → converged
-- iteration >= max_iterations                                  → forced converge (exhausted)
-- otherwise                                                    → loop back to writer with focused brief
+Convergence rules (ALL must hold for converge):
+- merged ATS score >= target AND <= 2 outstanding specific_fixes
+- persona_alignment_score >= 80 (when persona_loaded=true)
+- persona_banned_hits is EMPTY (banned keywords are P0 — never converge
+  while a banned company term is still in the draft)
+- iteration >= max_iterations  → forced converge (exhausted) regardless
+- otherwise                    → loop back to writer with focused brief
 
 Output strict JSON:
 {
@@ -876,10 +1216,21 @@ Decide. Output strict JSON only."""
     converged = bool(decision.get("converged", False))
     score = (merged or {}).get("ats_score", 0) or 0
     fixes = len((merged or {}).get("specific_fixes", []))
+    persona_score = int((merged or {}).get("persona_score") or 0)
+    persona_loaded = bool((merged or {}).get("persona_loaded"))
+    n_banned = len((merged or {}).get("persona_banned_hits") or [])
+
+    # 2026-05-12: persona_critic gates the converge decision now.
+    # Banned-keyword hits are P0 — recruiter rejects in the 6-sec skim
+    # so we never converge while a banned company term is still in the
+    # draft. If persona is loaded, persona_score must be >= 80 too.
     if score >= settings.g2_target_ats_score and fixes <= 2:
-        converged = True
+        if persona_loaded and (persona_score < 80 or n_banned > 0):
+            converged = False  # ATS happy but persona disagrees — keep iterating
+        else:
+            converged = True
     if iteration >= settings.g2_max_iterations:
-        converged = True
+        converged = True  # exhaustion overrides persona disagreement
 
     # ── Phase 1.11: post-LLM cost-cap check ────────────────────────────
     # Account for the orchestrator's own cost (just incurred) when deciding.

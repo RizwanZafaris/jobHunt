@@ -52,7 +52,11 @@ class ResumeState(TypedDict, total=False):
     current_draft: str              # Writer (Claude Opus 4.5)
     critic_a: dict                  # ATS Critic A (DeepSeek-R1)
     critic_b: dict                  # ATS Critic B (Kimi K2)
-    merged_critique: dict           # union(A, B), strictest score, deduped fixes
+    persona_critique: dict          # Persona Critic (Sonnet 4.6) — does the draft
+                                    # respect THIS company's banned / required /
+                                    # success / failure-pattern bank? 2026-05-12.
+    merged_critique: dict           # union(A, B, persona), strictest score,
+                                    # deduped fixes
 
     # ─── Final output ───────────────────────────────────────────────────
     final_resume_md: str
