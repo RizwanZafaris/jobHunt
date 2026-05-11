@@ -32,6 +32,15 @@ requests>=2.32.0
 python-docx>=1.2.0
 reportlab>=4.0.0
 jinja2>=3.1.0
+# 2026-05-12: markdown→PDF on-demand render for /workspace/{job_id}/resume.pdf.
+# Pure-Python pipeline: `markdown` to parse MD, reportlab (already pinned
+# above) to render via platypus Flowables. We deliberately do NOT use
+# xhtml2pdf or weasyprint — both have transitive pycairo / Pango system-lib
+# dependencies that would force Dockerfile changes. Reportlab + simple
+# markdown parsing gets us clean, recruiter-shippable PDFs with zero infra
+# churn. Surfaced when v2 produced a resume_md but the user clicked
+# "Download PDF" and got 501.
+markdown>=3.5
 
 # Data
 pyyaml>=6.0.0

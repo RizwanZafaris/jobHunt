@@ -49,7 +49,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import PlainTextResponse, RedirectResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from agents.referral_graph import (
@@ -846,33 +846,288 @@ def download_resume(
         )
 
     if fmt_norm == "pdf":
+        # First preference: a pre-rendered PDF in storage.
         url = build.get("resume_pdf_url")
         if url:
             return RedirectResponse(url=url, status_code=302)
-        raise HTTPException(
-            status_code=501,
-            detail={
-                "code": "pdf_render_not_implemented",
-                "message": (
-                    "PDF rendering from markdown is wired in the next session. "
-                    "Until then PDF is only available if the G2 build emitted a "
-                    "Storage URL for it."
-                ),
-            },
+
+        # 2026-05-12: on-demand render. Until today this branch returned 501,
+        # which broke the "Download PDF" button for every build that didn't
+        # emit a pre-rendered PDF (which is most of them — G2 export hardcodes
+        # resume_pdf_url=None at g2_nodes.py:1148 because pandoc/LaTeX isn't
+        # installed in the slim Dockerfile). We now render markdown → PDF
+        # synchronously and stream the bytes back. This means user edits
+        # (user_edited_md) flow through to PDF without re-running G2.
+        md_source = build.get("user_edited_md") or build.get("resume_md") or ""
+        if not md_source:
+            raise HTTPException(status_code=404, detail="resume_markdown_empty")
+        try:
+            pdf_bytes = _render_resume_md_to_pdf(md_source)
+        except Exception as e:
+            logger.exception("on-demand PDF render failed for job_id=%s", job_id)
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "code": "pdf_render_failed",
+                    "message": f"server-side PDF render failed: {type(e).__name__}",
+                },
+            )
+        filename = f"resume-{job_id}.pdf"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    # docx
+    # docx — same on-demand pattern as PDF above.
     url = build.get("resume_docx_url")
     if url:
         return RedirectResponse(url=url, status_code=302)
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "code": "docx_render_not_implemented",
-            "message": (
-                "DOCX rendering from markdown is wired in the next session. "
-                "Until then DOCX is only available if the G2 build emitted a "
-                "Storage URL for it."
-            ),
-        },
+    md_source = build.get("user_edited_md") or build.get("resume_md") or ""
+    if not md_source:
+        raise HTTPException(status_code=404, detail="resume_markdown_empty")
+    try:
+        docx_bytes = _render_resume_md_to_docx(md_source)
+    except Exception as e:
+        logger.exception("on-demand DOCX render failed for job_id=%s", job_id)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "docx_render_failed",
+                "message": f"server-side DOCX render failed: {type(e).__name__}",
+            },
+        )
+    filename = f"resume-{job_id}.docx"
+    return Response(
+        content=docx_bytes,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ─── Markdown → PDF / DOCX render helpers ──────────────────────────────────
+#
+# Both renderers are pure-Python (no pandoc, no LaTeX, no system libs beyond
+# what python-docx + xhtml2pdf + Pillow already bring in transitively). They
+# work on the slim Dockerfile we deploy to Railway.
+#
+# Design notes:
+#   * Resumes are small (1-3 pages, mostly headings + bullet lists). We don't
+#     need pixel-perfect output — we need a clean, single-column document that
+#     a recruiter can actually open. xhtml2pdf + python-docx hit that bar.
+#   * On-demand rendering means user edits to `user_edited_md` flow through
+#     to the downloaded artifact without re-running G2. That's the right UX
+#     for "tweak a bullet → download → send" iteration.
+
+def _render_resume_md_to_pdf(md: str) -> bytes:
+    """Markdown → PDF bytes via reportlab platypus (pure-Python pipeline).
+
+    Parses markdown structure (headings, bullet lists, emphasis) and emits
+    flowables onto an A4 page. Deliberately keeps the styling restrained —
+    Helvetica, single column, mild colour palette — so the output reads as
+    a professional resume rather than a styled blog post. Caller wraps
+    Exception → 502 so render failures surface cleanly.
+    """
+    import io
+    import re
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.lib.colors import HexColor
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, HRFlowable,
+        ListFlowable, ListItem,
+    )
+
+    base = getSampleStyleSheet()
+    INK = HexColor("#0f1928")
+    BODY = HexColor("#1d2433")
+    RULE = HexColor("#cfd6e0")
+
+    style_h1 = ParagraphStyle(
+        "RH1", parent=base["Title"], fontName="Helvetica-Bold",
+        fontSize=20, leading=24, textColor=INK,
+        spaceBefore=0, spaceAfter=4, alignment=TA_LEFT,
+    )
+    style_h2 = ParagraphStyle(
+        "RH2", parent=base["Heading2"], fontName="Helvetica-Bold",
+        fontSize=11.5, leading=14, textColor=INK,
+        spaceBefore=10, spaceAfter=4,
+    )
+    style_h3 = ParagraphStyle(
+        "RH3", parent=base["Heading3"], fontName="Helvetica-Bold",
+        fontSize=10.5, leading=13, textColor=INK,
+        spaceBefore=6, spaceAfter=2,
+    )
+    style_body = ParagraphStyle(
+        "RBody", parent=base["BodyText"], fontName="Helvetica",
+        fontSize=10, leading=13.5, textColor=BODY,
+        spaceBefore=2, spaceAfter=2,
+    )
+    style_bullet = ParagraphStyle(
+        "RBullet", parent=style_body, leftIndent=0, bulletIndent=0,
+        spaceBefore=1, spaceAfter=1,
+    )
+
+    def _inline(text: str) -> str:
+        """Convert markdown **bold** / *italic* to reportlab mini-HTML.
+
+        Reportlab's Paragraph supports <b>, <i>, <font color> tags. We
+        escape `&`/`<`/`>` first so a job description containing "<5%"
+        doesn't blow up the parser.
+        """
+        t = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # **bold**
+        t = re.sub(r"\*\*([^*]+)\*\*", r"<b>\1</b>", t)
+        # *italic* (after bold so ** wasn't a single *)
+        t = re.sub(r"(?<![*\w])\*([^*\n]+?)\*(?!\w)", r"<i>\1</i>", t)
+        # Strip stray markdown link syntax [text](url) → text (url)
+        t = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", t)
+        return t
+
+    flow: list = []
+    buf_lines: list[str] = []
+
+    def _flush_paragraph() -> None:
+        if buf_lines:
+            joined = " ".join(line.strip() for line in buf_lines if line.strip())
+            if joined:
+                flow.append(Paragraph(_inline(joined), style_body))
+            buf_lines.clear()
+
+    def _flush_list(items: list[str]) -> None:
+        if not items:
+            return
+        bullets = [
+            ListItem(
+                Paragraph(_inline(i), style_bullet),
+                leftIndent=10, bulletColor=INK,
+            )
+            for i in items
+        ]
+        flow.append(
+            ListFlowable(
+                bullets,
+                bulletType="bullet",
+                bulletFontName="Helvetica",
+                start="•",
+                leftIndent=14,
+                bulletFontSize=9,
+                spaceBefore=2, spaceAfter=6,
+            )
+        )
+
+    pending_list: list[str] = []
+    for raw in (md or "").splitlines():
+        line = raw.rstrip()
+        bullet_match = re.match(r"^\s*[-*+]\s+(.*)$", line)
+        if bullet_match:
+            _flush_paragraph()
+            pending_list.append(bullet_match.group(1))
+            continue
+        # Anything that's not a bullet flushes the pending list.
+        if pending_list:
+            _flush_list(pending_list)
+            pending_list = []
+        if not line.strip():
+            _flush_paragraph()
+            continue
+        if line.startswith("### "):
+            _flush_paragraph()
+            flow.append(Paragraph(_inline(line[4:].strip()), style_h3))
+        elif line.startswith("## "):
+            _flush_paragraph()
+            flow.append(Paragraph(_inline(line[3:].strip()), style_h2))
+            flow.append(HRFlowable(width="100%", thickness=0.5, color=RULE,
+                                   spaceBefore=1, spaceAfter=4))
+        elif line.startswith("# "):
+            _flush_paragraph()
+            flow.append(Paragraph(_inline(line[2:].strip()), style_h1))
+        elif line.strip() == "---":
+            _flush_paragraph()
+            flow.append(HRFlowable(width="100%", thickness=0.5, color=RULE,
+                                   spaceBefore=4, spaceAfter=4))
+        else:
+            buf_lines.append(line)
+
+    _flush_list(pending_list)
+    _flush_paragraph()
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title="Resume", author="Job Hunt",
+    )
+    doc.build(flow)
+    return buf.getvalue()
+
+
+def _render_resume_md_to_docx(md: str) -> bytes:
+    """Markdown → DOCX bytes via python-docx (already in requirements.txt).
+
+    Lightweight markdown parsing: headings, bullets, emphasis. Not pandoc-
+    fidelity but produces a clean editable Word document with section breaks
+    a recruiter can paste straight into their ATS.
+    """
+    import io
+    import re
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    style_normal = doc.styles["Normal"]
+    style_normal.font.name = "Helvetica"
+    style_normal.font.size = Pt(10.5)
+
+    def _add_inline(paragraph, text: str) -> None:
+        # Minimal inline-emphasis parse: **bold** and *italic*.
+        # Pattern: split on **bold** then within each chunk on *italic*.
+        for chunk in re.split(r"(\*\*[^*]+\*\*)", text):
+            if not chunk:
+                continue
+            if chunk.startswith("**") and chunk.endswith("**"):
+                r = paragraph.add_run(chunk[2:-2])
+                r.bold = True
+                continue
+            for sub in re.split(r"(\*[^*]+\*)", chunk):
+                if not sub:
+                    continue
+                if sub.startswith("*") and sub.endswith("*"):
+                    r = paragraph.add_run(sub[1:-1])
+                    r.italic = True
+                else:
+                    paragraph.add_run(sub)
+
+    for raw in (md or "").splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            doc.add_paragraph("")
+            continue
+        if line.startswith("### "):
+            p = doc.add_paragraph(); p.style = doc.styles["Heading 3"]
+            _add_inline(p, line[4:].strip())
+        elif line.startswith("## "):
+            p = doc.add_paragraph(); p.style = doc.styles["Heading 2"]
+            _add_inline(p, line[3:].strip())
+        elif line.startswith("# "):
+            p = doc.add_paragraph(); p.style = doc.styles["Heading 1"]
+            _add_inline(p, line[2:].strip())
+        elif re.match(r"^\s*[-*+]\s+", line):
+            p = doc.add_paragraph(style="List Bullet")
+            _add_inline(p, re.sub(r"^\s*[-*+]\s+", "", line))
+        elif line.strip() == "---":
+            # crude separator
+            doc.add_paragraph("")
+        else:
+            p = doc.add_paragraph()
+            _add_inline(p, line)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
