@@ -31,6 +31,37 @@ from db.client import upsert_job, upsert_company, get_company_by_name, get_supab
 
 logger = logging.getLogger(__name__)
 
+
+# ─── JobScout v2 helpers (2026-05-11) ──────────────────────────────────────
+def _v2_discovery_enabled() -> bool:
+    """Feature flag — defaults ON. Set USE_JOBSCOUT_V2_DISCOVERY=0 to disable."""
+    import os
+    return os.environ.get("USE_JOBSCOUT_V2_DISCOVERY", "1") not in ("0", "false", "False", "")
+
+
+def _classify_serper_source(url: str) -> str:
+    """Map a Serper-discovered URL to a discovery_sources tag.
+
+    Used so the validation pipeline can credit cross-source confirmations:
+    a job found via both Serper-ATS and Perplexity gets confidence 90.
+    """
+    if not url:
+        return "serper_unknown"
+    lower = url.lower()
+    if "boards.greenhouse.io" in lower:
+        return "ats_greenhouse"
+    if "jobs.ashbyhq.com" in lower:
+        return "ats_ashby"
+    if "jobs.lever.co" in lower:
+        return "ats_lever"
+    if "smartrecruiters.com" in lower:
+        return "ats_smartrecruiters"
+    if ".myworkdayjobs.com" in lower:
+        return "ats_workday"
+    if "linkedin.com/jobs" in lower:
+        return "linkedin"
+    return "serper_direct"
+
 # ── ATS API endpoints ─────────────────────────────────────────────────────────
 ATS_APIS = {
     "greenhouse": "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
@@ -56,17 +87,16 @@ EXPIRY_SIGNALS = [
     "this position has been closed",
 ]
 
-# Serper queries — updated May 2026, covers Gulf portals + ATS boards
+# Serper queries — JobScout v2 (2026-05-11):
+# Bayt/NaukriGulf/GulfTalent/Indeed dropped — the user's audit found that
+# these portals have a high rate of expired ghost listings (postings stay
+# live for 6+ months after the role is filled), and the signal-to-noise
+# ratio doesn't justify keeping them. LinkedIn is the only generic portal
+# kept among non-ATS sources. The per-target Perplexity discovery layer
+# (see _discover_via_perplexity below) replaces the dropped coverage with
+# a higher-quality, per-company-curated discovery for all 71 targets.
 SERPER_SEARCH_QUERIES = [
-    # Gulf portals — Bayt
-    'site:bayt.com "product manager" OR "head of product" UAE OR Dubai fintech payments 2026',
-    'site:bayt.com "programme manager" OR "PMO" UAE OR "Saudi Arabia" fintech 2026',
-    # NaukriGulf
-    'site:naukrigulf.com "product manager" OR "head of product" Dubai UAE fintech 2026',
-    'site:naukrigulf.com "senior product manager" payments OR fintech OR banking UAE 2026',
-    # GulfTalent
-    'site:gulftalent.com "product manager" OR "head of product" fintech payments UAE 2026',
-    # LinkedIn
+    # LinkedIn (only generic portal kept — best signal in this category)
     'site:linkedin.com/jobs "head of product" OR "chief product officer" Dubai OR "Abu Dhabi" OR Riyadh fintech',
     'site:linkedin.com/jobs "senior product manager" payments fintech UAE OR KSA 2026',
     'site:linkedin.com/jobs "head of product" OR "VP product" fintech London payments 2026',
@@ -77,18 +107,16 @@ SERPER_SEARCH_QUERIES = [
     'site:jobs.ashbyhq.com "product manager" OR "head of product" fintech payments 2026',
     # ATS job boards — Lever
     'site:jobs.lever.co "senior product manager" UAE OR "Middle East" OR London payments 2026',
-    # Indeed Gulf
-    'site:indeed.com "head of product" OR "product director" Dubai UAE fintech 2026',
-    # Direct high-priority company searches
+    # Direct high-priority company searches (catch sites not yet on
+    # target_companies but worth scouting)
     '"head of product" OR "senior product manager" site:tabby.ai',
     '"product manager" OR "head of product" site:wio.io',
     '"product manager" payments site:checkout.com/careers',
     '"product manager" site:airwallex.com/careers',
     '"product manager" payments site:wise.com/jobs',
     '"product manager" fintech site:revolut.com/careers',
-    # KSA-specific
+    # KSA-specific (no portal mention)
     '"product manager" OR "head of product" Riyadh "Saudi Arabia" fintech payments 2026',
-    'site:bayt.com "product manager" fintech "Saudi Arabia" OR Riyadh 2026',
 ]
 
 # Ashby GraphQL query body
@@ -166,13 +194,27 @@ class JobScoutAgent(BaseAgent):
 
         # 1. ATS API direct scans (portals.yml-driven, priority-aware)
         ats_jobs = await self._scan_ats_portals()
+        for j in ats_jobs:
+            j.setdefault("_discovery_source", "ats_" + (j.get("ats_type") or "unknown"))
         all_jobs.extend(ats_jobs)
         self.log(f"   ATS APIs: {len(ats_jobs)} jobs found")
 
         # 2. Serper web search
         serper_jobs = await self._search_serper(target_company, target_role)
+        for j in serper_jobs:
+            # Classify by URL host so we know which sources cleared validation
+            j.setdefault("_discovery_source", _classify_serper_source(j.get("url", "")))
         all_jobs.extend(serper_jobs)
         self.log(f"   Serper: {len(serper_jobs)} jobs found")
+
+        # 2.5. JobScout v2 — per-target Perplexity discovery (covers the 65
+        # currently-under-served targets that have no explicit Serper query)
+        if _v2_discovery_enabled():
+            perplexity_jobs = await self._discover_via_perplexity(target_company)
+            for j in perplexity_jobs:
+                j.setdefault("_discovery_source", "perplexity_sonar")
+            all_jobs.extend(perplexity_jobs)
+            self.log(f"   Perplexity: {len(perplexity_jobs)} candidates discovered")
 
         # 3. Deduplicate — by URL first, then by company+title+location hash
         unique_jobs = self._deduplicate(all_jobs)
@@ -182,9 +224,15 @@ class JobScoutAgent(BaseAgent):
         fresh_jobs = await self._filter_already_known(unique_jobs)
         self.log(f"   Fresh (not already in DB): {len(fresh_jobs)}")
 
-        # 5. Validate URLs — detect expired postings
-        valid_jobs = await self._validate_job_urls(fresh_jobs)
-        self.log(f"   Valid (not expired): {len(valid_jobs)}")
+        # 5. JobScout v2 — run the 7 hallucination/quality safeguards on every
+        # candidate. confidence_score < 50 → DROP (per Q1=A decision).
+        # Falls back to legacy URL validation when v2 disabled.
+        if _v2_discovery_enabled():
+            valid_jobs = await self._validate_with_safeguards(fresh_jobs)
+            self.log(f"   Validated (v2 safeguards passed): {len(valid_jobs)}")
+        else:
+            valid_jobs = await self._validate_job_urls(fresh_jobs)
+            self.log(f"   Valid (legacy v1 URL check): {len(valid_jobs)}")
 
         # 6. GPT-4.1 pre-scoring
         scored_jobs = await self._score_jobs_batch(valid_jobs)
@@ -596,11 +644,185 @@ class JobScoutAgent(BaseAgent):
 
     # ── Expiry Validation ─────────────────────────────────────────────────────
 
+    # ── JobScout v2 — per-target Perplexity discovery + 7-safeguard validation ──
+    async def _discover_via_perplexity(
+        self,
+        target_company: Optional[str] = None,
+    ) -> list[dict]:
+        """Per-target curated discovery via Perplexity Sonar.
+
+        Iterates target_companies (or just the one passed in target_company)
+        and for each calls perplexity_search.discover_jobs. Returns a flat
+        list of candidate job dicts shaped like everything else in this
+        agent (url, title, company, ats_type, source).
+
+        Concurrency: 3 (Perplexity's default rate limit).
+        Cost: ~$0.005 × N companies. For 71 targets ≈ $0.35/run.
+
+        Caller is responsible for running validation on the output via
+        _validate_with_safeguards (which is what run() does).
+        """
+        try:
+            from agents.perplexity_search import discover_jobs as _discover
+        except ImportError:
+            logger.warning("perplexity_search.discover_jobs not available; skipping v2 discovery")
+            return []
+
+        # Pull target companies from the DB. If a target_company filter is
+        # passed (single-company run), restrict to that one.
+        db = get_supabase()
+        try:
+            q = db.table("companies").select("id, name, domain, careers_url").eq("is_target", True)
+            if target_company:
+                q = q.ilike("name", f"%{target_company}%")
+            rows = q.execute().data or []
+        except Exception as e:
+            logger.exception("_discover_via_perplexity: failed to load targets: %s", e)
+            return []
+
+        if not rows:
+            return []
+
+        sem = asyncio.Semaphore(3)
+        all_candidates: list[dict] = []
+        total_cost = 0.0
+
+        async def _one(company: dict) -> tuple[str, list[dict], float]:
+            name = company.get("name") or ""
+            domain = company.get("domain") or ""
+            async with sem:
+                try:
+                    res = await _discover(name, company_domain=domain or None)
+                    return name, res.get("candidates") or [], float(res.get("cost_usd") or 0.0)
+                except Exception as e:
+                    logger.warning("Perplexity discovery failed for %s: %s", name, e)
+                    return name, [], 0.0
+
+        results = await asyncio.gather(*(_one(c) for c in rows))
+        for name, cands, cost in results:
+            total_cost += cost
+            for c in cands:
+                url = c.get("url") or ""
+                title = c.get("title") or f"{name} — product role"
+                if not url:
+                    continue
+                all_candidates.append({
+                    "title": title,
+                    "company": name,
+                    "url": url,
+                    "location": "",
+                    "source": "perplexity",
+                    "ats_type": "",
+                    "discovered_at": datetime.utcnow().isoformat(),
+                    "_published_at": c.get("published_at"),
+                })
+
+        self.log(f"   Perplexity per-target discovery: {len(all_candidates)} candidates · ${total_cost:.4f}")
+        return all_candidates
+
+    async def _validate_with_safeguards(self, jobs: list[dict]) -> list[dict]:
+        """Run the 7 hallucination/quality safeguards from agents.job_validation.
+
+        Drops candidates that fail validation (Q1=A: drop, don't insert).
+        Stamps surviving candidates with `confidence_score`, `freshness`,
+        and `discovery_sources`. URLs that resolved through redirects get
+        normalised to the final URL.
+        """
+        try:
+            from agents.job_validation import (
+                DiscoveredJob,
+                validate_candidate,
+            )
+        except ImportError:
+            logger.warning("job_validation not available; falling back to legacy URL check")
+            return await self._validate_job_urls(jobs)
+
+        # Build a map of company_name → domains (for safeguard #2 whitelist).
+        db = get_supabase()
+        try:
+            company_rows = db.table("companies").select("name, domain").execute().data or []
+            domains_by_name: dict[str, list[str]] = {}
+            for r in company_rows:
+                name = (r.get("name") or "").lower()
+                domain = r.get("domain") or ""
+                if name and domain:
+                    domains_by_name.setdefault(name, []).append(domain)
+        except Exception as e:
+            logger.exception("Failed to load company domains for whitelist: %s", e)
+            domains_by_name = {}
+
+        sem = asyncio.Semaphore(8)
+        validated: list[dict] = []
+        dropped_counts: dict[str, int] = {}
+        closed_urls: list[str] = []
+
+        async def _one(job: dict) -> Optional[dict]:
+            async with sem:
+                url = job.get("url") or ""
+                if not url or url.startswith("manual-"):
+                    # Manually-added jobs bypass validation
+                    return job
+                company_name = job.get("company") or ""
+                source = job.get("_discovery_source") or "serper_unknown"
+
+                candidate = DiscoveredJob(
+                    url=url,
+                    title=job.get("title") or "",
+                    company_name=company_name,
+                    source=source,
+                    published_at=job.get("_published_at"),
+                    snippet=None,
+                    raw=job,
+                )
+                domains = domains_by_name.get(company_name.lower(), [])
+                try:
+                    result = await validate_candidate(
+                        candidate,
+                        target_company_domains=domains,
+                    )
+                except Exception as e:
+                    logger.exception("validate_candidate threw for %s: %s", url, e)
+                    return None
+
+                if result.closed:
+                    closed_urls.append(result.candidate.url)
+                    return None
+                if result.rejected_reason:
+                    dropped_counts[result.rejected_reason] = (
+                        dropped_counts.get(result.rejected_reason, 0) + 1
+                    )
+                    return None
+
+                v = result.validated
+                if not v:
+                    return None
+                # Stamp the job dict with validation outputs so upsert_job
+                # can persist them (writes through to migration-011 columns).
+                job["url"] = v.url
+                job["confidence_score"] = v.confidence_score
+                job["discovery_sources"] = v.discovery_sources
+                job["freshness"] = v.freshness
+                job["validated_at"] = v.validated_at.isoformat()
+                return job
+
+        results = await asyncio.gather(*(_one(j) for j in jobs))
+        validated = [r for r in results if r is not None]
+
+        if dropped_counts:
+            self.log(f"   Validation dropped: {dict(dropped_counts)}")
+        if closed_urls:
+            self.log(f"   Detected closed postings: {len(closed_urls)}")
+
+        return validated
+
     async def _validate_job_urls(self, jobs: list[dict]) -> list[dict]:
         """
         Check each job URL to detect expired postings.
         Uses HTTP status + content-based expiry signal detection.
         Returns only valid (non-expired) jobs.
+
+        Legacy v1 validator — kept as fallback when USE_JOBSCOUT_V2_DISCOVERY
+        is disabled. v2 uses _validate_with_safeguards instead.
         """
         valid = []
         expired_urls = []
