@@ -189,9 +189,10 @@ Output STRICT JSON only:
         agent_name="g3.behavioral_predictor",
         json_response=True,
     )
-    questions = _safe_parse_question_list(result.text, "behavioral_predictor")
+    questions, warning = _safe_parse_question_list(result.text, "behavioral_predictor")
     return {
         "behavioral_questions": questions,
+        "predictor_warnings": [warning] if warning else [],
         "cost_usd_total": result.cost_usd,
         "latency_ms_total": result.latency_ms,
         "transcript": [
@@ -200,7 +201,7 @@ Output STRICT JSON only:
                 provider=result.provider,
                 model=result.model,
                 input_summary=truncate(user),
-                output={"n_questions": len(questions)},
+                output={"n_questions": len(questions), "warning": warning},
                 cost_usd=result.cost_usd,
                 latency_ms=result.latency_ms,
             )
@@ -273,9 +274,10 @@ Output STRICT JSON only:
         tools=[{"type": "google_search"}],
         agent_name="g3.technical_predictor",
     )
-    questions = _safe_parse_question_list(result.text, "technical_predictor")
+    questions, warning = _safe_parse_question_list(result.text, "technical_predictor")
     return {
         "technical_questions": questions,
+        "predictor_warnings": [warning] if warning else [],
         "cost_usd_total": result.cost_usd,
         "latency_ms_total": result.latency_ms,
         "transcript": [
@@ -354,9 +356,10 @@ Output STRICT JSON only:
         agent_name="g3.domain_predictor",
         json_response=True,
     )
-    questions = _safe_parse_question_list(result.text, "domain_predictor")
+    questions, warning = _safe_parse_question_list(result.text, "domain_predictor")
     return {
         "domain_questions": questions,
+        "predictor_warnings": [warning] if warning else [],
         "cost_usd_total": result.cost_usd,
         "latency_ms_total": result.latency_ms,
         "transcript": [
@@ -401,28 +404,40 @@ def _jaccard(a: set[str], b: set[str]) -> float:
     return inter / union if union else 0.0
 
 
-def _safe_parse_question_list(text: str, node_name: str) -> list[dict]:
+def _safe_parse_question_list(text: str, node_name: str) -> tuple[list[dict], Optional[str]]:
     """
     Extract the `questions` list from a router response. Tolerates both
-    `{"questions": [...]}` and bare-array `[...]` shapes. Returns [] on
-    parse failure rather than crashing the whole graph.
+    `{"questions": [...]}` and bare-array `[...]` shapes.
+
+    Returns (questions, warning):
+      - questions: list of normalized {question, competency, importance} dicts
+        (may be empty on failure)
+      - warning: None on success; "{node_name}:{reason}" string on failure
+        so the caller can append it to state["predictor_warnings"] and the
+        prep pack can render a "⚠️ behavioral predictor failed" banner.
+
+    Prior to 2026-05-12 (G3-3) this returned `[]` on failure with no signal,
+    causing silent quality regressions (13/20 question prep packs).
     """
     if not text:
-        return []
+        return [], f"{node_name}:empty_response"
     try:
         parsed = _parse_json_loose(text)
     except Exception as e:
-        logger.warning(f"{node_name} JSON parse failed: {e}")
-        return []
+        msg = f"{node_name}:json_parse_failed:{str(e)[:120]}"
+        logger.warning(msg)
+        return [], msg
+
     if isinstance(parsed, dict) and "questions" in parsed:
         items = parsed["questions"]
     elif isinstance(parsed, list):
         items = parsed
     else:
-        items = []
+        return [], f"{node_name}:unexpected_shape:{type(parsed).__name__}"
+
     out: list[dict] = []
     if not isinstance(items, list):
-        return out
+        return out, f"{node_name}:questions_not_list"
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -434,7 +449,11 @@ def _safe_parse_question_list(text: str, node_name: str) -> list[dict]:
             "competency": (item.get("competency") or "").strip() or "general",
             "importance": int(item.get("importance") or 3),
         })
-    return out
+    # An empty list after a successful parse is still a quality signal —
+    # surface it so the user knows.
+    if not out:
+        return out, f"{node_name}:zero_questions_parsed"
+    return out, None
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -760,9 +779,11 @@ async def mock_interview_loop_node(state: InterviewPrepState) -> dict:
     transcript: list = []
     mock_answer = ""
     score = 0
+    prev_score = 0  # 2026-05-12 (G3-2): plateau early-stop
     feedback: list[str] = []
     iteration = 0
     cost_capped = False
+    plateau_break = False
     cost_total_local = 0.0
     latency_total_local = 0
 
@@ -890,6 +911,20 @@ Score and suggest improvements. Strict JSON only.
             )
             break
 
+        # 2026-05-12 (G3-2): plateau early-stop. If the improvement between
+        # iterations is <5 and we're already at "ok" quality (≥70), don't
+        # spend another Opus+DeepSeek round on noise. Saves ~$0.10/affected
+        # prep on the ~30% of preps that plateau.
+        # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §G3-2.
+        if iteration > 1 and score >= 70 and (score - prev_score) < 5:
+            logger.info(
+                f"G3 mock_loop: plateau early-stop at iter {iteration} "
+                f"(score {score}, Δ {score - prev_score} < 5)"
+            )
+            plateau_break = True
+            break
+        prev_score = score
+
     converged = score >= target_score
     return {
         "mock_target_question": target,
@@ -900,6 +935,7 @@ Score and suggest improvements. Strict JSON only.
         "iteration": iteration,
         "converged": converged,
         "cost_capped": cost_capped,
+        "plateau_break": plateau_break,
         "cost_usd_total": round(cost_total_local, 6),
         "latency_ms_total": latency_total_local,
         "transcript": transcript,
@@ -962,6 +998,35 @@ async def compile_prep_pack_node(state: InterviewPrepState) -> dict:
     lines.append("")
     lines.append(f"_Generated by G3 Interview Prep Graph._")
     lines.append("")
+
+    # 2026-05-12 (G3-7 + G3-3): surface partial-prep signals at the top so
+    # the user knows when to re-run with a higher cap or when a predictor
+    # silently emitted an empty list. Previously these were invisible.
+    cost_capped = bool(state.get("cost_capped"))
+    plateau_break = bool(state.get("plateau_break"))
+    mock_score = int(state.get("mock_critic_score") or 0)
+    warnings_list = state.get("predictor_warnings") or []
+    if cost_capped or warnings_list:
+        lines.append("## ⚠️ Prep notes")
+        if cost_capped:
+            target_score_for_banner = int(get_settings().g3_target_answer_score or 80)
+            lines.append(
+                f"> This prep hit the cost cap before mock answer fully "
+                f"converged. Mock score reached {mock_score}/100 "
+                f"(target {target_score_for_banner}). Re-run with a "
+                f"higher --max-cost-usd to push for a stronger answer."
+            )
+        if plateau_break:
+            lines.append(
+                "> Mock-answer rehearsal stopped early on a quality plateau "
+                "(consecutive iterations within 5 points). The final answer "
+                "is the best of the rehearsed drafts."
+            )
+        if warnings_list:
+            lines.append("> Predictor warnings — some question categories may be incomplete:")
+            for w in warnings_list:
+                lines.append(f">   - `{w}`")
+        lines.append("")
 
     # Top 20 questions grouped by type
     lines.append("## Top 20 Likely Questions")

@@ -420,8 +420,19 @@ Produce a tailored resume in clean markdown:
 - Skills: grouped, prioritized by JD relevance
 - Education / Certifications
 
-NEVER fabricate. If the master resume doesn't support a claim, don't make it.
-NEVER use first person. NEVER use "responsible for".
+ANTI-AI-TELL DISCIPLINE (these are why recruiters spot AI-written resumes):
+- NEVER use these words/phrases: "delve", "tapestry", "unpack", "journey",
+  "at the end of the day", "a testament to", "in today's fast-paced world",
+  "navigate the complexities", "in this digital age", "spearheaded",
+  "leveraged" (use "used"), "synergised", "ideated", "championed",
+  "passionate about", "driven", "dynamic".
+- NEVER use em-dash strings to look thoughtful. Avoid em-dashes entirely
+  inside bullets — recruiters scanning quickly read them as filler.
+- NEVER write hype openers in the Summary ("Results-driven product leader
+  with a passion for…"). Lead with a specific number, a specific company,
+  or a specific shipped outcome.
+- NEVER fabricate. If the master resume doesn't support a claim, don't make it.
+- NEVER use first person ("I", "my"). NEVER use "responsible for".
 
 Output ONLY the resume markdown. No preamble, no commentary."""
 
@@ -995,7 +1006,19 @@ COVER_EMAIL_SYSTEM = """You are an executive recruiter writing a cover email on 
 
 Output ONLY the email body — no subject line, no signature.
 Style: direct, value-first, concrete. Reference one specific company hook from
-the Insider Expert's notes. 4-7 sentences. No buzzwords."""
+the Insider Expert's notes. 4-7 sentences. Length cap 130 words.
+
+ANTI-AI-TELL DISCIPLINE (recruiters spot AI-written cover emails instantly):
+- NEVER use: "delve", "tapestry", "unpack", "journey", "at the end of the day",
+  "a testament to", "in today's fast-paced world", "navigate the complexities",
+  "passionate about", "thrilled to", "excited to apply".
+- NEVER open with "I hope this finds you well" or "I'm reaching out".
+  Open with the SPECIFIC company hook in the first sentence.
+- NEVER stack em-dashes — one max per email, none preferred.
+- NEVER end with "Looking forward to hearing from you" or "Cheers". End on
+  a specific concrete value claim or a 1-line forward-able teaser.
+- Banked buzzwords from the candidate's persona MUST stay out (see banned
+  list in user message)."""
 
 
 async def cover_email_node(state: ResumeState) -> dict:
