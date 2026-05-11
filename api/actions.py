@@ -169,12 +169,24 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
     db = get_supabase()
 
     # Pull candidate jobs once: open listings, score >= MIN, ordered by score.
+    #
+    # 2026-05-12: tightened to require JobScout v2 validation. Legacy v1
+    # rows (confidence_score IS NULL) and validation-failed candidates
+    # (validation_failed IS NOT NULL) are excluded at the query layer.
+    # Migration 011 added the columns; the companion SQL soft-closed
+    # legacy rows on the same day, so this filter and the
+    # posting_closed_at filter form defence-in-depth.
+    # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §C.
     job_rows = (
         db.table("jobs")
-        .select("id, title, company, match_score, resume_generated_at, posting_closed_at, validation_status")
+        .select("id, title, company, match_score, resume_generated_at, posting_closed_at, validation_status, confidence_score, validation_failed")
         .eq("user_id", str(user_id))
         .is_("posting_closed_at", None)
+        .is_("validation_failed", None)
+        .not_.is_("confidence_score", None)
+        .gte("confidence_score", 50)
         .gte("match_score", MIN_SCORE_THRESHOLD)
+        .order("confidence_score", desc=True)
         .order("match_score", desc=True)
         .limit(50)
         .execute()
