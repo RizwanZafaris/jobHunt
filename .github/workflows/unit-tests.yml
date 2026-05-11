@@ -1,0 +1,54 @@
+# Runs the Python unit-test suite on every PR and on pushes to main.
+#
+# Why this exists: prior to 2026-05, the only CI on this repo was
+# eval-regression.yml (gated on prompt/graph paths) and config-check.yml
+# (gated on .env.example). `pytest tests/` was never invoked, so test
+# regressions could land on main unnoticed. This workflow closes that gap.
+#
+# Triggers on Python-affecting paths only — dashboard-only PRs skip this.
+
+name: unit-tests
+
+on:
+  pull_request:
+    paths:
+      - 'agents/**'
+      - 'resume_agents/**'
+      - 'interview_agents/**'
+      - 'api/**'
+      - 'db/**'
+      - 'config/**'
+      - 'evals/**'
+      - 'tests/**'
+      - 'pipeline.py'
+      - 'main.py'
+      - 'requirements.txt'
+      - '.python-version'
+      - '.github/workflows/unit-tests.yml'
+  push:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: pytest tests/
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: '.python-version'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        # No --cov gate yet (covered by a follow-up sprint). Plain pytest with
+        # short tracebacks keeps CI logs readable.
+        run: |
+          python -m pytest tests/ -v --tb=short
