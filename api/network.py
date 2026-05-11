@@ -24,7 +24,7 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
 from agents.referral_graph import (
@@ -35,6 +35,7 @@ from agents.referral_graph import (
     ReferralPath,
 )
 from api.context import get_current_user
+from api.rate_limits import RATE_LIMITS, limiter
 from api.users import User
 from db.client import get_supabase
 
@@ -181,7 +182,9 @@ def create_person(
 
 # ── /network/import/linkedin-csv ──────────────────────────────────────────
 @router.post("/import/linkedin-csv", response_model=ImportSummary)
+@limiter.limit(RATE_LIMITS["data_import"])
 async def import_linkedin_csv(
+    request: Request,
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
 ) -> ImportSummary:
