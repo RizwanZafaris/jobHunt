@@ -340,6 +340,86 @@ based on common pitfalls — don't fabricate company-specific patterns from
 no data."""
 
 
+# Audit §5.4 — meta-critic transcript trim.
+#
+# The previous behaviour json.dumps()'d up to 50,000 chars of raw past-
+# transcripts into Gemini's context every iteration. That blob contained
+# full input_summary + output payloads for every turn of every prior build —
+# huge surface, mostly irrelevant for the question this node actually asks
+# ("have past builds for THIS company shown recurring failure patterns?").
+#
+# We now summarise each past build into compact (iteration, node, model,
+# score) tuples plus high-signal fields (polisher_score, n_fabrications,
+# top critic specific_fixes). Capped to the last 3 builds (was effectively
+# bounded by settings.g2_meta_critic_lookback=5). Raw transcripts remain
+# queryable via load_past_transcripts for one-off offline analysis; the
+# meta-critic LLM call itself simply doesn't need all of them.
+_META_CRITIC_HISTORY_CAP = 3
+_META_CRITIC_FIX_PREVIEW = 4          # specific_fixes per turn to forward
+
+
+def _summarize_past_transcript(build: dict) -> dict:
+    """Compress one resume_builds row into a meta-critic-friendly digest.
+
+    Input:  {"source": "resume_builds", "agent_transcript": [...turns...],
+             "polisher_score": int, "finalized_at": str}
+            OR a fallback agent_conversations row (cold-start shape).
+    Output: small dict with `turns: [{i, n, m, s, fix, fab}, ...]` plus
+            top-level polisher_score / finalized_at hints. Keys are short
+            because the digest goes verbatim into the LLM prompt.
+    """
+    source = build.get("source")
+    if source == "agent_conversations":
+        # Cold-start shape — flatten to a single conversational note.
+        return {
+            "source": "agent_conversations",
+            "speaker": build.get("speaker"),
+            "gap_identified": build.get("gap_identified"),
+            "gap_filled": build.get("gap_filled"),
+            "snippet": (build.get("message") or "")[:240],
+        }
+
+    turns = build.get("agent_transcript") or []
+    out_turns: list[dict] = []
+    for t in turns:
+        if not isinstance(t, dict):
+            continue
+        # Extract a score-ish signal where one exists. Different nodes
+        # surface it under different keys in their `output` dict.
+        out = t.get("output") if isinstance(t.get("output"), dict) else {}
+        score = (
+            out.get("ats_score")
+            or out.get("merged_score")
+            or out.get("persona_alignment_score")
+            or out.get("persona_score")
+            or out.get("final_score")
+        )
+        # Forward a tiny sample of the actionable feedback — that's the
+        # field meta_critic actually mines for recurring failure patterns.
+        fixes = out.get("specific_fixes")
+        if isinstance(fixes, list):
+            fixes_preview = [str(f)[:140] for f in fixes[:_META_CRITIC_FIX_PREVIEW]]
+        else:
+            fixes_preview = None
+        fabrications = out.get("fabrications")
+        n_fabs = len(fabrications) if isinstance(fabrications, list) else None
+        out_turns.append({
+            "i": t.get("iteration"),
+            "n": t.get("node"),
+            "m": t.get("model"),
+            "s": score,
+            "fix": fixes_preview,
+            "fab": n_fabs,
+        })
+    return {
+        "source": "resume_builds",
+        "polisher_score": build.get("polisher_score"),
+        "finalized_at": str(build.get("finalized_at") or "")[:19],
+        "n_turns": len(turns),
+        "turns": out_turns,
+    }
+
+
 async def meta_critic_node(state: ResumeState) -> dict:
     settings = get_settings()
     past = state.get("past_transcripts", [])
@@ -361,10 +441,23 @@ async def meta_critic_node(state: ResumeState) -> dict:
             ],
         }
 
-    user = f"""COMPANY: {state['company_name']}
-PAST TRANSCRIPTS (most recent first):
+    # Audit §5.4 — compact summary instead of the 50K-char raw dump. Cap
+    # to the last 3 builds (was up to 5 via g2_meta_critic_lookback). Raw
+    # transcripts remain available via load_past_transcripts for one-off
+    # offline analysis; meta-critic itself doesn't need them.
+    trimmed = past[:_META_CRITIC_HISTORY_CAP]
+    summaries = [_summarize_past_transcript(b) for b in trimmed]
+    history_block = json.dumps(summaries, indent=2, default=str)
 
-{json.dumps(past, indent=2, default=str)[:50000]}
+    user = f"""COMPANY: {state['company_name']}
+PAST BUILD SUMMARIES (most recent first, capped to last {_META_CRITIC_HISTORY_CAP}):
+
+Each prior build is summarised as compact (iteration, node, model, score,
+top specific_fixes, n_fabrications) tuples — full transcript bodies are
+intentionally elided (irrelevant to recurring-pattern detection and add
+~$5-15/mo at current build cadence).
+
+{history_block}
 
 Produce a JSON array of recurring failure patterns to warn the Writer about.
 Output strict JSON: {{"warnings": ["warning 1", "warning 2", ...]}}
@@ -956,7 +1049,102 @@ async def ats_critic_a_node(state: ResumeState) -> dict:
     }
 
 
+# Audit §5.3 — adaptive ATS critic ensemble.
+# Critic B (Kimi K2) costs ~$0.05/iter. Empirically, once critic A
+# (DeepSeek-R1) has returned a high score with no fabrications, B's
+# marginal value drops to ~zero — wasted spend. We skip B when the
+# prior iteration's A signal indicates the draft is already in shape.
+# On iter 0 we still run both to establish a baseline.
+#
+# We read A's score from state, which (because of LangGraph's parallel
+# fan-out from writer → a + b + persona) is the value populated by
+# the PREVIOUS iteration's critic_a. That's the right proxy here —
+# writer was given that critique as input and tightened the draft
+# against it, so this iteration's A is overwhelmingly likely to land
+# at the same score band. When the proxy is wrong (rare regression),
+# the next loop re-engages B because merge → orchestrator routes
+# back to writer with fresh state.
+_ATS_CRITIC_B_SKIP_SCORE_FLOOR = 60
+
+
+def _should_skip_ats_critic_b(state: ResumeState) -> tuple[bool, str]:
+    """Decide whether ats_critic_b can be skipped this turn.
+
+    Returns (skip, reason). The reason is a short tag the transcript
+    records so the cost-savings decision is auditable per build.
+
+    Skip when ALL hold:
+      - iteration > 0                          (baseline iter always runs both)
+      - critic_a from prev iter is present     (we need a signal to defer to)
+      - critic_a has no _provider_error / _parse_error
+      - critic_a.ats_score >= floor (60)
+      - critic_a.fabrications is empty
+    """
+    iteration = state.get("iteration", 0) or 0
+    if iteration <= 0:
+        return False, "iter0_baseline"
+
+    critic_a = state.get("critic_a") or {}
+    if not critic_a:
+        return False, "no_prior_critic_a"
+
+    if critic_a.get("_provider_error") or critic_a.get("_parse_error"):
+        return False, "prior_critic_a_failed"
+
+    score_a = critic_a.get("ats_score") or 0
+    if score_a < _ATS_CRITIC_B_SKIP_SCORE_FLOOR:
+        return False, f"prior_score_a_below_floor:{score_a}"
+
+    fabrications = critic_a.get("fabrications") or []
+    if fabrications:
+        return False, f"prior_critic_a_flagged_fabrications:{len(fabrications)}"
+
+    return True, (
+        f"adaptive_skip:iter={iteration},prior_score_a={score_a},"
+        f"fabrications=0"
+    )
+
+
 async def ats_critic_b_node(state: ResumeState) -> dict:
+    """ATS Critic B (Kimi K2, ~$0.05/iter) — adaptive (audit §5.3).
+
+    On iter 1+ we early-return a sentinel
+    ``{"ats_score": 0, "_skipped_adaptive": True}`` when critic_a's
+    previous-iteration signal indicates the draft is already in shape.
+    merge_critique already treats ats_score=0 from a critic as "defer to
+    the other one" (see merge_critique_node — the ``score_a == 0`` /
+    ``score_b == 0`` branches), so the skip is safe: A's verdict carries
+    the merge. The skip decision is recorded in the transcript so the
+    cost-savings behaviour is observable per build.
+    """
+    iteration = state.get("iteration", 0) or 0
+    skip, reason = _should_skip_ats_critic_b(state)
+    if skip:
+        sentinel = {
+            "ats_score": 0,
+            "missing_keywords": [],
+            "specific_fixes": [],
+            "_skipped_adaptive": True,
+            "_skip_reason": reason,
+        }
+        return {
+            "critic_b": sentinel,
+            "transcript": [
+                make_turn(
+                    node="ats_critic_b",
+                    iteration=iteration,
+                    input_summary=f"adaptive skip ({reason})",
+                    output={
+                        "skipped": True,
+                        "reason": reason,
+                        "saved_usd_approx": 0.05,
+                    },
+                    cost_usd=0.0,
+                    latency_ms=0,
+                )
+            ],
+        }
+
     settings = get_settings()
     parsed, cost, latency, model, _raw = await _run_ats_critic(
         state,
@@ -971,7 +1159,7 @@ async def ats_critic_b_node(state: ResumeState) -> dict:
         "transcript": [
             make_turn(
                 node="ats_critic_b",
-                iteration=state.get("iteration", 0),
+                iteration=iteration,
                 provider="moonshot",
                 model=model,
                 output=parsed,
