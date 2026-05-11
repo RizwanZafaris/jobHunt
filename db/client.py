@@ -185,13 +185,43 @@ _JOBS_COLUMNS = {
     # Workflow v2
     "archetype", "legitimacy_tier", "legitimacy_signals",
     "resume_generated_at", "evaluation_blocks",
+    # 2026-05-12: missing-columns audit while running JobScout v2.
+    # Multi-tenancy (migration 001):
+    "user_id", "org_id",
+    # Job validator + posting lifecycle (migrations 007, 010):
+    "posting_closed_at", "last_validated_at", "validation_status",
+    # JobScout v2 quality (migration 011):
+    "discovery_sources", "confidence_score", "freshness",
+    "validation_failed", "validated_at",
 }
 
 
-def upsert_job(job_data: dict) -> dict:
-    """Insert or update a job record. Filters out keys that aren't real columns."""
+def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
+    """Insert or update a job record. Filters out keys that aren't real columns.
+
+    2026-05-12: surfaced while running JobScout v2 end-to-end — every
+    upsert returned 400 with `null value in column "user_id" of relation
+    "jobs" violates not-null constraint`. Same shape as the
+    upsert_rizwan_profile bug fixed earlier today. The
+    multi-tenancy migration added user_id NOT NULL to jobs but the writer
+    here was never updated. Also: migration 011 added 5 v2-quality columns
+    (discovery_sources / confidence_score / freshness / validation_failed
+    / validated_at) — all silently filtered out by _JOBS_COLUMNS before
+    this patch.
+
+    user_id defaults to the seed user UUID via env override so callers
+    in single-user mode (JobScoutAgent.run loop) don't need plumbing.
+    """
     db = get_supabase()
-    filtered = {k: v for k, v in job_data.items() if k in _JOBS_COLUMNS}
+    if user_id is None:
+        import os
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
+    payload = dict(job_data)
+    payload["user_id"] = user_id  # always set — never let job_data null-shadow
+    filtered = {k: v for k, v in payload.items() if k in _JOBS_COLUMNS}
     result = db.table("jobs").upsert(
         filtered,
         on_conflict="url"
@@ -220,12 +250,29 @@ def get_company_by_name(name: str) -> Optional[dict]:
 _COMPANIES_COLUMNS = {
     "id", "name", "domain", "careers_url", "ats_type", "country", "industry",
     "stage", "headcount", "created_at", "updated_at",
+    # Multi-tenancy (migration 001) — companies also gained user_id NOT NULL.
+    "user_id", "org_id",
 }
 
 
-def upsert_company(company_data: dict) -> dict:
+def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
+    """Insert or update a company record.
+
+    2026-05-12: same multi-tenancy gap as upsert_job — companies.user_id
+    is NOT NULL but the writer here didn't pass it. Existing target rows
+    have user_id set from prior backfills, but any first-discovery
+    upsert (e.g. JobScout finding a brand-new company) crashed silently.
+    """
     db = get_supabase()
-    filtered = {k: v for k, v in company_data.items() if k in _COMPANIES_COLUMNS}
+    if user_id is None:
+        import os
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
+    payload = dict(company_data)
+    payload["user_id"] = user_id
+    filtered = {k: v for k, v in payload.items() if k in _COMPANIES_COLUMNS}
     result = db.table("companies").upsert(
         filtered, on_conflict="name"
     ).execute()
