@@ -127,9 +127,16 @@ def _build_linkedin_post_due(user_id: UUID) -> Optional[dict[str, Any]]:
     start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc).isoformat()
     end = (datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc) + timedelta(days=1)).isoformat()
 
+    # 2026-05-12 fix: linkedin_drafts has source_company_id (uuid) not
+    # source_company_name (the column name the code assumed never existed
+    # on this schema — surfaced as 400 from postgrest, breaking the
+    # linkedin_post_due card builder on /actions/today). Resolve the
+    # company name from the FK via a second lookup so the subtitle stays
+    # informative without a JOIN (PostgREST joins via select syntax are
+    # brittle here because companies.name is RLS-scoped per user).
     rows = (
         db.table("linkedin_drafts")
-        .select("id, hook, angle, source_company_name, scheduled_for, status")
+        .select("id, hook, angle, source_company_id, scheduled_for, status")
         .eq("user_id", str(user_id))
         .in_("status", ["approved", "scheduled"])
         .gte("scheduled_for", start)
@@ -144,7 +151,25 @@ def _build_linkedin_post_due(user_id: UUID) -> Optional[dict[str, Any]]:
     hook = (d.get("hook") or "").splitlines()[0] if d.get("hook") else "Today's draft"
     title = hook[:120].strip() or "Today's LinkedIn draft is ready"
     angle = (d.get("angle") or "").replace("_", " ")
-    company = d.get("source_company_name")
+    # Resolve company name from source_company_id with a defensive try —
+    # if the lookup fails we just omit the company from the subtitle
+    # rather than killing the whole card builder again.
+    company: Optional[str] = None
+    source_id = d.get("source_company_id")
+    if source_id:
+        try:
+            crow = (
+                db.table("companies")
+                .select("name")
+                .eq("id", str(source_id))
+                .limit(1)
+                .execute()
+                .data
+            ) or []
+            if crow:
+                company = crow[0].get("name")
+        except Exception:
+            company = None
     parts = []
     if angle:
         parts.append(angle)
