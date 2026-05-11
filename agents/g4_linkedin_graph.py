@@ -107,6 +107,40 @@ class LinkedInState(TypedDict, total=False):
     latency_ms_total: Annotated[int, add]
     error: Optional[str]
 
+    # 2026-05-12 (G4-2): per-draft hard cost cap (mirrors G2 Phase 1.11 /
+    # G3 Phase 2 design). Set by run_g4_graph from settings.g4_max_cost_usd.
+    # Each LLM-using node pre-checks cumulative cost against this and short-
+    # circuits with cost_capped=True instead of spending more.
+    cost_cap_usd: float
+    cost_capped: bool
+
+
+def _over_cap(state: "LinkedInState") -> bool:
+    """Return True if cumulative cost is at or above the per-draft cost cap.
+
+    Used by every LLM-using G4 node as a pre-call guard. The check is
+    >= (not >) so a single Sonnet call that lands exactly at the cap
+    doesn't slip through and trigger an Opus follow-up.
+    """
+    cost_so_far = float(state.get("cost_usd_total") or 0.0)
+    cap = float(state.get("cost_cap_usd") or 0.0)
+    if cap <= 0:
+        return False  # cap unset → unbounded (preserves prior behaviour)
+    return cost_so_far >= cap
+
+
+def _cost_capped_turn(node: str, model: str, state: "LinkedInState") -> "TranscriptTurn":
+    """Build the transcript turn emitted when a node short-circuits on cap."""
+    return _make_turn(
+        node=node,
+        provider="anthropic",
+        model=model,
+        input_summary=f"cost_capped before call (cost_so_far=${float(state.get('cost_usd_total') or 0.0):.4f}, cap=${float(state.get('cost_cap_usd') or 0.0):.2f})",
+        output={"status": "cost_capped"},
+        cost_usd=0.0,
+        latency_ms=0,
+    )
+
 
 def _make_turn(
     node: str, provider: str, model: str, input_summary: str,
@@ -198,6 +232,17 @@ def _format_candidate_block(rows: list[dict]) -> str:
 async def pick_angle_node(state: LinkedInState) -> dict:
     """Sonnet picks angle + anchor knowledge row."""
     started = time.perf_counter()
+
+    # 2026-05-12 (G4-2): hard cost-cap pre-check. If somehow we entered the
+    # graph already over budget (e.g. a checkpointed resume that's been
+    # billed), short-circuit and fail-soft with a clear signal.
+    if _over_cap(state):
+        return {
+            "cost_capped": True,
+            "transcript": [_cost_capped_turn("pick_angle", SONNET_MODEL, state)],
+            "error": "cost_capped before pick_angle could run",
+        }
+
     voice = state.get("voice_profile") or {}
     cv_md = state.get("cv_md", "")
     candidates = state.get("candidate_knowledge") or []
@@ -365,6 +410,21 @@ def _format_example_posts(voice: dict) -> str:
 async def draft_v1_node(state: LinkedInState) -> dict:
     """Opus drafts the first version."""
     started = time.perf_counter()
+
+    # 2026-05-12 (G4-2): hard cost-cap pre-check. Opus call ~$0.04 expected.
+    # If cost_so_far is already at the cap, do NOT spend that on a node
+    # whose output downstream nodes will also short-circuit on.
+    if _over_cap(state):
+        return {
+            "cost_capped": True,
+            "draft_v1_hook": "(cost cap reached — draft skipped)",
+            "draft_v1_body": "",
+            "draft_v1_cta": None,
+            "draft_v1_hashtags": [],
+            "draft_v1_why_it_works": "",
+            "transcript": [_cost_capped_turn("draft_v1", OPUS_MODEL, state)],
+        }
+
     voice = state.get("voice_profile") or {}
 
     user_msg = DRAFT_V1_USER_TEMPLATE.format(
@@ -480,6 +540,16 @@ Apply the full audit checklist. Output JSON.
 async def critique_node(state: LinkedInState) -> dict:
     """Sonnet audits the draft."""
     started = time.perf_counter()
+
+    # 2026-05-12 (G4-2): hard cost-cap pre-check. If we got here from a
+    # cost-capped draft_v1, fail through with an empty critique so polish
+    # also short-circuits and persist still produces a (skinny) draft row.
+    if _over_cap(state) or state.get("cost_capped"):
+        return {
+            "critique": {"verdict": "ship_as_is", "issues": [], "_cost_capped": True},
+            "transcript": [_cost_capped_turn("critique", SONNET_MODEL, state)],
+        }
+
     voice = state.get("voice_profile") or {}
 
     user_msg = CRITIQUE_USER_TEMPLATE.format(
@@ -586,6 +656,18 @@ async def polish_node(state: LinkedInState) -> dict:
     crit = state.get("critique") or {}
     verdict = crit.get("verdict") or "ship_as_is"
     issues = crit.get("issues") or []
+
+    # 2026-05-12 (G4-2): hard cost-cap pre-check. If we got here over budget
+    # or via a cost-capped upstream node, reuse the (possibly empty) draft_v1
+    # verbatim. Polish is the most expensive node — never run it over-budget.
+    if _over_cap(state) or state.get("cost_capped"):
+        return {
+            "final_hook":     state.get("draft_v1_hook", ""),
+            "final_body":     state.get("draft_v1_body", ""),
+            "final_cta":      state.get("draft_v1_cta"),
+            "final_hashtags": state.get("draft_v1_hashtags") or [],
+            "transcript": [_cost_capped_turn("polish", OPUS_MODEL, state)],
+        }
 
     # Short-circuit: nothing to fix → final = draft_v1.
     if verdict == "ship_as_is" and not issues:
@@ -739,6 +821,16 @@ USER VOICE NOTES (one line): {tone_directives}
 async def image_brief_node(state: LinkedInState) -> dict:
     """Pick visual kind + write the creation brief. ~$0.01 on Sonnet."""
     started = time.perf_counter()
+
+    # 2026-05-12 (G4-2): hard cost-cap pre-check. Image brief is the last
+    # LLM call before persist; cheap (~$0.005) but skip it if we're over
+    # cap so persist still completes and the user gets a draft row with
+    # image_brief=NULL + a clear "skipped_due_to_cost_cap" note.
+    if _over_cap(state) or state.get("cost_capped"):
+        return {
+            "image_brief": None,
+            "transcript": [_cost_capped_turn("image_brief", SONNET_MODEL, state)],
+        }
 
     # Pull the news excerpt + URL from chosen knowledge anchor (if any).
     chosen_kid = state.get("chosen_knowledge_id")
@@ -1000,12 +1092,24 @@ async def run_g4_graph(
         "transcript": [],
         "cost_usd_total": 0.0,
         "latency_ms_total": 0,
+        # 2026-05-12 (G4-2): hard cap. Nodes pre-check against this and
+        # short-circuit (cost_capped=True) rather than overrun.
+        "cost_cap_usd": float(max_cost_usd),
+        "cost_capped": False,
     }
     final_state: LinkedInState = await graph.ainvoke(state)
 
-    cost = final_state.get("cost_usd_total", 0.0)
-    if cost > max_cost_usd:
+    cost = float(final_state.get("cost_usd_total", 0.0) or 0.0)
+    if final_state.get("cost_capped"):
         logger.warning(
-            f"G4: cost ${cost:.4f} exceeded cap ${max_cost_usd:.2f} for user={user_id}"
+            f"G4: cost cap fired (${cost:.4f} >= ${max_cost_usd:.2f}) for user={user_id} "
+            f"— draft persisted with partial content"
+        )
+    elif cost > max_cost_usd:
+        # Should be rare now that we pre-check, but keep the log for the
+        # edge case where one LLM call's actual cost overruns its estimate.
+        logger.warning(
+            f"G4: cost ${cost:.4f} exceeded cap ${max_cost_usd:.2f} for user={user_id} "
+            f"(no pre-check fired — likely a single-call overrun)"
         )
     return final_state
