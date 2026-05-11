@@ -173,23 +173,110 @@ def _enqueue_or_dedup(
         idempotency_key=key,
     )
 
-    q = _get_queue()
-    q.enqueue(
-        worker_func,
-        run.id,
-        job_timeout=job_timeout,
-        result_ttl=result_ttl,
-        failure_ttl=failure_ttl,
-        # `description` shows up in `rq info` and Sentry-style dashboards.
-        description=f"{kind} run_id={run.id} user_id={user_id}",
-        # `meta` is opaque dict stored on the RQ job for debugging.
-        meta={"run_id": run.id, "kind": kind, "user_id": str(user_id)},
-    )
-    logger.info(
-        f"queue: enqueued kind={kind} run_id={run.id} user_id={user_id} "
-        f"key={key[:12]}…"
-    )
-    return run.id
+    # 2026-05-12: in-process fallback when Redis is unreachable.
+    # Production reported `redis.exceptions.ConnectionError: Error 111
+    # connecting to localhost:6379` on every build-resume click because
+    # Railway's Redis plugin isn't deployed. Rather than 500 the user,
+    # we degrade gracefully: run the worker function in the current
+    # process via asyncio.create_task. Loses durability (API restart
+    # mid-build kills the work) but produces a working resume — which
+    # is the user's goal RIGHT NOW. The jobs_runs row is still created
+    # so the UI can poll for status.
+    try:
+        q = _get_queue()
+        q.enqueue(
+            worker_func,
+            run.id,
+            job_timeout=job_timeout,
+            result_ttl=result_ttl,
+            failure_ttl=failure_ttl,
+            description=f"{kind} run_id={run.id} user_id={user_id}",
+            meta={"run_id": run.id, "kind": kind, "user_id": str(user_id)},
+        )
+        logger.info(
+            f"queue: enqueued kind={kind} run_id={run.id} user_id={user_id} "
+            f"key={key[:12]}… (via Redis)"
+        )
+        return run.id
+    except Exception as e:
+        # Detect Redis connectivity issues. We catch broad Exception
+        # because redis-py raises ConnectionError but also wraps in
+        # other types depending on version. The error message contains
+        # "connecting to" or "Connection refused" / "111" for the
+        # network-down case we care about. Other errors (auth, bad URL)
+        # also benefit from the fallback so we don't 500 on a
+        # misconfigured queue.
+        err_msg = str(e)
+        looks_like_redis_down = (
+            "connecting" in err_msg.lower()
+            or "connection refused" in err_msg.lower()
+            or "redis" in type(e).__name__.lower()
+            or "111" in err_msg
+        )
+        if not looks_like_redis_down:
+            # Unknown error — surface it instead of silently falling back.
+            logger.exception(
+                f"queue: enqueue failed for kind={kind} run_id={run.id} "
+                f"(non-Redis error — re-raising)"
+            )
+            raise
+        logger.warning(
+            f"queue: Redis unreachable ({type(e).__name__}: {err_msg[:120]}) "
+            f"— falling back to in-process execution for kind={kind} "
+            f"run_id={run.id}. Resume will build but won't survive an "
+            f"API restart. Deploy the Railway Redis plugin to fix."
+        )
+        # Run the worker function in-process via asyncio.create_task so
+        # the API request returns immediately. The worker function is
+        # synchronous (RQ design) but wraps async graphs internally via
+        # asyncio.run. We invoke it on a background thread so the API
+        # event loop isn't blocked.
+        _run_inprocess_fallback(worker_func, run.id)
+        return run.id
+
+
+def _run_inprocess_fallback(worker_func: str, run_id: str) -> None:
+    """Run an RQ worker function in-process via a background thread.
+
+    Used when Redis is unreachable so build-resume / build-prep / build-
+    linkedin all degrade gracefully to in-process execution. Threading
+    is the simplest approach — the worker function is synchronous and
+    uses asyncio.run internally, so we don't need to coordinate with
+    the API's event loop.
+
+    No durability — if the API container restarts mid-build, work is
+    lost. Acceptable in single-user mode until Redis is deployed.
+    """
+    import importlib
+    import threading
+
+    def _execute() -> None:
+        try:
+            module_path, func_name = worker_func.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            func = getattr(module, func_name)
+            logger.info(
+                f"queue.inprocess: starting worker_func={worker_func} "
+                f"run_id={run_id}"
+            )
+            func(run_id)
+            logger.info(
+                f"queue.inprocess: completed worker_func={worker_func} "
+                f"run_id={run_id}"
+            )
+        except Exception:
+            logger.exception(
+                f"queue.inprocess: worker_func={worker_func} run_id={run_id} "
+                f"FAILED — jobs_runs row will be marked 'failed' by the "
+                f"worker's mark_failed() call, OR by the orphan_reaper "
+                f"if mark_failed isn't reached."
+            )
+
+    threading.Thread(
+        target=_execute,
+        name=f"inprocess-{worker_func.split('.')[-1]}-{run_id[:8]}",
+        daemon=True,  # die on API shutdown — we accept the durability loss
+    ).start()
 
 
 # ─── Public API: one enqueue function per graph ────────────────────────────

@@ -547,10 +547,24 @@ def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
     """
     Best-effort write to agent_call_log table. Non-fatal on failure.
     The table is created lazily — if it doesn't exist yet, this is a no-op.
+
+    2026-05-12 (Bug #7 fix): agent_call_log gained user_id NOT NULL in the
+    multi-tenancy migration 001, but this writer was never updated. Every
+    INSERT silently failed with code 23502 because we wrapped the call in
+    a `try/except: pass`. Net result: 24 hours of production LLM calls
+    with ZERO rows in agent_call_log, breaking every /costs/* endpoint
+    (cost dashboard returned empty).
+
+    Same archetype as the 5 other user_id-NOT-NULL writers fixed earlier
+    today (rizwan_profile, jobs, companies, resume_builds, applications).
     """
     try:
         from db.client import get_supabase
         from datetime import datetime, timezone
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
         get_supabase().table("agent_call_log").insert({
             "agent_name": agent_name,
             "provider": result.provider,
@@ -560,10 +574,13 @@ def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
             "cost_usd": result.cost_usd,
             "latency_ms": result.latency_ms,
             "called_at": datetime.now(timezone.utc).isoformat(),
+            "user_id": user_id,
         }).execute()
-    except Exception:
+    except Exception as e:
         # Table may not exist yet, or DB unreachable — telemetry is best-effort.
-        pass
+        # 2026-05-12: surface the error so silent failures can be diagnosed.
+        # Audit confirmed agent_call_log had 0 rows in 24h before this fix.
+        logger.debug(f"agent_call_log insert failed (non-fatal): {type(e).__name__}: {e}")
 
 
 # ─── JSON helper ──────────────────────────────────────────────────────────
