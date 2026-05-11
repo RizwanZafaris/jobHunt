@@ -763,23 +763,26 @@ async def image_brief_node(state: LinkedInState) -> dict:
         tone_directives=(state.get("voice_profile", {}) or {}).get("tone_directives", ""),
     )
 
+    # 2026-05-11 FIX — image_brief_node was silently broken since ship.
+    # Used kwargs (user=, response_format=, graph=, node_name=) that don't
+    # exist on LLMRouter.ask; **provider_kwargs swallowed them and Anthropic
+    # rejected the request. Every linkedin_drafts row before this fix has
+    # image_brief = NULL on disk. Aligning to the canonical `ask_json` shape
+    # used by the other 4 G4 nodes (pick_angle / draft_v1 / critique / polish).
+    router = get_router()
     try:
-        result = await get_router().ask(
+        parsed, result = await router.ask_json(
             provider="anthropic",
             model=SONNET_MODEL,
             system=IMAGE_BRIEF_SYSTEM,
-            user=user_msg,
-            response_format="json",
-            temperature=0.4,
+            messages=[{"role": "user", "content": user_msg}],
             max_tokens=900,
-            graph="g4",
-            node_name="image_brief",
+            temperature=0.4,
+            agent_name="g4.image_brief",
         )
-        brief = _parse_json_loose(result.get("text") or "") or {}
+        brief = parsed if isinstance(parsed, dict) else {}
 
         # Light defensive normalisation — never let a malformed brief block persistence.
-        if not isinstance(brief, dict):
-            brief = {}
         brief.setdefault("kind", "reference_news_image" if source_url else "data_viz")
         brief.setdefault("prompt", "")
         brief.setdefault("composition_notes", "")
@@ -792,7 +795,7 @@ async def image_brief_node(state: LinkedInState) -> dict:
                          brief.get("kind") not in ("reference_news_image", "screenshot_only", "stock_photo"))
         brief.setdefault("rationale", "")
 
-        cost = float(result.get("cost_usd") or 0.0)
+        cost = float(getattr(result, "cost_usd", 0.0) or 0.0)
         latency = int((time.perf_counter() - started) * 1000)
 
         return {
