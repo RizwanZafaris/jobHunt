@@ -2044,16 +2044,23 @@ class ApplicationUpdate(BaseModel):
 
 @app.get("/applications")
 async def list_applications(_auth=Depends(verify_secret)):
-    """List all applications grouped by status (kanban columns)."""
+    """List all applications grouped by status (kanban columns).
+
+    BUG-012: also annotates each row with ``threshold_violated`` so the
+    dashboard can pill rows whose underlying ``jobs.match_score`` came in
+    below ``settings.apply_threshold`` (default 85). This explains *why*
+    a rejection happened without forcing the user to recompute the
+    fit-score arithmetic in their head.
+    """
     from db.client import get_supabase
     from collections import defaultdict
+    settings = get_settings()
     db = get_supabase()
     apps = db.table("applications").select("*").order("created_at", desc=True).execute()
     apps_data = apps.data or []
-    by_status: dict[str, list] = defaultdict(list)
-    for a in apps_data:
-        by_status[a.get("status", "evaluated")].append(a)
+    apply_threshold = int(getattr(settings, "apply_threshold", 85) or 85)
     # Also enrich with job info
+    job_map: dict = {}
     if apps_data:
         job_ids = list({a["job_id"] for a in apps_data if a.get("job_id")})
         if job_ids:
@@ -2061,7 +2068,23 @@ async def list_applications(_auth=Depends(verify_secret)):
             job_map = {j["id"]: j for j in (jobs.data or [])}
             for a in apps_data:
                 a["job"] = job_map.get(a.get("job_id"))
-    return {"applications": apps_data, "by_status": dict(by_status), "total": len(apps_data)}
+    # Apply the threshold annotation after the join so the value is always
+    # consistent with the canonical jobs.match_score the user sees elsewhere.
+    for a in apps_data:
+        job = a.get("job") or {}
+        match_score = job.get("match_score")
+        a["threshold_violated"] = (
+            isinstance(match_score, (int, float)) and match_score < apply_threshold
+        )
+    by_status: dict[str, list] = defaultdict(list)
+    for a in apps_data:
+        by_status[a.get("status", "evaluated")].append(a)
+    return {
+        "applications": apps_data,
+        "by_status": dict(by_status),
+        "total": len(apps_data),
+        "apply_threshold": apply_threshold,
+    }
 
 
 @app.post("/applications")

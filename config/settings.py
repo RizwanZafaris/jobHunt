@@ -181,6 +181,10 @@ class Settings(BaseSettings):
 
     # ── Thresholds ──────────────────────────────────────────────────────────
     fit_score_threshold: int = 40       # Only process jobs >= this score
+    apply_threshold: int = 85           # BUG-012: applications below this are
+                                        # flagged as "below the bar" in the UI
+                                        # so the user knows why a rejection
+                                        # may have been the natural outcome.
     company_freshness_hours: int = 24   # Boss Agent re-scrapes if older than this
     max_jobs_per_run: int = 20          # Max jobs processed per daily run
     max_company_dialogue_turns: int = 6 # Max back-and-forth between agents

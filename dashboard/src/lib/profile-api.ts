@@ -401,6 +401,10 @@ export interface Application {
   interview_path: string | null
   score: number
   created_at: string
+  /** BUG-012: server-computed flag — true when the underlying job's
+   *  match_score is below settings.apply_threshold. Used to surface a
+   *  "Applied below apply threshold" pill on rejected rows. */
+  threshold_violated?: boolean
   job?: {
     id: number
     title: string
@@ -415,6 +419,8 @@ export interface ApplicationsResponse {
   applications: Application[]
   by_status: Record<string, Application[]>
   total: number
+  /** BUG-012: settings.apply_threshold echoed by the server (default 85). */
+  apply_threshold?: number
 }
 
 export async function fetchApplications(): Promise<ApplicationsResponse> {
