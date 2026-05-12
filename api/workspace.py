@@ -198,7 +198,10 @@ def _get_interview_prep_summary(db, *, job_id: int, user_id: UUID) -> Optional[d
     try:
         rows = (
             db.table("interview_prep")
-            .select("id, application_id, status, prep_pack_url, round_type, round_number, created_at")
+            .select(
+                "id, application_id, status, prep_pack_url, prep_pack_md, "
+                "round_type, round_number, created_at"
+            )
             .eq("job_id", job_id)
             .eq("user_id", str(user_id))
             .order("created_at", desc=True)
@@ -213,10 +216,21 @@ def _get_interview_prep_summary(db, *, job_id: int, user_id: UUID) -> Optional[d
     if not rows:
         return None
     row = rows[0]
-    has_pack = bool(row.get("prep_pack_url")) and row.get("status") == "converged"
+    # BUG-034 (2026-05-12): `has_pack` used to be gated on `prep_pack_url`
+    # alone. `interview_agents/g3_io.py::upload_prep_pack` returns None on
+    # storage error, leaving `prep_pack_url` NULL even though
+    # `prep_pack_md` holds the rendered markdown. That dead-column gate
+    # made the Interview-prep tab show "no pack" on every converged G3
+    # build where the storage step happened to fail. Source-of-truth is
+    # "G3 converged AND we have any pack content".
+    has_pack = (
+        row.get("status") == "converged"
+        and bool(row.get("prep_pack_url") or row.get("prep_pack_md"))
+    )
     return {
         "has_pack": has_pack,
         "prep_pack_url": row.get("prep_pack_url"),
+        "prep_pack_md": row.get("prep_pack_md"),
         "status": row.get("status"),
         "round_type": row.get("round_type"),
         "round_number": row.get("round_number"),

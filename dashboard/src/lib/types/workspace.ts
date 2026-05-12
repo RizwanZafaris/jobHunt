@@ -107,6 +107,12 @@ export interface AtsKeywordBank {
 export interface WorkspaceInterviewPrep {
   has_pack: boolean
   prep_pack_url?: string | null
+  /**
+   * Rendered prep-pack markdown. Always populated when G3 converges;
+   * acts as a fallback when the Supabase Storage upload returned None
+   * (graceful degradation in `interview_agents/g3_io.upload_prep_pack`).
+   */
+  prep_pack_md?: string | null
   status?: string | null
   round_type?: string | null
   round_number?: number | null
