@@ -29,6 +29,15 @@ New canonical `document_class` values introduced here
                          filenames like "Cover letter.pdf".
   * `roadmap`          — Product roadmap docs ("Roadmap QN YYYY", "Q3 2024").
   * `misc_short`       — Junk: file_size < 2 000 B AND char_count < 500.
+  * `needs_review`     — Ambiguous: no rule fired BUT doc has content and
+                         lacks the strong filename signals the legacy
+                         heuristic in profile_build/01_inventory.py used.
+                         Surfaces docs that should not auto-feed
+                         profile_keyword without a human eyeball — e.g.
+                         `Doc2.docx` (16KB binary, 1.4KB extracted text,
+                         no resume signals) misses the misc_short
+                         thresholds yet is clearly not a resume. Added
+                         2026-05-12 as a Tier 1 follow-up.
 
 Existing values left untouched: `master_cv`, `executive_resume`,
 `role_specific_resume`, `general_resume`, `linkedin_*`, `application_answer`,
@@ -210,4 +219,86 @@ def classify_document(
     if _is_misc_short(file_size, char_count):
         return "misc_short"
 
+    # ── 6. ambiguous: no rule fired but the doc is non-empty and lacks the
+    #      strong filename signals that legacy heuristics keyed on. Better
+    #      to surface for human review than to default-tag as resume.
+    if _is_ambiguous(combined_name, text_l, char_count):
+        return "needs_review"
+
     return None
+
+
+def _is_ambiguous(
+    combined_name: str,
+    text_l: Optional[str],
+    char_count: Optional[int],
+) -> bool:
+    """Heuristic for the `needs_review` tier.
+
+    Returns True when the doc:
+      - Has at least SOME extracted content (char_count > 50), AND
+      - Doesn't have a strong resume-class signal in the filename
+        (no "resume", "cv", "executive", "linkedin_optimization",
+        "headline_about", "application_answer", "company_assessment",
+        "recruiter_analysis"), AND
+      - Doesn't have strong resume-class signals in the text body
+        ("work experience", "education", "skills" — common resume
+        section headers), AND
+      - Doesn't already match any of the explicit class rules (the
+        caller already checked those before calling this — caller
+        passes through to here only on the fall-through path).
+
+    The intent: surface unfamiliar documents to the human rather than
+    silently tagging them `role_specific_resume` (the BUG-016 pattern
+    that polluted profile_keyword with JD / cover-letter / roadmap text).
+    """
+    if not char_count or char_count <= 50:
+        # Truly empty / minimal content — let the caller decide
+        # (return None) since misc_short already covers the size case
+        # and the absence of any text means there's nothing to review.
+        return False
+
+    name = combined_name or ""
+    name_signals = (
+        "resume",
+        "cv-",
+        "cv_",
+        " cv.",
+        "executive_resume",
+        "linkedin_optimization",
+        "linkedin_headline",
+        "headline_about",
+        "linkedin_top1",
+        "linkedin_audit",
+        "linkedin-post",
+        "linkedin_post",
+        "application_answer",
+        "company_assessment",
+        "recruiter_analysis",
+        "target_roles",
+        "rizwan_markdown",
+        "simpaisa_",
+        "job_search_report",
+        "master_cv",
+    )
+    if any(sig in name for sig in name_signals):
+        return False  # strong filename signal → let legacy classify() route it
+
+    if text_l:
+        # Strong text signal: standard resume section headers.
+        resume_text_signals = (
+            "work experience",
+            "professional experience",
+            "education",
+            "skills",
+            "certifications",
+            "summary",
+            "projects",
+        )
+        hits = sum(1 for sig in resume_text_signals if sig in text_l)
+        if hits >= 3:
+            return False  # 3+ resume section headers → likely a real resume
+
+    # Got here: content exists but neither filename nor text has strong
+    # resume signals. Tag for review.
+    return True
