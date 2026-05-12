@@ -324,13 +324,18 @@ def _update_company_knowledge_score(knowledge_id: str) -> None:
 
 
 # ─── Top-level: credit_outcome ────────────────────────────────────────────
-def credit_outcome(outcome_event_id: str, kind: OutcomeKind) -> dict:
+async def credit_outcome(outcome_event_id: str, kind: OutcomeKind) -> dict:
     """Credit one outcome event back to its cited knowledge rows.
 
     Idempotency note: we INSERT a new credit row each time. Callers should
     avoid calling twice for the same outcome event — but if it happens, the
     aggregate stays bounded thanks to the per-event ±0.5 cap and the
     aggregate [0, 1] clamp.
+
+    Async since 2026-05-12: all callers are async (FastAPI handlers, RQ
+    workers via _run_async, LangGraph nodes). Sync scripts must wrap the
+    call in `asyncio.run(...)` at the entrypoint — never inside the
+    library. See docs/AGENT_REVIEW_2026_05_11.md §31, §4.5.
 
     Returns a dict with what we did so the caller can log/surface it.
     """
@@ -544,12 +549,23 @@ def _update_persona(persona_id: str, fields: dict) -> Optional[dict]:
         return None
 
 
-def evolve_persona(
+async def evolve_persona(
     persona_id: str,
     *,
     triggered_by: str = "manual",
 ) -> dict:
     """Evolve one persona based on recent outcome credits.
+
+    Async since 2026-05-12: every caller is already inside an event loop
+    (FastAPI handlers, RQ worker's `_run_async`, LangGraph nodes, the
+    Sunday cron). Previously this function used `asyncio.run(_ask())`
+    with a `asyncio.new_event_loop()` fallback — a textbook footgun that
+    detached the LLM call from the shared Anthropic client and httpx pool
+    bound to the running loop. See docs/AGENT_REVIEW_2026_05_11.md §31
+    and docs/SYSTEM_AUDIT_2026_05_12.md §4.5.
+
+    Sync scripts (e.g. the CLI below) must wrap the call in
+    `asyncio.run(...)` at the entrypoint — never inside the library.
 
     Returns:
       {
@@ -602,10 +618,13 @@ def evolve_persona(
         "recent_outcome_signals": credits[:30],
     }
 
-    # Async LLM call. Keep this function sync from the caller's POV by
-    # running the loop directly.
-    async def _ask() -> tuple[dict, float]:
-        from agents.llm_router import _parse_json_loose, get_router
+    # Async LLM call. We're already in an event loop — just await the
+    # router. (Previously used asyncio.run + new_event_loop fallback,
+    # which detached this call from the shared Anthropic client and
+    # httpx pool bound to the running loop. See docstring.)
+    from agents.llm_router import _parse_json_loose, get_router
+
+    try:
         router = get_router()
         result = await router.ask(
             provider=EVOLVE_PROVIDER,
@@ -620,18 +639,7 @@ def evolve_persona(
             parsed = _parse_json_loose(result.text or "")
         except Exception:
             parsed = {}
-        return parsed, float(result.cost_usd or 0.0)
-
-    try:
-        parsed, cost = asyncio.run(_ask())
-    except RuntimeError:
-        # An event loop is already running (caller invoked evolve_persona
-        # from inside an async fn). Fall back to a fresh loop.
-        loop = asyncio.new_event_loop()
-        try:
-            parsed, cost = loop.run_until_complete(_ask())
-        finally:
-            loop.close()
+        cost = float(result.cost_usd or 0.0)
     except Exception as e:
         logger.warning(f"evolve_persona LLM call failed: {type(e).__name__}: {e}")
         summary["error"] = "llm_call_failed"
@@ -695,6 +703,9 @@ def evolve_persona(
 
 
 # ─── CLI ──────────────────────────────────────────────────────────────────
+# This is the only sync entrypoint. credit_outcome and evolve_persona are
+# `async def`; we use `asyncio.run(...)` here at the top level — never
+# inside the library functions themselves. See module docstring.
 def _cli() -> int:
     parser = argparse.ArgumentParser(description="Outcome → persona credit + evolution.")
     parser.add_argument("--outcome-id", help="Run credit_outcome for this outcome event id.")
@@ -709,12 +720,12 @@ def _cli() -> int:
         if not args.kind:
             print("--kind is required with --outcome-id")
             return 2
-        result = credit_outcome(args.outcome_id, args.kind)
+        result = asyncio.run(credit_outcome(args.outcome_id, args.kind))
         print(json.dumps(result, indent=2, default=str))
         return 0 if not result.get("error") else 1
 
     if args.persona_id:
-        result = evolve_persona(args.persona_id, triggered_by=args.triggered_by)
+        result = asyncio.run(evolve_persona(args.persona_id, triggered_by=args.triggered_by))
         print(json.dumps(result, indent=2, default=str))
         return 0 if not result.get("error") else 1
 
