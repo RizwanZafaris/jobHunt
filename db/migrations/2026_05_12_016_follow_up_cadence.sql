@@ -40,8 +40,8 @@ BEGIN;
 
 CREATE TABLE IF NOT EXISTS follow_up_cadence (
     id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                     UUID REFERENCES profiles(id) NOT NULL,
-    application_id              BIGINT REFERENCES applications(id) NOT NULL,
+    user_id                     UUID REFERENCES public.users(id) NOT NULL,
+    application_id              UUID REFERENCES public.applications(id) NOT NULL,
 
     -- Snapshot of the application status at draft time. Stored separately
     -- from applications.status so the cadence row remains stable even when
