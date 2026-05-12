@@ -363,14 +363,20 @@ async def copy_draft(
 
     Side-effect: posts whose scheduled_for is past and that get a copy
     event also flip status='posted' so the dashboard reflects reality.
+
+    Tier 4 §6.4 — when the draft transitions to 'posted', we also seed a
+    proof_points row with source='g4_linkedin_post' so the user's
+    thought-leadership corpus auto-builds as they publish. Failure is
+    non-fatal (the copy/post action still succeeds even if proof-point
+    insertion errors).
     """
     cur = _draft_row(draft_id, user.id)
     now = datetime.now(timezone.utc)
 
     update: dict[str, Any] = {"manual_copy_at": now.isoformat()}
+    will_post = cur["status"] in ("approved", "scheduled")
     # If the user copy-pastes within the scheduled window, flip to posted.
-    just_posted = cur["status"] in ("approved", "scheduled")
-    if just_posted:
+    if will_post:
         update["status"] = "posted"
         update["posted_at"] = now.isoformat()
 
@@ -382,19 +388,18 @@ async def copy_draft(
         .eq("user_id", str(user.id))
         .execute()
     )
-    row = (rs.data or [cur])[0]
+    updated = (rs.data or [cur])[0]
 
-    # 2026-05-12 (G11 Tier 4): when the draft transitions to "posted",
-    # snapshot it into writing_samples so the voice corpus grows
-    # automatically. Best-effort — failures here must not break the
-    # post flow.
-    if just_posted:
+    if will_post:
+        # 2026-05-12 (G11 Tier 4): snapshot the post into writing_samples
+        # so the voice corpus grows automatically. Best-effort — failures
+        # here must not break the post flow.
         try:
             from agents.g11_io import insert_writing_sample
             insert_writing_sample(
                 user_id=str(user.id),
-                title=(row.get("hook") or "LinkedIn post")[:200],
-                body=(row.get("body_md") or row.get("body") or "").strip(),
+                title=(updated.get("hook") or "LinkedIn post")[:200],
+                body=(updated.get("body_md") or updated.get("body") or "").strip(),
                 kind="linkedin_post",
                 source="g4_linkedin_draft",
             )
@@ -404,7 +409,37 @@ async def copy_draft(
                 f"{draft_id} into writing_samples: {type(e).__name__}: {e}"
             )
 
-    return row
+        # 2026-05-12 (Proof point Tier 4): seed a thought_leadership
+        # proof point from the post body. The (user_id, content_hash)
+        # unique partial index makes this idempotent — re-copy of the
+        # same draft is a no-op.
+        try:
+            from agents.proof_point_agent import _content_hash, add_proof_point
+            hook = (updated.get("hook") or cur.get("hook") or "").strip()
+            body = (updated.get("body") or cur.get("body") or "").strip()
+            angle = (updated.get("angle") or cur.get("angle") or "").strip()
+            content = (f"{hook}\n\n{body}".strip() if hook else body)[:1200]
+            if content:
+                tags = ["linkedin-post"]
+                if angle:
+                    tags.append(angle.lower())
+                await add_proof_point(
+                    user_id=user.id,
+                    content=content,
+                    kind="thought_leadership",
+                    context=angle or None,
+                    tags=tags,
+                    source="g4_linkedin_post",
+                    source_draft_id=str(draft_id),
+                    content_hash=_content_hash(content),
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"linkedin.copy_draft: proof-point seed failed for {draft_id}: {e}"
+            )
+
+    return updated
 
 
 @router.post("/drafts/{draft_id}/reject")
