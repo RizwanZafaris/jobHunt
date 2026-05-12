@@ -91,6 +91,7 @@ def _action(
     score: Optional[int] = None,
     company: Optional[str] = None,
     date_str: Optional[str] = None,
+    letter_grade: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build one TodayAction matching the TS shape exactly."""
     primary: dict[str, Any] = {"label": primary_label}
@@ -121,6 +122,10 @@ def _action(
         meta["company"] = company
     if date_str:
         meta["date"] = date_str
+    # Phase 2 §4.1 (G5) — letterGrade rides on action.meta so the
+    # /today chip group can filter without a second fetch.
+    if letter_grade:
+        meta["letterGrade"] = letter_grade
     if meta:
         out["meta"] = meta
     return out
@@ -217,7 +222,15 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
     # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §C.
     job_rows = (
         db.table("jobs")
-        .select("id, title, company, match_score, resume_generated_at, posting_closed_at, validation_status, confidence_score, validation_failed")
+        # Phase 2 §4.1 — `letter_grade` is the surface column for the
+        # /today A-F chip group; carry it through the action_meta so
+        # the dashboard can render it on every card without a second
+        # round-trip.
+        .select(
+            "id, title, company, match_score, resume_generated_at, "
+            "posting_closed_at, validation_status, confidence_score, "
+            "validation_failed, letter_grade"
+        )
         .eq("user_id", str(user_id))
         .is_("posting_closed_at", None)
         .is_("validation_failed", None)
@@ -261,6 +274,9 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
         score_label = f"Score {score}/100"
         card_title = f"{company} — {title}" if title else company or "Job"
         workspace_href = f"/applications/{job_id}/workspace"
+        # Phase 2 §4.1 — surface the G5 letter grade on every card so the
+        # /today chip filter can narrow the visible list.
+        letter_grade = j.get("letter_grade")
 
         if has_resume:
             out.append(_action(
@@ -275,6 +291,7 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
                 secondary_href=f"/applications/{job_id}/workspace?tab=resume",
                 score=score,
                 company=company,
+                letter_grade=letter_grade,
             ))
         elif score >= HIGH_SCORE_THRESHOLD:
             out.append(_action(
@@ -288,6 +305,7 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
                 primary_on_click="kickoff_g2",
                 score=score,
                 company=company,
+                letter_grade=letter_grade,
             ))
         else:
             # 80-84 — surface but muted.
@@ -301,6 +319,7 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
                 primary_href=workspace_href,
                 score=score,
                 company=company,
+                letter_grade=letter_grade,
             ))
     return out
 

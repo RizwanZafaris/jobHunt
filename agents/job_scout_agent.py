@@ -338,6 +338,33 @@ class JobScoutAgent(BaseAgent):
                 job["company_id"] = company.get("id") if company else None
                 saved = upsert_job(job)
                 job["db_id"] = saved.get("id")
+
+                # Phase 2 §4.1 (G5): auto-trigger fit-score evaluation for
+                # every freshly-upserted job. The scoring agent
+                # idempotency-gates within a 7-day window so re-runs on
+                # the same row don't double-spend; the queue itself
+                # dedups on (user_id, kind, payload), so a same-day
+                # re-discovery collapses to a single run.
+                #
+                # Failure to enqueue does NOT block persistence — G5 is
+                # informational. The cron sweep picks up unscored rows
+                # on the next pass.
+                saved_id = saved.get("id")
+                if saved_id is not None:
+                    try:
+                        from api.queue import enqueue_g5_score
+                        user_id = saved.get("user_id") or os.environ.get(
+                            "RIZWAN_USER_ID",
+                            "00000000-0000-0000-0000-000000000001",
+                        )
+                        enqueue_g5_score(user_id=user_id, job_id=int(saved_id))
+                    except Exception as g5_err:
+                        # Telemetry only — never break ingestion on a
+                        # scoring-enqueue failure.
+                        logger.debug(
+                            f"G5 auto-trigger enqueue failed for job_id={saved_id}: "
+                            f"{type(g5_err).__name__}: {g5_err}"
+                        )
             except Exception as e:
                 logger.warning(f"Failed to store job {job.get('title')}: {e}")
 

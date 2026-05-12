@@ -569,6 +569,106 @@ async def get_comp_band_for_job(
     }
 
 
+# ─── G5 evaluation scoring endpoints ───────────────────────────────────────
+# Phase 2 §4.1: per-job 6-dimensional fit scoring + A/B/C/D/F letter grade.
+# Two endpoints — POST re-scores (Sonnet 4.6 calls, ~$0.15), GET surfaces
+# the existing score without spend. The dashboard's /today A-F filter chip
+# reads the surface `letter_grade` column directly off /jobs and only hits
+# this endpoint when the user opens a workspace and wants the per-dim
+# rationale.
+
+
+@router.post("/{job_id}/score")
+async def score_job_endpoint(
+    job_id: int,
+    force: bool = Query(
+        default=False,
+        description=(
+            "Bypass both the wallet guard (closed/validation-failed jobs) "
+            "AND the 7-day re-score staleness window. Costs ~$0.15."
+        ),
+    ),
+    user_target_total_comp: Optional[int] = Query(
+        default=None,
+        ge=10_000,
+        le=10_000_000,
+        description=(
+            "User's own target total comp for the comp dimension. When "
+            "omitted, the agent uses an industry-typical anchor for the "
+            "inferred level."
+        ),
+    ),
+    user_remote_preference: Optional[str] = Query(
+        default=None,
+        description="remote | hybrid | onsite | any",
+    ),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Score one job across 6 dimensions; persist the breakdown; return it.
+
+    Wallet-guarded via api._job_guards.load_open_job — refuses to score
+    closed/failed jobs unless force=True (per gap-closure §11.9).
+    Idempotent within a 7-day window unless force=True (auto-trigger from
+    JobScout consults this to keep cost bounded).
+
+    Returns the same dict shape that's written to
+    `jobs.fit_score_breakdown`:
+
+        {
+          "role_fit": 0-100, "growth": 0-100, "comp": 0-100,
+          "culture": 0-100, "remote": 0-100, "trajectory": 0-100,
+          "composite": 0-100, "letter_grade": "A"|"B"|"C"|"D"|"F",
+          "rationale": {dim: "one sentence reason"},
+          "cites": [{knowledge_id, section, similarity}, ...],
+          "persona_warnings": [],
+          "weights": {role_fit: 25, ...},
+          "cost_usd": 0.15,
+          "scored_at": "2026-05-12T...",
+          "scorer_version": "g5-v1"
+        }
+
+    Cost: ~$0.15/role (1× comp_cache hit lane + 4× Sonnet 4.6 + 0× code-
+    only dimensions). See `agents/scoring_agent.py` for the per-dim
+    breakdown.
+    """
+    from agents.scoring_agent import score_role
+
+    return await score_role(
+        job_id=job_id,
+        user_id=user.id,
+        force=force,
+        user_target_total_comp=user_target_total_comp,
+        user_remote_preference=user_remote_preference,
+    )
+
+
+@router.get("/{job_id}/score")
+async def get_job_score(
+    job_id: int,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Fetch the existing G5 fit_score_breakdown without re-scoring.
+
+    Returns the same dict shape as POST. If the job hasn't been scored
+    yet, returns {"scored": false} with a 200 (NOT a 404) so the
+    dashboard can render a "Score now" CTA rather than treating it as a
+    missing job.
+
+    Tenant-scoped: a job belonging to another user returns 404 via the
+    same `_get_job_for_user` pattern as the rest of this router.
+    """
+    from agents.scoring_agent import get_existing_score
+
+    # Tenancy + existence check first (404 if not theirs / missing).
+    db = get_supabase()
+    _get_job_for_user(db, job_id=job_id, user_id=user.id)
+
+    existing = await get_existing_score(job_id=job_id, user_id=user.id)
+    if existing is None:
+        return {"scored": False, "job_id": job_id}
+    return {"scored": True, "job_id": job_id, **existing}
+
+
 # ─── POST /workspace/{job_id}/build-resume ─────────────────────────────────
 @router.post("/{job_id}/build-resume")
 def build_resume(
