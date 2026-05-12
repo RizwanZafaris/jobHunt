@@ -1119,6 +1119,67 @@ def mark_applied(
     return {"created": True, "updated": False, "application": row}
 
 
+# ─── POST /workspace/{job_id}/legitimacy-check ─────────────────────────────
+@router.post("/{job_id}/legitimacy-check")
+async def check_legitimacy(
+    job_id: int,
+    force: bool = Query(
+        default=False,
+        description="Bypass the 24h Perplexity cache and re-run all signals.",
+    ),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Run the 4-signal Tier 2 legitimacy agent for this job.
+
+    Signals (each weight 0.25):
+      1. Posting age      — discovered_at decay 7d→60d
+      2. URL reachability — httpx HEAD probe, cached 24h
+      3. Repost pattern   — distinct postings in 90d on (company, title)
+      4. Recent news      — Perplexity Sonar "is {company} hiring 2026?"
+
+    Composite score ∈ [0,1]. Tier:
+      score >= 0.7 → legitimate
+      0.5 ≤ score < 0.7 → caution
+      score < 0.5 → suspicious
+
+    Result is written back to jobs.legitimacy_score / .legitimacy_tier /
+    .legitimacy_signals. The /actions/today builder hides suspicious
+    cards by default (override with `?include_suspicious=true`).
+
+    Wallet guard: stale jobs (posting_closed_at or validation_failed) get
+    a 409 — they're already dead, no point in burning Perplexity dollars.
+    Pass `force=true` to override.
+
+    Per-job cost: ≤ $0.005 (only signal 5 has marginal cost; cache hits
+    drop this to $0).
+    """
+    from agents.legitimacy_agent import score_legitimacy
+    from api._job_guards import load_open_job
+
+    db = get_supabase()
+    # Wallet guard — stale postings refused unless force=true.
+    load_open_job(
+        db,
+        job_id=job_id,
+        user_id=user.id,
+        force=force,
+        cost_label="legitimacy check (~$0.005)",
+    )
+
+    result = await score_legitimacy(
+        job_id=job_id,
+        user_id=user.id,
+        force=force,
+    )
+    return {
+        "job_id": job_id,
+        "score": result.score,
+        "tier": result.tier,
+        "signals": result.signals,
+        "cost_usd": result.cost_usd,
+    }
+
+
 # ─── GET /workspace/{job_id}/resume.{format} ───────────────────────────────
 @router.get("/{job_id}/resume.{fmt}")
 def download_resume(
