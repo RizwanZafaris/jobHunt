@@ -662,6 +662,15 @@ def _derive_graph_and_node(agent_name: Optional[str]) -> tuple[Optional[str], Op
     # G6 — follow-up cadence family (Phase 1.3, 2026-05-12).
     if lower.startswith("g6."):
         return "G6", name.split(".", 1)[1]
+    # G7 — application answers (Tier 3, in flight).
+    if lower.startswith("g7."):
+        return "G7", name.split(".", 1)[1]
+    # G9 — STAR+R story extractor (Phase 1.2, 2026-05-12).
+    if lower.startswith("g9."):
+        return "G9", name.split(".", 1)[1]
+    # G11 — voice calibration (Tier 4, 2026-05-12).
+    if lower.startswith("g11."):
+        return "G11", name.split(".", 1)[1]
     # Utility / non-graph workers — strip prefix for node_name, leave graph=None.
     for prefix in ("persona.", "company.", "boss.", "profile.", "debug."):
         if lower.startswith(prefix):

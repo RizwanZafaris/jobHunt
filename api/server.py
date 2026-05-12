@@ -108,6 +108,7 @@ from api.perplexity import router as perplexity_router  # noqa: E402  Perplexity
 from api.apollo import router as apollo_router  # noqa: E402  Apollo firmographic + hiring intel
 from api.stories import router as stories_router  # noqa: E402  /workspace/stories/* (Phase 1.2 G9 + story_bank)
 from api.follow_ups import router as follow_ups_router  # noqa: E402  /workspace/follow-ups/* (Phase 1.3, G6)
+from api.profile import router as profile_router  # noqa: E402  /profile/* (Tier 4 G11 voice calibration)
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
@@ -117,6 +118,7 @@ app.include_router(perplexity_router)
 app.include_router(apollo_router)
 app.include_router(stories_router)
 app.include_router(follow_ups_router)
+app.include_router(profile_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

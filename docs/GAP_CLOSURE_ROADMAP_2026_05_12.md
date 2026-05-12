@@ -1041,7 +1041,35 @@ remain open — logged here as the canonical follow-up backlog.
   to empty containers, not None, so the UPDATE will fail on first run.
   Apply the migration before deploying this branch.
 
-### BUG-037+ onward — reserved for future agent sweeps
+### BUG-039: G11 voice calibration must prepend voice block to USER message (not system) to preserve cache
+- **Discovered:** 2026-05-12 during Tier 4 §6.3 build | Severity: MEDIUM | Status: AVOIDED (designed-in)
+- **Risk class:** prompt-caching regression that would silently 10× the cost of
+  G2/G6/G7 writer calls — the kind of failure that doesn't break tests but
+  shows up as a spike on the cost dashboard a week later.
+- **Symptom (would have been):** the obvious spot to inject the
+  voice profile block is the writer's `system` prompt — that's where
+  WRITER_SYSTEM, DRAFT_GENERATOR_SYSTEM, answer-generator-system live.
+  But the system prompts in G2 (~3K tokens), G6 (~1.5K tokens) and G7
+  (~2K tokens) are all >1024 tokens and therefore prompt-cached by
+  llm_router._call_anthropic. Splicing a per-user voice block into the
+  system prompt would mean every user has a different system-prompt
+  prefix, blowing the cache on every call and turning the 90% read
+  discount into a cache MISS. For G2 (the biggest writer) that's
+  ~$0.03 of extra spend per resume × ~30 builds/day = ~$30/month per
+  user.
+- **Mitigation (shipped in this PR):** `agents/voice_injector.prepend_voice_block`
+  prepends the block to the USER message (not system). The user
+  message changes per call anyway (different JD, different RAG chunks)
+  so cache behaviour is unaffected — system prompts continue to hit
+  the cache and the voice block rides along as a small (~300 token)
+  user-message prefix. Documented in voice_injector.py module header
+  + at every call site (g2_nodes.writer_node, g6_nodes.draft_generator_node).
+- **Detection:** if anyone modifies a writer to inject the voice block
+  into `system=` instead of into the user message, cost-dashboard's
+  cache-read-rate for G2/G6/G7 will drop from ~90% to 0% within hours.
+  Already covered by the prompt-caching telemetry that fixed BUG-024.
+
+### BUG-040+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.

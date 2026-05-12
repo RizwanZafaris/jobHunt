@@ -369,7 +369,8 @@ async def copy_draft(
 
     update: dict[str, Any] = {"manual_copy_at": now.isoformat()}
     # If the user copy-pastes within the scheduled window, flip to posted.
-    if cur["status"] in ("approved", "scheduled"):
+    just_posted = cur["status"] in ("approved", "scheduled")
+    if just_posted:
         update["status"] = "posted"
         update["posted_at"] = now.isoformat()
 
@@ -381,7 +382,29 @@ async def copy_draft(
         .eq("user_id", str(user.id))
         .execute()
     )
-    return (rs.data or [cur])[0]
+    row = (rs.data or [cur])[0]
+
+    # 2026-05-12 (G11 Tier 4): when the draft transitions to "posted",
+    # snapshot it into writing_samples so the voice corpus grows
+    # automatically. Best-effort — failures here must not break the
+    # post flow.
+    if just_posted:
+        try:
+            from agents.g11_io import insert_writing_sample
+            insert_writing_sample(
+                user_id=str(user.id),
+                title=(row.get("hook") or "LinkedIn post")[:200],
+                body=(row.get("body_md") or row.get("body") or "").strip(),
+                kind="linkedin_post",
+                source="g4_linkedin_draft",
+            )
+        except Exception as e:
+            logger.warning(
+                f"linkedin.copy_draft: failed to snapshot draft "
+                f"{draft_id} into writing_samples: {type(e).__name__}: {e}"
+            )
+
+    return row
 
 
 @router.post("/drafts/{draft_id}/reject")

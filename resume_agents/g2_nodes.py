@@ -764,6 +764,17 @@ PREVIOUS DRAFT (if revising):
 Write the resume now. Apply IDENTITY LOCK and FACT INTEGRITY from the
 system prompt. Output ONLY markdown.
 """
+
+    # 2026-05-12 (G11 Tier 4): prepend the user's voice profile block to the
+    # user message so generated bullets sound like the user, not generic
+    # Sonnet. The block lives on profile_master.voice_calibration and is
+    # populated by the G11 graph after the user uploads 5+ writing samples.
+    # No-op (returns user unchanged) on cold-start — writers fall back to
+    # generic style. We prepend to the USER message (not system) so the
+    # large WRITER_SYSTEM prompt cache stays warm across users.
+    from agents.voice_injector import prepend_voice_block
+    user = prepend_voice_block(user, user_id=state.get("user_id"))
+
     result = await get_router().ask(
         provider="anthropic",
         model=settings.g2_writer_model,
