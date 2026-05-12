@@ -78,8 +78,11 @@ export async function Costs() {
   return (
     <div className="space-y-6">
       {summary && (
-        <div className="flex items-center gap-3 text-2xs text-fg-muted">
-          <span>Today <span className="text-fg font-semibold tnum">${summary.today.cost_usd.toFixed(2)}</span></span>
+        <div
+          className="flex items-center gap-3 text-2xs text-fg-muted cursor-help"
+          title="Time windows are computed from UTC midnight, matching the agent_call_log timestamps. The Recent Calls table below shows wall-clock relative times."
+        >
+          <span>Today (UTC) <span className="text-fg font-semibold tnum">${summary.today.cost_usd.toFixed(2)}</span></span>
           <span className="text-fg-subtle" aria-hidden>·</span>
           <span>30 d <span className="text-fg font-semibold tnum">${summary.last_30d.cost_usd.toFixed(2)}</span></span>
         </div>
@@ -150,7 +153,7 @@ export async function Costs() {
                     </td>
                     <td className="px-4 py-2 text-fg-subtle whitespace-nowrap">
                       {b.created_at
-                        ? new Date(b.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+                        ? new Date(b.created_at).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
                         : '—'}
                     </td>
                   </tr>
@@ -169,7 +172,7 @@ export async function Costs() {
         <AlertHistoryTable alerts={alerts.alerts} warning={alerts.warning} />
       )}
 
-      <Card title="agent_call_log stats" description="Storage health and scaling guidance">
+      <Card title="Call log stats" description="Storage health and scaling guidance">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
             {logStats?.warning ? (
@@ -206,10 +209,11 @@ export async function Costs() {
                   <>
                     <dt className="text-fg-subtle">Oldest entry</dt>
                     <dd className="text-fg font-mono">
-                      {new Date(logStats.oldest_row_at).toLocaleDateString('en-GB', {
+                      {new Date(logStats.oldest_row_at).toLocaleDateString('en-US', {
                         day: 'numeric',
                         month: 'short',
                         year: 'numeric',
+                        timeZone: 'UTC',
                       })}
                     </dd>
                   </>
