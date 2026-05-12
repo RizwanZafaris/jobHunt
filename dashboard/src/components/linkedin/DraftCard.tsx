@@ -67,12 +67,15 @@ function formatScheduled(iso: string | null): string | null {
   if (!iso) return null
   try {
     const d = new Date(iso)
-    return d.toLocaleString('en-GB', {
+    // BUG-017: pin timeZone to UTC so SSR and CSR produce the same string.
+    return d.toLocaleString('en-US', {
       weekday: 'short',
       day: 'numeric',
       month: 'short',
       hour: '2-digit',
       minute: '2-digit',
+      timeZone: 'UTC',
+      hour12: false,
     })
   } catch {
     return iso

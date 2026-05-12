@@ -42,7 +42,7 @@ export default function DigestPanel({ digest }: Props) {
       actions={
         runDate ? (
           <span className="text-2xs text-fg-subtle">
-            {new Date(runDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+            {new Date(runDate).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })}
           </span>
         ) : null
       }

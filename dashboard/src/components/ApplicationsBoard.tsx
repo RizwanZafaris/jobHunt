@@ -118,7 +118,7 @@ export default function ApplicationsBoard({ initial }: Props) {
                   </div>
                   {a.applied_date && (
                     <p className="text-2xs text-fg-subtle mt-1">
-                      applied {new Date(a.applied_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                      applied {new Date(a.applied_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })}
                     </p>
                   )}
                 </article>

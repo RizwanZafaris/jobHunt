@@ -15,6 +15,15 @@ export default function RecentCallsTable({ initial, warning: initialWarning }: P
  const [errorOnly, setErrorOnly] = useState(false)
  const [limit, setLimit] = useState(100)
  const [loading, setLoading] = useState(false)
+ // BUG-017: relative timestamps were rendered with Date.now() during SSR,
+ // which produced a different value on the client and triggered hydration
+ // warnings. We render the deterministic absolute UTC time on the server
+ // (and again on the client's first paint), then upgrade to relative
+ // ("13 m ago") after mount where Date.now() is safe.
+ const [mounted, setMounted] = useState(false)
+ useEffect(() => {
+   setMounted(true)
+ }, [])
 
  const providers = useMemo(() => {
  const s = new Set<string>()
@@ -56,7 +65,7 @@ export default function RecentCallsTable({ initial, warning: initialWarning }: P
  <div>
  <h2 className="text-base font-semibold text-fg">Recent Calls</h2>
  <p className="text-2xs text-fg-subtle mt-0.5">
- Raw <code className="text-fg-muted">agent_call_log</code> rows · most recent first
+ Individual LLM calls · most recent first
  </p>
  </div>
  <div className="flex items-center gap-2 flex-wrap">
@@ -142,7 +151,7 @@ export default function RecentCallsTable({ initial, warning: initialWarning }: P
  className={`hover:bg-surface-raised/30 ${c.error ? 'bg-danger-bg/30' : ''}`}
  >
  <td className="px-3 py-1.5 text-fg-muted whitespace-nowrap" title={c.called_at}>
- {relativeTime(c.called_at)}
+ {mounted ? relativeTime(c.called_at) : absoluteUtc(c.called_at)}
  </td>
  <td className="px-3 py-1.5">
  <code className="text-info font-mono text-2xs">
@@ -193,5 +202,20 @@ function relativeTime(iso: string): string {
  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`
  if (diffSec < 86400 * 7) return `${Math.floor(diffSec / 86400)}d ago`
- return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+ return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+}
+
+// Deterministic SSR-safe rendering — locale + tz pinned so the server and
+// the client produce the exact same string. Used until the client mounts
+// and we can upgrade to a relative time.
+function absoluteUtc(iso: string): string {
+ if (!iso) return ''
+ return new Date(iso).toLocaleString('en-US', {
+   day: 'numeric',
+   month: 'short',
+   hour: '2-digit',
+   minute: '2-digit',
+   timeZone: 'UTC',
+   hour12: false,
+ })
 }

@@ -322,7 +322,7 @@ export default function TargetCompaniesManager({ initial }: Props) {
  </div>
  {c.last_scanned_at && (
  <div className="text-2xs text-fg-subtle mt-1">
- scanned {new Date(c.last_scanned_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+ scanned {new Date(c.last_scanned_at).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })}
  </div>
  )}
  </div>
