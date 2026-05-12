@@ -952,6 +952,11 @@ async def persist_node(state: LinkedInState) -> dict:
     payload = {
         "user_id":              state["user_id"],
         "source_company_id":    state.get("chosen_company_id"),
+        # 2026-05-12 (migration 012): denormalise the company name alongside
+        # the FK so api/actions.py::_build_linkedin_post_due can read it in
+        # a single round-trip on /today. `chosen_company_name` is already
+        # in state from node_pick_angle; we just persist it.
+        "source_company_name":  state.get("chosen_company_name"),
         "source_knowledge_id":  state.get("chosen_knowledge_id"),
         "angle":                state.get("chosen_angle") or "industry_analysis",
         "hook":                 state.get("final_hook") or state.get("draft_v1_hook") or "",
