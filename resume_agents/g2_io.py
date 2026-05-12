@@ -337,8 +337,29 @@ def finalize_resume_build(
 # ═════════════════════════════════════════════════════════════════════════
 # Job loader
 # ═════════════════════════════════════════════════════════════════════════
-def load_job(job_id: int) -> dict:
-    """Fetch one row from public.jobs."""
+def load_job(job_id: int, *, force: bool = False) -> dict:
+    """Fetch one row from public.jobs, with staleness guard.
+
+    2026-05-12: G2 graph entrypoint. Refuses to return a row that is
+    `posting_closed_at IS NOT NULL` or `validation_failed IS NOT NULL`
+    unless `force=True`. This is defense-in-depth on top of the
+    `/workspace/{id}/build-resume` route guard — if G2 is ever invoked
+    directly (worker queue replays, CLI runs, future scheduled jobs),
+    this prevents the OKX-1641 archetype from burning ~$1-5 in LLM
+    tokens on a posting that cannot be applied to.
+
+    Args:
+        job_id: jobs.id
+        force: bypass the staleness guard (carries through from the
+              upstream `/workspace/{id}/build-resume?force=true` query
+              param via state.force_build, when set).
+
+    Raises:
+        RuntimeError("Job {id} not found") on missing row.
+        RuntimeError("Job {id} is closed/failed (...)") on stale row
+            when force is False. The error message includes the closed_at
+            and validation_failed values so log scraping can correlate.
+    """
     from db.client import get_supabase
     rows = (
         get_supabase()
@@ -351,4 +372,14 @@ def load_job(job_id: int) -> dict:
     )
     if not rows:
         raise RuntimeError(f"Job {job_id} not found")
-    return rows[0]
+    job = rows[0]
+    if not force:
+        closed_at = job.get("posting_closed_at")
+        failed = job.get("validation_failed")
+        if closed_at or failed:
+            raise RuntimeError(
+                f"Job {job_id} is stale and cannot be built against: "
+                f"posting_closed_at={closed_at!r} validation_failed={failed!r}. "
+                f"Pass force=True to override."
+            )
+    return job
