@@ -128,6 +128,26 @@ export function TodayActionCard({ action }: TodayActionCardProps) {
                   Score <span className="text-fg-muted font-semibold">{meta.score}</span>
                 </span>
               )}
+              {meta?.letterGrade && (
+                /* Phase 2 §4.1 — G5 letter grade badge. Colour-coded by
+                 * grade so A/B reads as positive, D/F reads as warning.
+                 * Title gives the user a hover hint that this is the
+                 * dimensional-breakdown grade, distinct from the
+                 * legacy single-number match_score. */
+                <span
+                  title={`Fit grade ${meta.letterGrade} (G5 dimensional breakdown)`}
+                  className={clsx(
+                    'inline-flex items-center justify-center w-5 h-5 rounded text-2xs font-bold leading-none tabular-nums',
+                    meta.letterGrade === 'A' && 'bg-success/15 text-success',
+                    meta.letterGrade === 'B' && 'bg-info/15 text-info',
+                    meta.letterGrade === 'C' && 'bg-surface-raised text-fg-muted',
+                    meta.letterGrade === 'D' && 'bg-warning/15 text-warning',
+                    meta.letterGrade === 'F' && 'bg-danger/15 text-danger',
+                  )}
+                >
+                  {meta.letterGrade}
+                </span>
+              )}
               {meta?.date && (
                 <span className="text-2xs text-fg-subtle tnum">{meta.date}</span>
               )}

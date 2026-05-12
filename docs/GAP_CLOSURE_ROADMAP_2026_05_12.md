@@ -1098,31 +1098,38 @@ remain open — logged here as the canonical follow-up backlog.
   hits ≥50. The static weights become a regression problem then —
   career-ops calibrates weights on outcome data; we'll do the same.
 
-### BUG-039 reserved for `tier4/g11-voice-calibration` (PR pending — fills this slot on land)
+### BUG-039: `jobs.match_score` is a single integer with no dimensional breakdown
+- **Discovered:** 2026-05-12 during Tier 2 §4.1 implementation
+- **Severity:** MEDIUM | **Status:** FIX_SHIPPED on `tier2/g5-evaluation-scoring` (PR #100)
+- **Fix:** Migration 019 adds `jobs.fit_score_breakdown JSONB` and
+  `jobs.letter_grade TEXT`. New `agents.scoring_agent` scores six
+  dimensions with persona-as-critic + cite breadcrumbs.
 
-### BUG-040 reserved for `tier4/proof-point-agent` (PR pending — fills this slot on land)
+### BUG-040 reserved for `tier4/g11-voice-calibration` (PR pending — fills this slot on land)
 
-### BUG-041: Migration 022 file declared `profiles(id)` + `BIGINT application_id`; live DB diverged to `users(id)` + UUID
+### BUG-041 reserved for `tier4/proof-point-agent` (PR pending — fills this slot on land)
+
+### BUG-042: Migration 022 file declared `profiles(id)` + `BIGINT application_id`; live DB diverged to `users(id)` + UUID
 - **Discovered:** 2026-05-12 during Tier 3 G7 ship | Severity: LOW | Status: FIX_SHIPPED on `tier3/g7-application-graph`
 - **Component:** `db/migrations/2026_05_12_022_application_answers.sql` (intended FK targets) vs the live Supabase schema (actual FK targets)
 - **Symptom:** First `mcp__supabase__apply_migration` attempt for 022
   failed with `relation "profiles" does not exist`. After switching to
   `users(id)`, the second attempt failed with `incompatible types:
   bigint and uuid` on the application_id FK. The on-disk migration file
-  was authored against the documented schema in migration 001
-  (`profiles` table + BIGINT applications.id) but the live DB has been
-  rewritten by a later migration not represented in `db/migrations/`.
+  was authored against the documented schema in migration 001 (which
+  documents `profiles` + BIGINT applications.id) but the live DB has
+  been rewritten by a later migration not represented in `db/migrations/`.
 - **Fix:** Updated migration 022 in-place to `users(id)` + `UUID
   application_id`, applied successfully via Supabase MCP. The G7 state
   TypedDict was also retyped from `int` to `str` for `application_id`
   so the Python side matches the live FK shape.
 - **Note:** This is the same migration-source vs live-DB drift that
-  `fix/migrations-fk-to-users` PR fixes for migrations 013 + 016.
-  Same root cause — documented migration 001 doesn't match live shape.
-  Discovery pass worth doing once all open PRs land.
+  `fix/migrations-fk-to-users` PR fixes for migrations 013 + 016 (and
+  now 022 too). Same root cause — documented migration 001 doesn't
+  match live shape. Discovery pass worth doing once all open PRs land.
 - **Financial impact:** $0 — caught at migration time, no app spend.
 
-### BUG-042+ onward — reserved for future agent sweeps
+### BUG-043+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.

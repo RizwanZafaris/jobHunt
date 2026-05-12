@@ -32,10 +32,17 @@ export interface TodayActionSecondary {
   href?: string
 }
 
+export type LetterGrade = 'A' | 'B' | 'C' | 'D' | 'F'
+
 export interface TodayActionMeta {
   score?: number
   company?: string
   date?: string
+  // Phase 2 §4.1 (G5) — A/B/C/D/F letter grade from
+  // jobs.fit_score_breakdown.composite. Optional because pre-G5
+  // discovery rows + linkedin_post_due / stale_application etc.
+  // cards have no grade. The /today A-F chip group consumes this.
+  letterGrade?: LetterGrade
 }
 
 export interface TodayAction {
