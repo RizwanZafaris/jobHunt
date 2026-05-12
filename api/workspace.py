@@ -412,6 +412,144 @@ def get_workspace(
     }
 
 
+# ─── GET /workspace/{job_id}/comp-band ─────────────────────────────────────
+#
+# Phase 1.1 — compensation intelligence. Powers (a) the workspace Apply tab
+# salary-expectation field, (b) G5 evaluation scoring (Phase 2), (c) G7
+# application assistant salary handling (Phase 3), (d) G8 offer negotiation
+# framing (Phase 4). One Perplexity Sonar call (~$0.02) per uncached
+# (company, role, level, location) tuple per 30 days.
+
+@router.get("/{job_id}/comp-band")
+async def get_comp_band_for_job(
+    job_id: int,
+    location_override: Optional[str] = Query(
+        default=None,
+        description=(
+            "Override the job's location (e.g. when the user is targeting a "
+            "different geo than the listing itself — common for Remote-x "
+            "ranges where one band per region exists)."
+        ),
+    ),
+    level_override: Optional[str] = Query(
+        default=None,
+        description=(
+            "Override the inferred level (Junior/Mid/Senior/Staff/Principal/"
+            "Director). When omitted, the agent uses the job's `archetype` "
+            "or falls back to extracting a level token from the title."
+        ),
+    ),
+    user_target_total_comp: Optional[int] = Query(
+        default=None,
+        ge=10_000,
+        le=10_000_000,
+        description=(
+            "User's own target total comp. Used to cap the strategy's anchor "
+            "at the market p90 — preventing accidental ATS auto-filter for "
+            "asking above-band."
+        ),
+    ),
+    force_refresh: bool = Query(
+        default=False,
+        description=(
+            "Bypass the 30-day cache and re-query Perplexity Sonar. "
+            "Costs ~$0.02. Use sparingly."
+        ),
+    ),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Comp-band for a job + the salary-field strategy.
+
+    Bundle response so the dashboard renders the salary section in one
+    round-trip:
+
+        GET /workspace/123/comp-band?level_override=Senior
+
+        {
+          "band": {
+            "company": "Stripe", "role": "Senior Product Manager",
+            "level": "Senior", "location": "Dubai, UAE",
+            "currency": "USD",
+            "p25": 150000, "p50": 180000, "p75": 215000, "p90": 260000,
+            "source_summary": "Glassdoor + Levels.fyi 2025-2026 ...",
+            "source_citations": [{"url": "...", "title": "..."}],
+            "cached": true, "age_days": 4, "cost_usd": 0,
+            "confidence": "high", "cache_id": "..."
+          },
+          "strategy": {
+            "approach": "range",
+            "low": 195000, "high": 240000,
+            "anchor": null,
+            "framing": "I'm targeting total comp in the USD 195,000-240,000 range...",
+            "rationale": "Market band is wide (44% spread above p50)..."
+          },
+          "generated_at": "2026-05-12T..."
+        }
+
+    The endpoint is scoped to the requesting user via
+    `_get_job_for_user(...)` — RLS on `comp_cache` plus tenant filter on
+    `jobs` together prevent cross-user leakage.
+    """
+    from agents.comp_research import (
+        band_to_dict,
+        get_comp_band,
+        strategy_to_dict,
+        suggest_salary_strategy,
+    )
+
+    db = get_supabase()
+    job = _get_job_for_user(db, job_id=job_id, user_id=user.id)  # 404 if not theirs
+
+    # Derive query inputs from the job row + overrides.
+    company = job.get("company") or ""
+    role = job.get("title") or ""
+    location = location_override or job.get("location") or None
+    # Level: prefer override, else heuristic from archetype/title.
+    level = level_override
+    if not level:
+        archetype = job.get("archetype")
+        if isinstance(archetype, str) and archetype:
+            level = archetype
+        else:
+            # Crude title-based fallback. Real Phase-2 level extraction will
+            # use a structured archetype detector — for now, this catches the
+            # 80% case (senior / staff / principal / lead / head / director).
+            title_lc = (role or "").lower()
+            for token in ("principal", "staff", "head of", "director",
+                          "lead", "senior", "junior", "intern"):
+                if token in title_lc:
+                    level = token.title()
+                    break
+
+    if not company or not role:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "missing_job_fields",
+                "message": (
+                    f"Cannot research comp without a company and a role title. "
+                    f"job={job_id}: company={company!r} title={role!r}."
+                ),
+            },
+        )
+
+    band = await get_comp_band(
+        company=company,
+        role=role,
+        level=level,
+        location=location,
+        user_id=user.id,
+        force_refresh=force_refresh,
+    )
+    strategy = suggest_salary_strategy(band, user_target=user_target_total_comp)
+
+    return {
+        "band": band_to_dict(band),
+        "strategy": strategy_to_dict(strategy),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 # ─── POST /workspace/{job_id}/build-resume ─────────────────────────────────
 @router.post("/{job_id}/build-resume")
 def build_resume(
