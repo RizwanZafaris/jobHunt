@@ -454,11 +454,99 @@ async def post_log_outcome(
         logger.warning(f"credit_outcome failed (non-fatal): {type(e).__name__}: {e}")
         credit_summary = {"error": f"credit_failed: {type(e).__name__}"}
 
+    # Tier 2 G3 §4.2 — outcome attribution to story_bank.
+    # The G3 prep pack's `retrieved_stories` field records exactly which
+    # stories were surfaced for this interview. When an outcome lands
+    # (callback / pass / fail / offer), we credit those stories so the
+    # next prep pack's pgvector ranking can re-weight them by past
+    # success. Independent from credit_outcome above, which credits
+    # company_knowledge rows on the resume side.
+    story_credit_summary = await _credit_stories_for_outcome(
+        application_id=application_id,
+        user_id=user.id,
+        passed=body.passed,
+    )
+    credit_summary["story_bank_credits"] = story_credit_summary
+
     return LogOutcomeResponse(
         outcome_id=str(outcome_id),
         credit_summary=credit_summary,
         refines_persona_on_next_cron=True,
     )
+
+
+async def _credit_stories_for_outcome(
+    *,
+    application_id: UUID,
+    user_id: UUID,
+    passed: Optional[bool],
+) -> dict[str, Any]:
+    """Bump outcome_score on every story that was retrieved for this prep.
+
+    Resolution: load the most-recent converged interview_prep for this
+    application, read its `retrieved_stories` JSON column, and bump each
+    referenced story_bank row by the interview-outcome delta.
+
+    Delta is small (+1 for pass, -1 for fail, 0 for unknown) — we want
+    the boost to influence ranking over many runs, not dominate one.
+    The story_bank.outcome_score column is a raw count (clamped ≥0 by
+    update_outcome_score), distinct from company_knowledge's [0,1]
+    score.
+    """
+    summary: dict[str, Any] = {
+        "credited_story_count": 0,
+        "delta": 0,
+        "story_ids": [],
+        "error": None,
+    }
+    if passed is None:
+        summary["error"] = "no_pass_signal_skipped"
+        return summary
+    delta = 1 if passed else -1
+    summary["delta"] = delta
+
+    try:
+        db = get_supabase()
+        rows = (
+            db.table("interview_prep")
+            .select("id, retrieved_stories")
+            .eq("application_id", str(application_id))
+            .eq("user_id", str(user_id))
+            .order("finalized_at", desc=True, nullsfirst=False)
+            .limit(1)
+            .execute()
+        ).data or []
+    except Exception as e:
+        summary["error"] = f"prep_lookup_failed: {type(e).__name__}"
+        return summary
+
+    if not rows:
+        summary["error"] = "no_prep_to_credit"
+        return summary
+    retrieved = (rows[0] or {}).get("retrieved_stories") or {}
+    if not isinstance(retrieved, dict):
+        summary["error"] = "retrieved_stories_not_dict"
+        return summary
+
+    story_ids: list[str] = []
+    for _idx, rm in retrieved.items():
+        if not isinstance(rm, dict):
+            continue
+        sid = (rm.get("story_id") or (rm.get("story") or {}).get("id") or "").strip()
+        if sid and sid not in story_ids:
+            story_ids.append(sid)
+
+    try:
+        from agents.story_bank_agent import update_outcome_score
+        for sid in story_ids:
+            await update_outcome_score(sid, delta)
+    except Exception as e:
+        summary["error"] = f"credit_write_failed: {type(e).__name__}"
+        return summary
+
+    summary["credited_story_count"] = len(story_ids)
+    summary["story_ids"] = story_ids
+    return summary
 
 
 # ─── POST /interview-studio/{application_id}/build-prep-pack ──────────────

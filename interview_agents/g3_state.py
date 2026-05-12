@@ -62,6 +62,21 @@ class InterviewPrepState(TypedDict, total=False):
     likely_questions: list[dict]       # union(3 predictors), deduped, sorted, capped at 20
     star_stories: list[dict]           # [{question, story_id|None, match_quality, needs_rizwan_input}]
 
+    # ─── Tier 2 G3 — story_bank integration (Phase 2 §4.2) ──────────────
+    # 2026-05-12: story_retriever_node + gap_analyzer_node consume the G9
+    # story_bank via search_story_bank / agents.story_bank_agent.search_stories.
+    # Keyed by question index (string of int) so the prep pack template can
+    # zip them with likely_questions.
+    retrieved_stories: dict             # {q_idx: {story: StoryBankRow.asdict(), similarity: float, source_text, source_experience_id}}
+    # Per-question gap suggestions for low-similarity (< 0.5) hits.
+    story_gaps: list[dict]              # [{question, missing_competency, reframe_suggestion}]
+    # Identity-lock drops: competencies fabricated by gap_analyzer that
+    # aren't in profile_master.core_competencies. Surfaced in transcript.
+    persona_critic_drops: list[str]
+    # Stories that were credited on the most recent outcome log (used by
+    # interview_studio post_log_outcome).
+    credited_story_ids: list[str]
+
     # ─── Mock loop ──────────────────────────────────────────────────────
     mock_target_question: dict | None  # the one question we're rehearsing
     mock_answer_md: str                # current strong-answer template
