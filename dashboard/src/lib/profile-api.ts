@@ -848,6 +848,8 @@ export interface CompanyKnowledgeResponse {
   company: TargetCompany | null
   knowledge: CompanyKnowledgeSection[]
   section_count: number
+  /** BUG-011: timestamp from company_personas; used to flag stale cards. */
+  last_synthesized_at?: string | null
 }
 
 export async function fetchCompanyKnowledge(name: string): Promise<CompanyKnowledgeResponse> {
