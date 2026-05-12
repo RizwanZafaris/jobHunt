@@ -415,15 +415,30 @@ async def list_jobs(
     status: Optional[str] = None,
     min_score: int = 0,
     limit: int = 50,
+    include_closed: bool = False,
     _auth=Depends(verify_secret)
 ):
-    """List all discovered jobs."""
+    """List all discovered jobs.
+
+    2026-05-12: filters out closed / failed-validation jobs by default.
+    The OKX-1641 archetype (1-year-old LinkedIn listing scoring 95/100) was
+    surfacing on this endpoint pre-fix. Pass include_closed=true to see
+    everything (admin / debugging use).
+    """
     from db.client import get_supabase
+    from api._job_guards import filter_open_jobs_query
     db = get_supabase()
     query = db.table("jobs").select(
         "id, title, company, location, match_score, status, url, discovered_at, "
-        "archetype, legitimacy_tier, resume_generated_at"
+        "archetype, legitimacy_tier, resume_generated_at, "
+        "posting_closed_at, validation_failed"
     ).gte("match_score", min_score).order("match_score", desc=True).limit(limit)
+
+    # Hide stale rows unless explicitly requested. Keeps the canonical list
+    # endpoint (and anything that proxies it — dashboards, integrations)
+    # safe from the OKX-1641 archetype.
+    if not include_closed:
+        query = filter_open_jobs_query(query)
 
     if status:
         query = query.eq("status", status)
@@ -574,11 +589,18 @@ def _build_boss_context() -> str:
     parts: list[str] = []
 
     try:
-        jobs = (
+        # 2026-05-12: filter stale rows out of the daily digest. Pre-fix,
+        # this endpoint surfaced the OKX-1641 (1-year-old) listing because
+        # it had match_score 95 and no closed_at.
+        from api._job_guards import filter_open_jobs_query
+        _q = (
             db.table("jobs")
             .select("id, title, company, match_score, status, archetype, legitimacy_tier, resume_generated_at")
             .gte("match_score", 85)
-            .order("match_score", desc=True)
+        )
+        _q = filter_open_jobs_query(_q)
+        jobs = (
+            _q.order("match_score", desc=True)
             .limit(10)
             .execute()
             .data or []
@@ -1549,12 +1571,22 @@ async def generate_resume_for_job(
     dashboard can show a confirm dialog and retry with force=true.
     """
     from db.client import get_supabase
+    from api._job_guards import load_open_job
     db = get_supabase()
-    job_result = db.table("jobs").select("*").eq("id", job_id).limit(1).execute()
-    job_rows = job_result.data or []
-    if not job_rows:
-        raise HTTPException(status_code=404, detail="Job not found")
-    job = job_rows[0]
+    # 2026-05-12: route through load_open_job. This was the highest-impact
+    # bypass found by Agent B's code audit — a legacy twin of
+    # `/workspace/{id}/build-resume` that lacked the OKX-1641 wallet guard.
+    # `_auth=verify_secret` (no per-user scope) → pass user_id=None and rely
+    # on the staleness 409. If posting_closed_at or validation_failed is
+    # set, 409 with a structured `code` so the dashboard can show a confirm
+    # dialog and offer a `force=true` retry.
+    job = load_open_job(
+        db,
+        job_id=job_id,
+        user_id=None,
+        force=force,
+        cost_label="G2 resume build (~$1-5)",
+    )
     score = job.get("match_score", 0)
     if score < 85:
         raise HTTPException(
@@ -1664,12 +1696,19 @@ async def prep_interview_for_job(
     dialog and retry with force=true.
     """
     from db.client import get_supabase
+    from api._job_guards import load_open_job
     db = get_supabase()
-    job_result = db.table("jobs").select("*").eq("id", job_id).limit(1).execute()
-    job_rows = job_result.data or []
-    if not job_rows:
-        raise HTTPException(status_code=404, detail="Job not found")
-    job = job_rows[0]
+    # 2026-05-12: wallet guard. G3 prep packs cost ~$0.50 each; preparing
+    # for an interview on a closed posting is pure waste. Same 409 pattern
+    # as generate-resume above — pass force=true to override (e.g. user
+    # had an interview scheduled BEFORE the posting got marked closed).
+    job = load_open_job(
+        db,
+        job_id=job_id,
+        user_id=None,
+        force=force,
+        cost_label="G3 interview prep (~$0.50)",
+    )
 
     # Resolve application_id if not provided
     resolved_application_id = application_id

@@ -137,12 +137,17 @@ class BossAgent(BaseAgent):
                 .execute()
 
             # High-score jobs found today
+            # 2026-05-12: filter out closed/failed jobs so the digest count
+            # only reflects actionable opportunities. Otherwise stale-on-
+            # arrival listings (the OKX archetype) inflate the headline.
+            from api._job_guards import filter_open_jobs_query
             threshold = get_settings().fit_score_threshold
-            high_score = db.table("jobs") \
-                .select("id", count="exact") \
-                .gte("discovered_at", f"{today}T00:00:00") \
-                .gte("match_score", threshold) \
-                .execute()
+            high_score = filter_open_jobs_query(
+                db.table("jobs")
+                  .select("id", count="exact")
+                  .gte("discovered_at", f"{today}T00:00:00")
+                  .gte("match_score", threshold)
+            ).execute()
 
             # Applications sent today
             applied = db.table("applications") \
@@ -181,11 +186,15 @@ class BossAgent(BaseAgent):
             db = get_supabase()
             threshold = get_settings().fit_score_threshold
             today = date.today().isoformat()
-            top_jobs = db.table("jobs") \
-                .select("title, company, location, match_score, url") \
-                .gte("discovered_at", f"{today}T00:00:00") \
-                .gte("match_score", threshold) \
-                .order("match_score", desc=True) \
+            # 2026-05-12: same filter as the stats query above — the digest
+            # email should never recommend a closed/failed listing.
+            from api._job_guards import filter_open_jobs_query
+            top_jobs = filter_open_jobs_query(
+                db.table("jobs")
+                  .select("title, company, location, match_score, url")
+                  .gte("discovered_at", f"{today}T00:00:00")
+                  .gte("match_score", threshold)
+            ).order("match_score", desc=True) \
                 .limit(10) \
                 .execute()
             top_jobs_data = top_jobs.data or []
