@@ -1817,7 +1817,10 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
     # via URL or fall back.
     artifacts: dict = {}
     import os
-    for k in ("resume_path", "email_path", "interview_path", "report_path"):
+    # BUG-030 (2026-05-12): `report_path` removed from this loop — column is
+    # never written by any pipeline. See db/client.py `_JOBS_COLUMNS` note and
+    # the dead-column-gate archetype in docs/GAP_CLOSURE_ROADMAP §17.
+    for k in ("resume_path", "email_path", "interview_path"):
         p = job.get(k)
         if not p:
             artifacts[k] = {"exists": False}

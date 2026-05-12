@@ -180,7 +180,12 @@ async def search_story_bank(topic: str, match_count: int = 3) -> list[dict]:
 _JOBS_COLUMNS = {
     "id", "title", "company", "company_id", "location", "url", "description",
     "jd_embedding", "source", "match_score", "fit_details", "status",
-    "report_path", "resume_path", "email_path", "interview_path",
+    # BUG-030 (2026-05-12): `report_path` removed from this allow-list — the
+    # column exists in db/schema.sql:63 for historical reasons but no code
+    # path has ever written to it. Leaving it in the upsert allow-list let
+    # callers silently pass a value that never reached the DB. The column
+    # itself is intentionally NOT dropped (drops are irreversible).
+    "resume_path", "email_path", "interview_path",
     "discovered_at", "applied_at", "updated_at",
     # Workflow v2
     "archetype", "legitimacy_tier", "legitimacy_signals",
