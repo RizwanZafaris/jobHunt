@@ -394,6 +394,94 @@ def worker_run_g4(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+def worker_run_legitimacy(jobs_run_id: str) -> dict[str, Any]:
+    """RQ job: run the Tier-2 legitimacy agent for one job.
+
+    Tier 2 §4.3 — 4-signal heuristic (posting age, URL reachability,
+    repost pattern, recent news). Stale jobs are skipped silently — the
+    auto-trigger from agents/jobs_scout shouldn't burn Perplexity dollars
+    on a posting that's already marked closed.
+
+    Cost: ~$0.005 per run (one Perplexity sonar call; cached for 24h).
+    """
+    from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
+
+    run = get_run(jobs_run_id)
+    if not run:
+        logger.error(
+            "worker_run_legitimacy: jobs_runs row %s not found; aborting",
+            jobs_run_id,
+        )
+        return {"error": "row_not_found", "run_id": jobs_run_id}
+
+    mark_running(jobs_run_id)
+    payload = run.payload or {}
+    job_id = payload.get("job_id")
+    if job_id is None:
+        mark_failed(jobs_run_id, "payload.job_id missing", retry=False)
+        raise ValueError(
+            f"worker_run_legitimacy payload missing job_id: {payload!r}"
+        )
+
+    force = bool(payload.get("force", False))
+
+    try:
+        # Skip stale jobs — the cron already marked them closed, no point
+        # in spending Perplexity dollars. We DON'T mark_failed because the
+        # row is technically a "we chose not to spend" success.
+        from api._job_guards import load_open_job_or_none
+        from db.client import get_supabase
+        job = load_open_job_or_none(
+            get_supabase(),
+            job_id=int(job_id),
+            user_id=run.user_id,
+            force=force,
+        )
+        if job is None:
+            result = {
+                "job_id": int(job_id),
+                "skipped": True,
+                "reason": "stale_or_not_found",
+                "cost_usd": 0.0,
+            }
+            mark_succeeded(jobs_run_id, result)
+            return result
+
+        from agents.legitimacy_agent import score_legitimacy
+        lr = _run_async(score_legitimacy(
+            job_id=int(job_id),
+            user_id=run.user_id,
+            force=force,
+        ))
+        result = {
+            "job_id": int(job_id),
+            "score": lr.score,
+            "tier": lr.tier,
+            "cost_usd": lr.cost_usd,
+            "signals_summary": {
+                k: v.get("normalised")
+                for k, v in lr.signals.items()
+                if isinstance(v, dict) and "normalised" in v
+            },
+        }
+        mark_succeeded(jobs_run_id, result)
+        return result
+    except Exception as exc:
+        attempt_n = (run.attempts or 0) + 1
+        retry = _is_retryable(exc) and attempt_n < MAX_ATTEMPTS
+        err = _truncate(
+            f"{type(exc).__name__}: {exc}\n\n"
+            f"attempt {attempt_n}/{MAX_ATTEMPTS} — retry={retry}\n\n"
+            f"{traceback.format_exc()}"
+        )
+        logger.exception(
+            "worker_run_legitimacy failed run_id=%s job_id=%s attempt=%d retry=%s",
+            jobs_run_id, job_id, attempt_n, retry,
+        )
+        mark_failed(jobs_run_id, err, retry=retry)
+        raise
+
+
 # ─── Worker entrypoint ────────────────────────────────────────────────────
 
 

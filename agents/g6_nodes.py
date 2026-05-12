@@ -28,6 +28,44 @@ Cost model (single follow-up):
     persist_and_notify      $0.00  (code)
     ──────────────────────────────
     total                  ~$0.12
+
+Prompt-caching strategy (T1, 2026-05-12):
+    The three LLM nodes — draft_generator, tone_calibrator, persona_critic —
+    each invoke Sonnet 4.6 with a STATIC system prompt that is identical
+    across all daily cron runs. We opt-in to Anthropic prompt caching by
+    passing `cache_system=True` to the router for each call:
+
+        get_router().ask(..., cache_system=True, ...)
+
+    The router wraps the system prompt as a single text block with
+    cache_control={"type":"ephemeral"} (5-min TTL). On the FIRST call of a
+    cron pass the prompt is written to the cache (billed at 1.25× input
+    rate); every subsequent follow-up in the same cron batch reads from the
+    cache at 0.10× input rate — a 90% discount on the system-prompt input
+    tokens.
+
+    Why force-wrap instead of relying on the router's size-gated auto-mode:
+      • PERSONA_CRITIC_SYSTEM and TONE_CALIBRATOR_SYSTEM are under 1024
+        tokens by the chars/4 heuristic, so the router's auto path would
+        skip them. The chars/4 estimate is conservative; real Sonnet
+        tokenization can push a prompt above the 1024-token Anthropic
+        minimum where it then *does* cache.
+      • Below the API minimum the cache_control marker is silently ignored
+        — there is zero downside to setting it.
+      • DRAFT_GENERATOR_SYSTEM is on the edge (~720 est tokens; ~2.9KB) and
+        gets the same treatment for consistency.
+
+    Expected savings (per follow-up, warm cache, cron batch ≥ 2 follow-ups):
+        draft_generator system:  ~720 tok × $3 × 0.90 / 1M  = $0.0019 / call
+        persona_critic  system:  ~295 tok × $3 × 0.90 / 1M  = $0.0008 / call
+        tone_calibrator system:  ~190 tok × $3 × 0.90 / 1M  = $0.0005 / call
+                                                              ────────
+                                                              $0.0032 / follow-up
+
+    Across ~50 follow-ups/mo this is ~$0.16/mo — modest in absolute terms,
+    but the same infrastructure carries over to G3/G7/G8 when those graphs
+    land. Gated by ANTHROPIC_PROMPT_CACHE_ENABLED (default ON, set to "0"
+    for staged rollback).
 """
 from __future__ import annotations
 
@@ -407,6 +445,10 @@ breadcrumb. Output ONLY the email body — no subject, no signature.
         max_tokens=1000,
         temperature=0.35,
         agent_name="g6.draft_generator",
+        # See module docstring §"Prompt-caching strategy". The same static
+        # system prompt fires every cron run; force-wrap so we pick up the
+        # 90% cache-read discount on subsequent follow-ups in the batch.
+        cache_system=True,
     )
 
     draft = (result.text or "").strip()
@@ -537,6 +579,8 @@ Score the draft. Return strict JSON only."""
         temperature=0.15,
         agent_name="g6.persona_critic",
         json_response=True,
+        # See module docstring §"Prompt-caching strategy".
+        cache_system=True,
     )
 
     try:
@@ -666,6 +710,8 @@ Score the voice match. Return strict JSON only."""
         temperature=0.2,
         agent_name="g6.tone_calibrator",
         json_response=True,
+        # See module docstring §"Prompt-caching strategy".
+        cache_system=True,
     )
 
     try:
