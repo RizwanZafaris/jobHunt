@@ -393,6 +393,39 @@ def enqueue_g3_interview_prep(
     )
 
 
+def enqueue_g9_story_extract(
+    user_id: UUID | str,
+    *,
+    cv_hash: Optional[str] = None,
+    force: bool = False,
+) -> str:
+    """Enqueue a G9 STAR+R story extraction run for one user.
+
+    Triggered on master-CV update (the upload endpoint enqueues this so
+    the user's story_bank stays in sync with their latest CV) and from
+    the manual UI button (POST /workspace/stories/build).
+
+    `cv_hash` is folded into the idempotency payload — re-uploading the
+    SAME CV markdown collapses to a single run (cv_hash is the natural
+    dedup key). A real edit produces a new hash and a new run. Pass
+    `force=True` to bypass dedup (e.g. when retrying after a transient
+    LLM failure).
+
+    Returns the jobs_runs.id (UUID string). Cost is ~$0.20 per run.
+    """
+    payload: dict[str, Any] = {"force": bool(force)}
+    if cv_hash:
+        payload["cv_hash"] = str(cv_hash)
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="g9_story_extract",
+        payload=payload,
+        worker_func="api.worker.worker_run_g9",
+        # G9 is fixed-shape (no critic loop); 5 min is more than enough.
+        job_timeout=300,
+    )
+
+
 def enqueue_g4_linkedin_post(
     user_id: UUID | str,
     *,

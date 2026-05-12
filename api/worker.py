@@ -300,6 +300,57 @@ def worker_run_g3(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+def worker_run_g9(jobs_run_id: str) -> dict[str, Any]:
+    """RQ job: run the G9 STAR+R story extractor for one user.
+
+    Phase 1.2 — Extracts 10-15 STAR+R stories from the user's master CV
+    and upserts them into story_bank with pgvector embeddings. Triggered
+    automatically on master-CV update (the upload endpoint enqueues this
+    after a successful upload) and from a manual UI trigger.
+
+    payload shape:
+        {"cv_hash": "<sha256 of master_cv_md>", "force": bool}
+    """
+    from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
+
+    run = get_run(jobs_run_id)
+    if not run:
+        logger.error(f"worker_run_g9: jobs_runs row {jobs_run_id} not found; aborting")
+        return {"error": "row_not_found", "run_id": jobs_run_id}
+
+    mark_running(jobs_run_id)
+
+    try:
+        from agents.g9_run import run_g9
+        final_state = _run_async(run_g9(user_id=str(run.user_id)))
+        result = {
+            "persisted_count": final_state.get("persisted_count", 0),
+            "dropped_count": final_state.get("dropped_count", 0),
+            "embeddings_count": final_state.get("embeddings_count", 0),
+            "source_cv_hash": final_state.get("source_cv_hash"),
+            "total_cost_usd": final_state.get("total_cost_usd", 0),
+            "total_latency_ms": final_state.get("total_latency_ms", 0),
+            "stories_persisted": final_state.get("stories_persisted", [])[:50],
+            "stories_dropped": final_state.get("stories_dropped", [])[:50],
+            "persona_warnings": final_state.get("persona_warnings", [])[:50],
+        }
+        mark_succeeded(jobs_run_id, result)
+        return result
+    except Exception as exc:
+        attempt_n = (run.attempts or 0) + 1
+        retry = _is_retryable(exc) and attempt_n < MAX_ATTEMPTS
+        err = _truncate(
+            f"{type(exc).__name__}: {exc}\n\n"
+            f"attempt {attempt_n}/{MAX_ATTEMPTS} — retry={retry}\n\n"
+            f"{traceback.format_exc()}"
+        )
+        logger.exception(
+            f"worker_run_g9 failed run_id={jobs_run_id} attempt={attempt_n} retry={retry}"
+        )
+        mark_failed(jobs_run_id, err, retry=retry)
+        raise
+
+
 def worker_run_g4(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G4 LinkedIn-draft graph for one user."""
     from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
