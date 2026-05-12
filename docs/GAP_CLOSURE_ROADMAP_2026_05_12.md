@@ -1041,6 +1041,30 @@ remain open — logged here as the canonical follow-up backlog.
   to empty containers, not None, so the UPDATE will fail on first run.
   Apply the migration before deploying this branch.
 
+### BUG-040: G7 cover-letter generation does not yet cite proof_points
+- **Discovered:** 2026-05-12 during Tier 4 §6.4 proof-point agent build |
+  Severity: LOW (forward-looking — G7 isn't merged yet) | Status: OPEN
+- **Component:** `agents/proof_point_agent.py`, future
+  `resume_agents/g7_*.py` (not yet shipped)
+- **Symptom:** Tier 4 ships the proof_points table, search RPC, agent
+  module, REST API, extractor, LinkedIn-post auto-seeding, and G3
+  story_retriever_node sidecar — but G7 (cover-letter graph) is still
+  on its own branch and does not yet pull `search_proof_points` when
+  drafting "why I'm a fit" paragraphs. When G7 lands, the
+  `insider_expert`-style node needs to call
+  `agents.proof_point_agent.search_proof_points(user_id, jd_topic_text,
+  k=5)` and surface the top matches as candidate facts the LLM can
+  weave in, with the proof_point.id captured in the agent_transcript so
+  outcome_to_persona can credit them.
+- **Fix (suggested):** in the follow-up PR after G7 merges, add
+  one node that runs alongside the JD-extractor and writes
+  `state.proof_point_hits: list[ProofPointMatch.asdict()]`. The
+  finaliser embeds the IDs into cite:knowledge_id markers, same shape
+  as story_bank.
+- **Workaround until G7 lands:** none required — the Tier 4 surface is
+  complete from G3 + LinkedIn + extractor sides; G7 integration is a
+  separate scope deliberately excluded per Tier 4 spec.
+
 ### BUG-037+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
