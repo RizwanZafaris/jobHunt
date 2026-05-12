@@ -31,9 +31,14 @@ interface NavItem {
 // scheduled-for-today draft. Without a top-level entry point, users
 // couldn't reach the LinkedIn content calendar to approve / schedule
 // drafts in the first place — circular dead-zone.
+// BUG-023: the nav entry labeled "Targets" now points straight at the
+// /companies route (where its content has always lived). The old /targets
+// page was a server-side redirect and the round-trip silently changed the
+// URL — bookmarks landed somewhere unexpected and the browser tab title
+// said "Companies". Route file has been deleted.
 const PRIMARY: NavItem[] = [
   { href: '/today',        label: 'Today',        icon: 'sun' },
-  { href: '/targets',      label: 'Targets',      icon: 'target' },
+  { href: '/companies',    label: 'Targets',      icon: 'target' },
   { href: '/applications', label: 'Applications', icon: 'clipboard-list' },
   { href: '/linkedin',     label: 'LinkedIn',     icon: 'sparkles' },
   { href: '/network',      label: 'Network',      icon: 'users' },
@@ -61,13 +66,10 @@ function isActive(href: string, pathname: string): boolean {
       pathname.startsWith('/boss/')
     )
   }
-  if (href === '/targets') {
-    return (
-      pathname === href ||
-      pathname.startsWith(href + '/') ||
-      pathname === '/companies' ||
-      pathname.startsWith('/companies/')
-    )
+  // BUG-023: keep the active highlight on every /companies/* page so
+  // detail views still show the parent nav entry as current.
+  if (href === '/companies') {
+    return pathname === href || pathname.startsWith(href + '/')
   }
   return pathname === href || pathname.startsWith(href + '/')
 }

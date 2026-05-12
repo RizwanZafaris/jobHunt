@@ -149,7 +149,7 @@ export default async function TodayPage() {
           description="Nothing pressing. Run a discovery pass or check tomorrow's queue."
           action={
             <Link
-              href="/targets"
+              href="/companies"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-2xs font-semibold bg-accent text-accent-fg hover:bg-accent-hover transition-colors min-h-9"
             >
               Open targets

@@ -7,6 +7,7 @@ Vercel dashboard can call these endpoints.
 from __future__ import annotations
 import asyncio
 import logging
+import re
 from typing import Optional
 from datetime import date, datetime, timezone
 
@@ -1456,12 +1457,59 @@ async def remove_target_company(
     return {"removed": True, "row": (result.data or [None])[0]}
 
 
+# BUG-011: LLM disclaimer patterns to strip from rendered knowledge cards.
+# These appear when the synthesizer falls back to "general knowledge" — the
+# user has no way of telling the data is stale, so the disclaimer reads as
+# part of the actual research. Strip on read; the canonical content stays in
+# the DB so a future re-synthesis fixes it once.
+_LLM_DISCLAIMER_PATTERNS = [
+    re.compile(
+        r"\bAs (?:of|this analysis)[^.]*\.",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bspecific (?:news|data|information) (?:from|for) the last \d+ months?"
+        r" (?:is|are) not available\.",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bbased on general knowledge[^.]*\.",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:without|with no) recent web research[^.]*\.",
+        re.IGNORECASE,
+    ),
+]
+
+
+def _strip_llm_disclaimers(text: str | None) -> str | None:
+    """BUG-011: Strip hard-coded LLM disclaimers so cards don't render
+    self-undermining text like "As this analysis is based on general
+    knowledge..." Leaves structural sentences around them intact."""
+    if not text:
+        return text
+    cleaned = text
+    for pat in _LLM_DISCLAIMER_PATTERNS:
+        cleaned = pat.sub("", cleaned)
+    # Collapse the whitespace gaps the substitutions left behind.
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"\n[ \t]*\n[ \t]*\n+", "\n\n", cleaned)
+    return cleaned.strip()
+
+
 @app.get("/companies/{company_name}/knowledge")
 async def get_company_knowledge(
     company_name: str,
     _auth=Depends(verify_secret),
 ):
-    """Return full research intel for a company (overview, news, culture, recruitment process, etc.)."""
+    """Return full research intel for a company (overview, news, culture, recruitment process, etc.).
+
+    BUG-011: also exposes ``last_synthesized_at`` from ``company_personas`` so
+    the dashboard can render a freshness pill + a "Refresh" CTA when the
+    research is older than 30 days. Disclaimer-y LLM filler is stripped from
+    each section's content on read.
+    """
     from db.client import get_supabase
     db = get_supabase()
     # Look up company record
@@ -1471,10 +1519,33 @@ async def get_company_knowledge(
     knowledge = db.table("company_knowledge").select(
         "section, content, source_url, scraped_at"
     ).eq("company_name", company_name).execute()
+    knowledge_rows = knowledge.data or []
+    # BUG-011: strip hard-coded LLM disclaimers from every section's content.
+    for row in knowledge_rows:
+        row["content"] = _strip_llm_disclaimers(row.get("content")) or ""
+    # BUG-011: surface the persona-row freshness timestamp so the UI can
+    # render a relative-time pill ("3 days ago" / "stale — 47 days old").
+    last_synthesized_at: str | None = None
+    try:
+        persona = (
+            db.table("company_personas")
+            .select("last_synthesized_at")
+            .eq("company_name", company_name)
+            .limit(1)
+            .execute()
+        )
+        persona_row = (persona.data or [None])[0]
+        if persona_row:
+            last_synthesized_at = persona_row.get("last_synthesized_at")
+    except Exception as e:
+        logger.warning(
+            f"get_company_knowledge[{company_name}]: persona freshness lookup failed: {e}"
+        )
     return {
         "company": company_row,
-        "knowledge": knowledge.data or [],
-        "section_count": len(knowledge.data or []),
+        "knowledge": knowledge_rows,
+        "section_count": len(knowledge_rows),
+        "last_synthesized_at": last_synthesized_at,
     }
 
 
@@ -2017,16 +2088,23 @@ class ApplicationUpdate(BaseModel):
 
 @app.get("/applications")
 async def list_applications(_auth=Depends(verify_secret)):
-    """List all applications grouped by status (kanban columns)."""
+    """List all applications grouped by status (kanban columns).
+
+    BUG-012: also annotates each row with ``threshold_violated`` so the
+    dashboard can pill rows whose underlying ``jobs.match_score`` came in
+    below ``settings.apply_threshold`` (default 85). This explains *why*
+    a rejection happened without forcing the user to recompute the
+    fit-score arithmetic in their head.
+    """
     from db.client import get_supabase
     from collections import defaultdict
+    settings = get_settings()
     db = get_supabase()
     apps = db.table("applications").select("*").order("created_at", desc=True).execute()
     apps_data = apps.data or []
-    by_status: dict[str, list] = defaultdict(list)
-    for a in apps_data:
-        by_status[a.get("status", "evaluated")].append(a)
+    apply_threshold = int(getattr(settings, "apply_threshold", 85) or 85)
     # Also enrich with job info
+    job_map: dict = {}
     if apps_data:
         job_ids = list({a["job_id"] for a in apps_data if a.get("job_id")})
         if job_ids:
@@ -2034,7 +2112,23 @@ async def list_applications(_auth=Depends(verify_secret)):
             job_map = {j["id"]: j for j in (jobs.data or [])}
             for a in apps_data:
                 a["job"] = job_map.get(a.get("job_id"))
-    return {"applications": apps_data, "by_status": dict(by_status), "total": len(apps_data)}
+    # Apply the threshold annotation after the join so the value is always
+    # consistent with the canonical jobs.match_score the user sees elsewhere.
+    for a in apps_data:
+        job = a.get("job") or {}
+        match_score = job.get("match_score")
+        a["threshold_violated"] = (
+            isinstance(match_score, (int, float)) and match_score < apply_threshold
+        )
+    by_status: dict[str, list] = defaultdict(list)
+    for a in apps_data:
+        by_status[a.get("status", "evaluated")].append(a)
+    return {
+        "applications": apps_data,
+        "by_status": dict(by_status),
+        "total": len(apps_data),
+        "apply_threshold": apply_threshold,
+    }
 
 
 @app.post("/applications")
