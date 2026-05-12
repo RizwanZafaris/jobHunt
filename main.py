@@ -23,6 +23,7 @@ import os
 import sys
 from datetime import datetime
 
+from apscheduler.events import EVENT_JOB_MISFIRE
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -158,6 +159,26 @@ def start_scheduler():
     console.print("   Press Ctrl+C to stop\n")
 
     scheduler = AsyncIOScheduler(timezone=tz)
+
+    # P1-2 (external audit) / §6.5 (internal): harden scheduler defaults so a
+    # backlog of missed fires (e.g. after a Railway restart) coalesces into a
+    # single run instead of a thundering herd. Per-job `misfire_grace_time`
+    # overrides below still win — these defaults are the floor.
+    JOB_DEFAULTS = {
+        "coalesce": True,           # collapse missed fires into one
+        "max_instances": 1,         # never run more than one instance at once
+        "misfire_grace_time": 300,  # floor; per-job values still override
+    }
+    scheduler.configure(job_defaults=JOB_DEFAULTS)
+
+    def on_job_misfire(event):
+        """Log scheduler misfires so we can see them in Railway logs."""
+        logger.warning(
+            f"scheduler_misfire: job_id={event.job_id} "
+            f"scheduled_run_time={event.scheduled_run_time}"
+        )
+
+    scheduler.add_listener(on_job_misfire, EVENT_JOB_MISFIRE)
 
     # Parse times
     scout_h, scout_m = map(int, s.job_scout_time.split(":"))
