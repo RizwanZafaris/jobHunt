@@ -435,6 +435,13 @@ the system prompt. EXACTLY ONE signal sentence with EXACTLY ONE cite
 breadcrumb. Output ONLY the email body — no subject, no signature.
 """
 
+    # 2026-05-12 (G11 Tier 4): prepend the user's voice profile block to the
+    # user message. No-op on cold-start (no calibration yet). We prepend
+    # to the USER message (not system) so the large DRAFT_GENERATOR_SYSTEM
+    # prompt cache stays warm across users.
+    from agents.voice_injector import prepend_voice_block
+    user = prepend_voice_block(user, user_id=state.get("user_id"))
+
     settings = get_settings()
     model = getattr(settings, "g6_draft_model", _FOLLOW_UP_MODEL)
     result = await get_router().ask(

@@ -458,6 +458,37 @@ def enqueue_g5_score(
     )
 
 
+def enqueue_g11_voice_calibration(
+    user_id: UUID | str,
+    *,
+    force: bool = False,
+) -> str:
+    """Enqueue a G11 voice-calibration run for one user.
+
+    Triggered on (a) the user clicking POST /profile/voice-calibration/run
+    and (b) auto-triggered when a writing-sample upload pushes the user
+    over 5 total samples AND ≥ 24h have passed since the last calibration.
+
+    Idempotency: re-enqueueing within the same queued/running window
+    collapses to the existing run. The graph itself is idempotent at
+    user_id (re-running just overwrites voice_calibration with a fresher
+    snapshot from whatever fresh + previously-used samples are present),
+    so back-to-back force=True runs are safe.
+
+    Cost: ~$0.08 per run. Bounded by structure (no critic loop, two LLM
+    calls).
+    """
+    payload: dict[str, Any] = {"force": bool(force)}
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="g11_voice_calibration",
+        payload=payload,
+        worker_func="api.worker.worker_run_g11",
+        # G11 is bounded to ~10s wall time; 2 min is generous.
+        job_timeout=120,
+    )
+
+
 def enqueue_g4_linkedin_post(
     user_id: UUID | str,
     *,

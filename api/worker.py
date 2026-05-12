@@ -413,6 +413,59 @@ def worker_run_g5(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+def worker_run_g11(jobs_run_id: str) -> dict[str, Any]:
+    """RQ job: run the G11 voice-calibration graph for one user.
+
+    Tier 4 §6.3 — extracts the user's writing voice from writing_samples
+    and persists an injectable prompt block onto
+    profile_master.voice_calibration. Cost ~$0.08 per run.
+
+    payload shape:
+        {"force": bool}
+
+    Returns:
+        {"persisted": bool, "samples_marked_used": int,
+         "cost_usd_total": float, "latency_ms_total": int,
+         "block_chars": int, "error": str or None}
+    """
+    from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
+
+    run = get_run(jobs_run_id)
+    if not run:
+        logger.error(f"worker_run_g11: jobs_runs row {jobs_run_id} not found; aborting")
+        return {"error": "row_not_found", "run_id": jobs_run_id}
+
+    mark_running(jobs_run_id)
+
+    try:
+        from agents.g11_io import run_g11
+        final_state = _run_async(run_g11(user_id=str(run.user_id)))
+        block = (final_state.get("voice_calibration_json") or {}).get("voice_profile_block") or ""
+        result = {
+            "persisted": bool(final_state.get("persisted")),
+            "samples_marked_used": int(final_state.get("samples_marked_used") or 0),
+            "cost_usd_total": float(final_state.get("cost_usd_total") or 0.0),
+            "latency_ms_total": int(final_state.get("latency_ms_total") or 0),
+            "block_chars": len(block),
+            "error": final_state.get("error"),
+        }
+        mark_succeeded(jobs_run_id, result)
+        return result
+    except Exception as exc:
+        attempt_n = (run.attempts or 0) + 1
+        retry = _is_retryable(exc) and attempt_n < MAX_ATTEMPTS
+        err = _truncate(
+            f"{type(exc).__name__}: {exc}\n\n"
+            f"attempt {attempt_n}/{MAX_ATTEMPTS} — retry={retry}\n\n"
+            f"{traceback.format_exc()}"
+        )
+        logger.exception(
+            f"worker_run_g11 failed run_id={jobs_run_id} attempt={attempt_n} retry={retry}"
+        )
+        mark_failed(jobs_run_id, err, retry=retry)
+        raise
+
+
 def worker_run_g4(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G4 LinkedIn-draft graph for one user."""
     from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded

@@ -391,9 +391,28 @@ async def copy_draft(
     updated = (rs.data or [cur])[0]
 
     if will_post:
-        # Best-effort: seed a thought_leadership proof point from the
-        # post body. The (user_id, content_hash) unique partial index
-        # makes this idempotent — re-copy of the same draft is a no-op.
+        # 2026-05-12 (G11 Tier 4): snapshot the post into writing_samples
+        # so the voice corpus grows automatically. Best-effort — failures
+        # here must not break the post flow.
+        try:
+            from agents.g11_io import insert_writing_sample
+            insert_writing_sample(
+                user_id=str(user.id),
+                title=(updated.get("hook") or "LinkedIn post")[:200],
+                body=(updated.get("body_md") or updated.get("body") or "").strip(),
+                kind="linkedin_post",
+                source="g4_linkedin_draft",
+            )
+        except Exception as e:
+            logger.warning(
+                f"linkedin.copy_draft: failed to snapshot draft "
+                f"{draft_id} into writing_samples: {type(e).__name__}: {e}"
+            )
+
+        # 2026-05-12 (Proof point Tier 4): seed a thought_leadership
+        # proof point from the post body. The (user_id, content_hash)
+        # unique partial index makes this idempotent — re-copy of the
+        # same draft is a no-op.
         try:
             from agents.proof_point_agent import _content_hash, add_proof_point
             hook = (updated.get("hook") or cur.get("hook") or "").strip()
