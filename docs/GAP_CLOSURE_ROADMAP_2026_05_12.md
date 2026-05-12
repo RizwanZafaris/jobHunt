@@ -1020,26 +1020,83 @@ remain open — logged here as the canonical follow-up backlog.
 
 ### BUG-037: G3 story_bank `retrieved_stories` schema not in db/schema.sql migration
 - **Discovered:** 2026-05-12 during Tier 2 §4.2 G3 story-bank integration |
-  Severity: MEDIUM | Status: OPEN
+  Severity: MEDIUM | **Status: FIX_SHIPPED** (migration 021 applied via MCP + source file landed on `tier2/g3-story-bank-integration` follow-up commit `2aa9bbb`; PR #94 merged)
 - **Component:** `interview_agents/g3_io.py::finalize_interview_prep`,
-  `db/schema.sql` (interview_prep table)
-- **Symptom:** Tier 2 G3 writes three new JSONB columns —
+  `db/migrations/2026_05_12_021_interview_prep_g3_tier2_columns.sql` (NEW)
+- **Symptom (before fix):** Tier 2 G3 writes three new JSONB columns —
   `retrieved_stories`, `story_gaps`, `persona_critic_drops` — into the
-  `interview_prep` table via `finalize_interview_prep`. The writer adds
-  these to the UPDATE payload only when present, so existing rows survive;
-  but on first write the Postgres column must exist. A migration is needed
-  to add the columns before this code runs against live Supabase. Locally
-  the tests stub Supabase so this isn't surfaced; the row will simply fail
-  on the live UPDATE if the migration hasn't been applied.
-- **Fix (suggested):** add migration
-  `db/migrations/0XX_interview_prep_story_bank_fields.sql`:
-  `ALTER TABLE interview_prep ADD COLUMN retrieved_stories JSONB DEFAULT '{}'::jsonb,
-   ADD COLUMN story_gaps JSONB DEFAULT '[]'::jsonb,
-   ADD COLUMN persona_critic_drops JSONB DEFAULT '[]'::jsonb;`
-- **Workaround until migration lands:** the writer is defensive — it omits
-  fields from the payload when `None` was passed. Tier 2 §4.2 sets them
-  to empty containers, not None, so the UPDATE will fail on first run.
-  Apply the migration before deploying this branch.
+  `interview_prep` table via `finalize_interview_prep`. The writer was
+  defensive (omits fields from payload when None), but Tier 2 sets them
+  to empty containers, not None, so the UPDATE would fail on first run.
+- **Fix shipped:** added migration 021 with `ALTER TABLE interview_prep
+  ADD COLUMN ... JSONB DEFAULT '{}'/'[]'::jsonb` for the three columns.
+  Applied live via Supabase MCP 2026-05-12; source file committed to the
+  same branch so future `APPLY.sh` runs against fresh clones / staging
+  re-create the same shape.
+
+### BUG-038: Tier 2 §4.3 Legitimacy agent v1 — ghost-posting detector
+- **Discovered:** 2026-05-12 (planned roadmap §4.3, not a regression)
+- **Severity:** N/A (feature ship) | **Status:** FIX_SHIPPED on `tier2/legitimacy-agent-v1`
+- **Component:** `agents/legitimacy_agent.py` (new), `api/workspace.py::check_legitimacy`,
+  `api/actions.py::_build_job_actions`, `agents/job_scout_agent.py::_enqueue_legitimacy_for_new_jobs`,
+  `api/queue.py::enqueue_legitimacy_check`, `api/worker.py::worker_run_legitimacy`,
+  `db/migrations/2026_05_12_020_jobs_legitimacy_v1.sql`.
+- **Why it was needed:** career-ops uses a 6-signal heuristic to flag
+  "ghost postings" — jobs that look real but are dead-from-the-start
+  (already filled internally, posted for compliance, recruiter bait,
+  "always hiring" sourcing pools). Tier 1's freshness gate catches stale
+  postings (BUG-002 — OKX 1-year-old listing) but doesn't catch the
+  dead-from-the-start ones. The pre-v1 GPT-4.1 narrative classifier set
+  `legitimacy_tier ∈ {"High Confidence", "Proceed with Caution", "Suspicious"}`
+  inside the scoring pass; it was opaque (no per-signal breakdown), not
+  cacheable, and not graded against verifiable web signals.
+- **Implementation:** 4 of the 6 career-ops signals with static weights
+  (each 0.25, sum 1.0):
+  - **Signal 1 — Posting age** (`jobs.discovered_at` vs NOW): linear decay
+    1.0 at <7d → 0.0 at 60d. Uses BUG-026's preserved-on-rediscovery
+    field. Cost $0.
+  - **Signal 2 — URL reachability** (httpx HEAD probe via
+    `agents/job_validation.py::_http_head_or_get`): 200/301/302 → 1.0,
+    404 → 0.5, 410/500+/timeout → 0.0, other 4xx → 0.3. Cached 24h. Cost $0.
+  - **Signal 3 — Repost pattern**: `COUNT(*)` of jobs with same
+    `(company, ILIKE title)` in 90d. count=0 → 1.0, 1 → 0.7, 2 → 0.4,
+    3+ → 0.1. Cost $0.
+  - **Signal 5 — Recent news** (Perplexity Sonar via
+    `agents/perplexity_search.py::recency_check`): positive hiring → 1.0,
+    neutral → 0.7, layoff/freeze → 0.3, no signal → 0.5. Three-bucket
+    keyword classifier on the summary (no second LLM call). Cached 24h.
+    Logged to `agent_call_log` with `agent_name='legitimacy.news'`,
+    `graph=NULL` (utility). Cost ~$0.005/call.
+  - **Deferred to v2** — Signal 4 (company hiring velocity) and Signal 6
+    (per-company response rate) need ≥50 application outcomes.
+- **Composite & tiers:** weighted sum ∈ [0, 1].
+  - ≥ 0.7 → "legitimate" (lowercase — new v1 shape)
+  - 0.5 ≤ x < 0.7 → "caution"
+  - < 0.5 → "suspicious" (hidden from /today by default)
+- **Cost:** ~$1/month at current 50 new jobs/week × $0.005 each. Per-job
+  ceiling $0.005 (only signal 5 has marginal cost; signals 1/2/3 are $0).
+  Cache hits drop the amortised cron-driven re-score to ~$0.
+- **Wallet guard:** the `/workspace/{job_id}/legitimacy-check` route wraps
+  with `api/_job_guards.load_open_job` so we never burn Perplexity dollars
+  on jobs already marked `posting_closed_at`. `force=true` overrides.
+- **Auto-trigger:** `agents/job_scout_agent.py` enqueues a legitimacy
+  check on every newly-stored row, skipping rows where
+  `legitimacy_signals.scored_at` is within 24h. Cron cadence (~6h) means
+  every new job gets scored once; re-runs are cache hits.
+- **/today integration:** `_build_job_actions` filters out rows where
+  `legitimacy_tier='suspicious'` (case-insensitive — legacy capitalised
+  "Suspicious" rows from the GPT-4.1 classifier are also hidden).
+  `?include_suspicious=true` surfaces them for debugging.
+- **Pre-cutover snapshot (legacy tiers, will be overwritten):**
+  - Proceed with Caution: 314 rows
+  - High Confidence: 66 rows
+  - Suspicious: 20 rows (hidden from /today as of this ship)
+- **Tests:** 51 added (`tests/test_legitimacy_agent.py`). All 354 existing+new
+  tests green.
+- **Financial impact:** $0 (new feature; v1 scoring cron starts at next scout pass).
+- **Follow-up:** v2 = add signals 4 + 6 once `applications` outcome data
+  hits ≥50. The static weights become a regression problem then —
+  career-ops calibrates weights on outcome data; we'll do the same.
 
 ### BUG-039: G11 voice calibration must prepend voice block to USER message (not system) to preserve cache
 - **Discovered:** 2026-05-12 during Tier 4 §6.3 build | Severity: MEDIUM | Status: AVOIDED (designed-in)

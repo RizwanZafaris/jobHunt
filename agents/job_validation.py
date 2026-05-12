@@ -282,7 +282,16 @@ def _detect_stale_age_marker(body: str) -> Optional[str]:
     unit = m.group(2).lower()
     if unit.startswith("y"):
         return m.group(0).split("\n")[0][:80]  # any "X year(s) ago" is stale
-    if unit.startswith("m") and n >= 3:
+    if unit.startswith("m") and n >= 1:
+        # BUG-009 Tier 1 tightening (2026-05-12): Agent C data audit found
+        # 2 more "1 month ago" listings (Thunes 2982, Light Commercial
+        # Vehicle 5387) slipping through the previous `n >= 3` threshold.
+        # User context: "I invested money to make resume if its expired
+        # then I lose money despite of using AI system." False-positive
+        # cost is bounded (force=true override at build time);
+        # false-negative cost is unbounded (~$1-5 burned per stale build).
+        # ANY month-ago hit with the LinkedIn-context disambiguator
+        # anchored nearby is now flagged stale.
         return m.group(0).split("\n")[0][:80]
     return None
 

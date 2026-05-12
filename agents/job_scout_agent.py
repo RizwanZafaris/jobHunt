@@ -344,8 +344,100 @@ class JobScoutAgent(BaseAgent):
         # 10. Mark expired jobs in DB
         await self._mark_expired_in_db()
 
+        # 11. Tier 2 §4.3 — auto-trigger legitimacy scoring on newly stored
+        # rows. Skip rows already scored within the last 24h (cron may
+        # re-run the scout pass multiple times a day). Cost: ~$0.005 per
+        # job × ~50/week ≈ $1/mo. Each enqueue is best-effort — a queue
+        # failure must NOT regress the scout's primary mission.
+        try:
+            await self._enqueue_legitimacy_for_new_jobs(qualifying)
+        except Exception as e:
+            logger.warning(f"legitimacy auto-trigger failed: {e}")
+
         self.log(f"✅ Scan complete. {len(qualifying)} jobs stored.", style="green")
         return qualifying
+
+    async def _enqueue_legitimacy_for_new_jobs(
+        self, qualifying: list[dict]
+    ) -> None:
+        """Best-effort: enqueue legitimacy scoring for stored jobs.
+
+        Skip if `legitimacy_signals.scored_at` is within 24h. We pull the
+        existing signals row in one round-trip per job (a single
+        SELECT id, user_id, legitimacy_signals) — same cost as the
+        upsert step, so the overhead is bounded.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from api.queue import enqueue_legitimacy_check
+
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=24)
+        enqueued = 0
+        skipped = 0
+
+        for job in qualifying:
+            db_id = job.get("db_id")
+            if not db_id:
+                continue
+            try:
+                rows = (
+                    get_supabase()
+                    .table("jobs")
+                    .select("id, user_id, legitimacy_signals")
+                    .eq("id", db_id)
+                    .limit(1)
+                    .execute()
+                    .data
+                ) or []
+                if not rows:
+                    continue
+                row = rows[0]
+                signals = row.get("legitimacy_signals") or {}
+                # Old shape was list[str]; treat as no cache.
+                if isinstance(signals, list):
+                    signals = {}
+                scored_at = signals.get("scored_at") if isinstance(signals, dict) else None
+                if scored_at:
+                    try:
+                        sa = scored_at
+                        if isinstance(sa, str):
+                            if sa.endswith("Z"):
+                                sa = sa[:-1] + "+00:00"
+                            sa_dt = datetime.fromisoformat(sa)
+                        else:
+                            sa_dt = sa
+                        if sa_dt.tzinfo is None:
+                            sa_dt = sa_dt.replace(tzinfo=timezone.utc)
+                        if sa_dt > cutoff:
+                            skipped += 1
+                            continue
+                    except Exception:
+                        pass  # fall through and rescore
+                user_id = row.get("user_id")
+                if not user_id:
+                    continue
+                try:
+                    enqueue_legitimacy_check(
+                        user_id=user_id,
+                        job_id=int(db_id),
+                        force=False,
+                    )
+                    enqueued += 1
+                except Exception as e:
+                    logger.debug(
+                        "legitimacy enqueue skipped job_id=%s: %s",
+                        db_id,
+                        e,
+                    )
+            except Exception as e:
+                logger.debug("legitimacy pre-check read failed for %s: %s", db_id, e)
+
+        if enqueued or skipped:
+            self.log(
+                f"   Legitimacy: enqueued {enqueued} (skipped {skipped} "
+                f"scored within 24h)"
+            )
 
     # ── ATS Scanning ──────────────────────────────────────────────────────────
 
