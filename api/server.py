@@ -105,6 +105,7 @@ from api.workspace import router as workspace_router  # noqa: E402  /workspace/*
 from api.interview_studio import router as interview_studio_router  # noqa: E402  /interview-studio/* (Phase 3)
 from api.perplexity import router as perplexity_router  # noqa: E402  Perplexity persona recency
 from api.apollo import router as apollo_router  # noqa: E402  Apollo firmographic + hiring intel
+from api.stories import router as stories_router  # noqa: E402  /workspace/stories/* (Phase 1.2 G9 + story_bank)
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
@@ -112,6 +113,7 @@ app.include_router(workspace_router)
 app.include_router(interview_studio_router)
 app.include_router(perplexity_router)
 app.include_router(apollo_router)
+app.include_router(stories_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -1229,7 +1231,13 @@ async def update_profile_master(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     result = db.table("profile_master").update(updates).eq("id", 1).execute()
-    return {"updated": True, "row": (result.data or [None])[0]}
+    # ─── Phase 1.2: re-extract STAR+R stories after a master-CV change ──
+    # G9 is idempotent on (user_id, cv_hash); if nothing relevant changed
+    # the enqueue collapses to a no-op via the queue's dedup gate. We
+    # intentionally swallow failures here — story_bank lag is acceptable,
+    # but failing the profile update because of a queue hiccup is not.
+    g9_run_id = _maybe_enqueue_g9_after_profile_change(reason="profile_master")
+    return {"updated": True, "row": (result.data or [None])[0], "g9_run_id": g9_run_id}
 
 
 @app.put("/profile/experience/{exp_id}")
@@ -1248,7 +1256,41 @@ async def update_profile_experience(
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"Experience {exp_id} not found")
-    return {"updated": True, "row": rows[0]}
+    # Phase 1.2: re-extract STAR+R stories after an experience change.
+    g9_run_id = _maybe_enqueue_g9_after_profile_change(reason="profile_experience")
+    return {"updated": True, "row": rows[0], "g9_run_id": g9_run_id}
+
+
+def _maybe_enqueue_g9_after_profile_change(*, reason: str) -> Optional[str]:
+    """Enqueue a G9 STAR+R re-extraction after a master-CV/experience change.
+
+    Best-effort. Returns the jobs_runs.id of the enqueued run, or None on
+    any failure (we never fail the profile update because of this).
+
+    The queue's idempotency-key dedup means redundant calls are free: if
+    the CV markdown hash hasn't changed since the last G9 run, this is a
+    no-op. The cv_hash is recomputed inside enqueue_g9_story_extract via
+    the same render pipeline G9 uses, so we don't recompute here.
+    """
+    try:
+        import os
+        from agents.g9_io import hash_cv, render_master_cv_md
+        from api.queue import enqueue_g9_story_extract
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
+        md = render_master_cv_md()
+        cv_hash = hash_cv(md)
+        run_id = enqueue_g9_story_extract(user_id, cv_hash=cv_hash)
+        logger.info(
+            f"G9 enqueue after {reason}: user_id={user_id} cv_hash={cv_hash[:12]} "
+            f"run_id={run_id}"
+        )
+        return run_id
+    except Exception as e:
+        logger.warning(f"G9 enqueue after {reason} failed (non-fatal): {e}")
+        return None
 
 
 # ── Profile recommendations (Phase C) ─────────────────────────────────────
