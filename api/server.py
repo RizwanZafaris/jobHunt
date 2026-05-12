@@ -1817,7 +1817,10 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
     # via URL or fall back.
     artifacts: dict = {}
     import os
-    for k in ("resume_path", "email_path", "interview_path", "report_path"):
+    # BUG-030 (2026-05-12): `report_path` removed from this loop — column is
+    # never written by any pipeline. See db/client.py `_JOBS_COLUMNS` note and
+    # the dead-column-gate archetype in docs/GAP_CLOSURE_ROADMAP §17.
+    for k in ("resume_path", "email_path", "interview_path"):
         p = job.get(k)
         if not p:
             artifacts[k] = {"exists": False}
@@ -1837,6 +1840,95 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
                     pass
         else:
             artifacts[k] = {"exists": False, "path": p, "kind": "local-missing"}
+
+    # BUG-031 / BUG-032 (2026-05-12): synthesize cover_email and
+    # interview-prep artifacts from their REAL sources.
+    #
+    # `jobs.email_path` and `jobs.interview_path` are dead-column gates —
+    # G2 writes `resume_builds.cover_email_md` (cover email lives inline
+    # in the latest converged build) and G3 writes
+    # `interview_prep.prep_pack_url` + `interview_prep.prep_pack_md`.
+    # Without this synthesis the Cover-email + Interview-prep ArtifactCards
+    # always render "missing" after a successful build.
+    try:
+        rb_rows = (
+            db.table("resume_builds")
+            .select("status, cover_email_md, created_at")
+            .eq("job_id", job_id)
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        ).data or []
+        # Prefer converged build's cover_email_md; fall back to latest.
+        cover_md = None
+        converged = next(
+            (r for r in rb_rows
+             if r.get("status") == "converged" and r.get("cover_email_md")),
+            None,
+        )
+        if converged:
+            cover_md = converged.get("cover_email_md")
+        elif rb_rows:
+            cover_md = rb_rows[0].get("cover_email_md")
+        if cover_md:
+            artifacts["email_path"] = {
+                "exists": True,
+                "kind": "inline",
+                "content": cover_md,
+                "size": len((cover_md or "").encode("utf-8")),
+            }
+    except Exception as exc:
+        logger.warning(
+            "resume_builds.cover_email_md lookup failed for job %s: %s",
+            job_id, exc,
+        )
+
+    try:
+        ip_rows = (
+            db.table("interview_prep")
+            .select("status, prep_pack_url, prep_pack_md, created_at")
+            .eq("job_id", job_id)
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        ).data or []
+        prep = next(
+            (r for r in ip_rows
+             if r.get("status") == "converged"
+             and (r.get("prep_pack_url") or r.get("prep_pack_md"))),
+            None,
+        )
+        if prep is None and ip_rows:
+            # Fall back to latest row with any pack content (e.g. storage
+            # upload failed but markdown was generated — see G3 io.py).
+            prep = next(
+                (r for r in ip_rows
+                 if r.get("prep_pack_url") or r.get("prep_pack_md")),
+                None,
+            )
+        if prep:
+            if prep.get("prep_pack_url"):
+                artifacts["interview_path"] = {
+                    "exists": True,
+                    "kind": "remote",
+                    "url": prep["prep_pack_url"],
+                }
+                if prep.get("prep_pack_md"):
+                    artifacts["interview_path"]["content"] = prep["prep_pack_md"]
+            elif prep.get("prep_pack_md"):
+                # Storage upload failed but pack content exists — render inline.
+                md = prep["prep_pack_md"]
+                artifacts["interview_path"] = {
+                    "exists": True,
+                    "kind": "inline",
+                    "content": md,
+                    "size": len((md or "").encode("utf-8")),
+                }
+    except Exception as exc:
+        logger.warning(
+            "interview_prep lookup failed for job %s: %s",
+            job_id, exc,
+        )
 
     # Application status (if any)
     apps = db.table("applications").select("*").eq("job_id", job_id).limit(1).execute()

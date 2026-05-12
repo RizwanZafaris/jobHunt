@@ -70,6 +70,12 @@ export interface ResumeArtifact {
   user_edited_at?: string | null
   resume_pdf_url?: string | null
   resume_docx_url?: string | null
+  /**
+   * Cover-email markdown emitted by G2's `cover_email_node`. Source of
+   * truth for the Apply tab's "Cover note ready" checklist row — the
+   * legacy `applications.cover_email` column is never written.
+   */
+  cover_email_md?: string | null
   cost_usd_total?: number | null
   latency_ms_total?: number | null
   company_name?: string | null
@@ -101,6 +107,12 @@ export interface AtsKeywordBank {
 export interface WorkspaceInterviewPrep {
   has_pack: boolean
   prep_pack_url?: string | null
+  /**
+   * Rendered prep-pack markdown. Always populated when G3 converges;
+   * acts as a fallback when the Supabase Storage upload returned None
+   * (graceful degradation in `interview_agents/g3_io.upload_prep_pack`).
+   */
+  prep_pack_md?: string | null
   status?: string | null
   round_type?: string | null
   round_number?: number | null
