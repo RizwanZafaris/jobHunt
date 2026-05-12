@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { type PersonaRow } from '@/lib/profile-api'
 import RegeneratePersonaButton from './RegeneratePersonaButton'
 import DeepResearchPersonaButton from './DeepResearchPersonaButton'
@@ -31,6 +31,13 @@ export default function PersonasTable({ personas }: Props) {
   const [filterQuality, setFilterQuality] = useState<string>('all')
   const [sortKey, setSortKey] = useState<SortKey>('synthesized')
   const [sortDesc, setSortDesc] = useState(true)
+  // BUG-017: relative-time strings ("2h ago") depend on Date.now() so they
+  // drift between SSR and CSR. Render the deterministic UTC date on the
+  // first pass, upgrade to relative time after the client mounts.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   const filtered = useMemo(() => {
     let arr = personas
@@ -169,7 +176,7 @@ export default function PersonasTable({ personas }: Props) {
                     )}
                   </td>
                   <td className="px-3 py-2 text-fg-muted" title={synthDate.toISOString()}>
-                    {relativeDate(synthDate)}
+                    {mounted ? relativeDate(synthDate) : absoluteDate(synthDate)}
                   </td>
                   <td className="px-3 py-2 text-fg-muted">
                     {totalKw > 0 ? (
@@ -243,5 +250,11 @@ function relativeDate(d: Date): string {
   if (diffD < 7) return `${diffD}d ago`
   const diffW = Math.floor(diffD / 7)
   if (diffW < 4) return `${diffW}w ago`
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+}
+
+// SSR-safe deterministic date — pinned locale + timeZone so server and
+// client produce the same string before the relative-time upgrade.
+function absoluteDate(d: Date): string {
+  return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
 }

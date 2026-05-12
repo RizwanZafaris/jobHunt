@@ -312,9 +312,22 @@ class JobScoutAgent(BaseAgent):
         self.log(f"   Qualifying (score >= {threshold}): {len(qualifying)}", style="green")
 
         # 9. Store in Supabase
+        # BUG-013: phantom company names (scraping artifacts like
+        # "Adyen Careers", "68 Vacancies Apr 2026", "Merchant Acquiring ...")
+        # used to slip through here and trigger persona deep-research. The
+        # validator is now enforced inside `upsert_company`, but we also
+        # short-circuit here so the JOB itself doesn't get stored linked
+        # to no company (or with the phantom name buried in `job.company`).
+        from agents.company_agent import _is_phantom_company_name
         for job in qualifying:
             try:
                 company_name = job.get("company", "Unknown")
+                if _is_phantom_company_name(company_name):
+                    logger.warning(
+                        f"BUG-013: dropping job '{job.get('title')}' — "
+                        f"phantom company name {company_name!r}"
+                    )
+                    continue
                 company = get_company_by_name(company_name)
                 if not company:
                     company = upsert_company({

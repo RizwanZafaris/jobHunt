@@ -105,6 +105,7 @@ from api.workspace import router as workspace_router  # noqa: E402  /workspace/*
 from api.interview_studio import router as interview_studio_router  # noqa: E402  /interview-studio/* (Phase 3)
 from api.perplexity import router as perplexity_router  # noqa: E402  Perplexity persona recency
 from api.apollo import router as apollo_router  # noqa: E402  Apollo firmographic + hiring intel
+from api.stories import router as stories_router  # noqa: E402  /workspace/stories/* (Phase 1.2 G9 + story_bank)
 from api.follow_ups import router as follow_ups_router  # noqa: E402  /workspace/follow-ups/* (Phase 1.3, G6)
 app.include_router(network_router)
 app.include_router(linkedin_router)
@@ -113,6 +114,7 @@ app.include_router(workspace_router)
 app.include_router(interview_studio_router)
 app.include_router(perplexity_router)
 app.include_router(apollo_router)
+app.include_router(stories_router)
 app.include_router(follow_ups_router)
 
 
@@ -461,10 +463,19 @@ async def get_job(job_id: int, _auth=Depends(verify_secret)):
 
 @app.get("/companies")
 async def list_companies(_auth=Depends(verify_secret)):
-    """List all tracked companies."""
+    """List all tracked companies.
+
+    BUG-013: filter out `is_phantom=true` rows (scraping artifacts).
+    """
     from db.client import get_supabase
     db = get_supabase()
-    result = db.table("companies").select("*").order("name").execute()
+    result = (
+        db.table("companies")
+        .select("*")
+        .eq("is_phantom", False)
+        .order("name")
+        .execute()
+    )
     return {"companies": result.data or []}
 
 
@@ -1222,7 +1233,13 @@ async def update_profile_master(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     result = db.table("profile_master").update(updates).eq("id", 1).execute()
-    return {"updated": True, "row": (result.data or [None])[0]}
+    # ─── Phase 1.2: re-extract STAR+R stories after a master-CV change ──
+    # G9 is idempotent on (user_id, cv_hash); if nothing relevant changed
+    # the enqueue collapses to a no-op via the queue's dedup gate. We
+    # intentionally swallow failures here — story_bank lag is acceptable,
+    # but failing the profile update because of a queue hiccup is not.
+    g9_run_id = _maybe_enqueue_g9_after_profile_change(reason="profile_master")
+    return {"updated": True, "row": (result.data or [None])[0], "g9_run_id": g9_run_id}
 
 
 @app.put("/profile/experience/{exp_id}")
@@ -1241,7 +1258,41 @@ async def update_profile_experience(
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"Experience {exp_id} not found")
-    return {"updated": True, "row": rows[0]}
+    # Phase 1.2: re-extract STAR+R stories after an experience change.
+    g9_run_id = _maybe_enqueue_g9_after_profile_change(reason="profile_experience")
+    return {"updated": True, "row": rows[0], "g9_run_id": g9_run_id}
+
+
+def _maybe_enqueue_g9_after_profile_change(*, reason: str) -> Optional[str]:
+    """Enqueue a G9 STAR+R re-extraction after a master-CV/experience change.
+
+    Best-effort. Returns the jobs_runs.id of the enqueued run, or None on
+    any failure (we never fail the profile update because of this).
+
+    The queue's idempotency-key dedup means redundant calls are free: if
+    the CV markdown hash hasn't changed since the last G9 run, this is a
+    no-op. The cv_hash is recomputed inside enqueue_g9_story_extract via
+    the same render pipeline G9 uses, so we don't recompute here.
+    """
+    try:
+        import os
+        from agents.g9_io import hash_cv, render_master_cv_md
+        from api.queue import enqueue_g9_story_extract
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
+        md = render_master_cv_md()
+        cv_hash = hash_cv(md)
+        run_id = enqueue_g9_story_extract(user_id, cv_hash=cv_hash)
+        logger.info(
+            f"G9 enqueue after {reason}: user_id={user_id} cv_hash={cv_hash[:12]} "
+            f"run_id={run_id}"
+        )
+        return run_id
+    except Exception as e:
+        logger.warning(f"G9 enqueue after {reason} failed (non-fatal): {e}")
+        return None
 
 
 # ── Profile recommendations (Phase C) ─────────────────────────────────────
@@ -1326,10 +1377,21 @@ class TargetCompanyUpdate(BaseModel):
 
 @app.get("/companies/targets")
 async def list_target_companies(_auth=Depends(verify_secret)):
-    """List all target companies grouped by category."""
+    """List all target companies grouped by category.
+
+    BUG-013: exclude phantom rows.
+    """
     from db.client import get_supabase
     db = get_supabase()
-    result = db.table("companies").select("*").eq("is_target", True).order("priority", desc=False).order("name").execute()
+    result = (
+        db.table("companies")
+        .select("*")
+        .eq("is_target", True)
+        .eq("is_phantom", False)
+        .order("priority", desc=False)
+        .order("name")
+        .execute()
+    )
     companies = result.data or []
     by_cat: dict[str, list] = {}
     for c in companies:
@@ -1819,7 +1881,10 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
     # via URL or fall back.
     artifacts: dict = {}
     import os
-    for k in ("resume_path", "email_path", "interview_path", "report_path"):
+    # BUG-030 (2026-05-12): `report_path` removed from this loop — column is
+    # never written by any pipeline. See db/client.py `_JOBS_COLUMNS` note and
+    # the dead-column-gate archetype in docs/GAP_CLOSURE_ROADMAP §17.
+    for k in ("resume_path", "email_path", "interview_path"):
         p = job.get(k)
         if not p:
             artifacts[k] = {"exists": False}
@@ -1839,6 +1904,95 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
                     pass
         else:
             artifacts[k] = {"exists": False, "path": p, "kind": "local-missing"}
+
+    # BUG-031 / BUG-032 (2026-05-12): synthesize cover_email and
+    # interview-prep artifacts from their REAL sources.
+    #
+    # `jobs.email_path` and `jobs.interview_path` are dead-column gates —
+    # G2 writes `resume_builds.cover_email_md` (cover email lives inline
+    # in the latest converged build) and G3 writes
+    # `interview_prep.prep_pack_url` + `interview_prep.prep_pack_md`.
+    # Without this synthesis the Cover-email + Interview-prep ArtifactCards
+    # always render "missing" after a successful build.
+    try:
+        rb_rows = (
+            db.table("resume_builds")
+            .select("status, cover_email_md, created_at")
+            .eq("job_id", job_id)
+            .order("created_at", desc=True)
+            .limit(10)
+            .execute()
+        ).data or []
+        # Prefer converged build's cover_email_md; fall back to latest.
+        cover_md = None
+        converged = next(
+            (r for r in rb_rows
+             if r.get("status") == "converged" and r.get("cover_email_md")),
+            None,
+        )
+        if converged:
+            cover_md = converged.get("cover_email_md")
+        elif rb_rows:
+            cover_md = rb_rows[0].get("cover_email_md")
+        if cover_md:
+            artifacts["email_path"] = {
+                "exists": True,
+                "kind": "inline",
+                "content": cover_md,
+                "size": len((cover_md or "").encode("utf-8")),
+            }
+    except Exception as exc:
+        logger.warning(
+            "resume_builds.cover_email_md lookup failed for job %s: %s",
+            job_id, exc,
+        )
+
+    try:
+        ip_rows = (
+            db.table("interview_prep")
+            .select("status, prep_pack_url, prep_pack_md, created_at")
+            .eq("job_id", job_id)
+            .order("created_at", desc=True)
+            .limit(5)
+            .execute()
+        ).data or []
+        prep = next(
+            (r for r in ip_rows
+             if r.get("status") == "converged"
+             and (r.get("prep_pack_url") or r.get("prep_pack_md"))),
+            None,
+        )
+        if prep is None and ip_rows:
+            # Fall back to latest row with any pack content (e.g. storage
+            # upload failed but markdown was generated — see G3 io.py).
+            prep = next(
+                (r for r in ip_rows
+                 if r.get("prep_pack_url") or r.get("prep_pack_md")),
+                None,
+            )
+        if prep:
+            if prep.get("prep_pack_url"):
+                artifacts["interview_path"] = {
+                    "exists": True,
+                    "kind": "remote",
+                    "url": prep["prep_pack_url"],
+                }
+                if prep.get("prep_pack_md"):
+                    artifacts["interview_path"]["content"] = prep["prep_pack_md"]
+            elif prep.get("prep_pack_md"):
+                # Storage upload failed but pack content exists — render inline.
+                md = prep["prep_pack_md"]
+                artifacts["interview_path"] = {
+                    "exists": True,
+                    "kind": "inline",
+                    "content": md,
+                    "size": len((md or "").encode("utf-8")),
+                }
+    except Exception as exc:
+        logger.warning(
+            "interview_prep lookup failed for job %s: %s",
+            job_id, exc,
+        )
 
     # Application status (if any)
     apps = db.table("applications").select("*").eq("job_id", job_id).limit(1).execute()
@@ -2317,12 +2471,13 @@ async def trigger_refresh_news(
             "message": f"News refresh for {company} running in background.",
         }
 
-    # All targets
+    # All targets — BUG-013: exclude phantoms from the news-refresh roster.
     rows = (
         get_supabase()
         .table("companies")
         .select("name")
         .eq("is_target", True)
+        .eq("is_phantom", False)
         .execute()
         .data or []
     )
@@ -2370,9 +2525,13 @@ async def trigger_deep_research_batch(
     """
     from db.client import get_supabase
     db = get_supabase()
-    q = db.table("companies").select(
-        "name, priority"
-    ).eq("is_target", True)
+    # BUG-013: never run deep research on phantom rows.
+    q = (
+        db.table("companies")
+        .select("name, priority")
+        .eq("is_target", True)
+        .eq("is_phantom", False)
+    )
     if priority:
         q = q.eq("priority", priority)
     rows = q.execute().data or []
@@ -2416,11 +2575,17 @@ async def trigger_deep_research_batch(
 
 @app.get("/personas")
 async def list_personas(_auth=Depends(verify_secret)):
-    """List all company_personas with quality + version info."""
+    """List all company_personas with quality + version info.
+
+    BUG-013: drop personas whose `company_name` matches a phantom row in
+    `companies` (Adyen Careers, SuperApp, Merchant Acquiring ...). The
+    persona row still exists for audit, but the /insights table no longer
+    shows it.
+    """
     from db.client import get_supabase
+    db = get_supabase()
     result = (
-        get_supabase()
-        .table("company_personas")
+        db.table("company_personas")
         .select(
             "company_name, persona_version, n_examples_used, "
             "last_synthesized_at, metadata, ats_keyword_bank"
@@ -2429,6 +2594,18 @@ async def list_personas(_auth=Depends(verify_secret)):
         .execute()
     )
     rows = result.data or []
+    phantom_names = {
+        r["name"]
+        for r in (
+            db.table("companies")
+            .select("name")
+            .eq("is_phantom", True)
+            .execute()
+            .data
+            or []
+        )
+    }
+    rows = [r for r in rows if r.get("company_name") not in phantom_names]
     by_quality: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "unknown": 0}
     for r in rows:
         q = (r.get("metadata") or {}).get("persona_quality", "unknown")

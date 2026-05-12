@@ -314,7 +314,7 @@ export default function ResumeWorkspace({ jobId, jobTitle, company }: ResumeWork
                 {builds.map((b) => (
                   <option key={b.id} value={b.id}>
                     {b.id.slice(0, 8)} · {b.status} · ${b.cost_usd_total.toFixed(2)} ·{' '}
-                    {b.created_at ? new Date(b.created_at).toLocaleString() : '—'}
+                    {b.created_at ? new Date(b.created_at).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false }) : '—'}
                   </option>
                 ))}
               </select>
@@ -522,16 +522,16 @@ export default function ResumeWorkspace({ jobId, jobTitle, company }: ResumeWork
               />
               <InfoRow
                 label="Created"
-                value={build.created_at ? new Date(build.created_at).toLocaleString() : '—'}
+                value={build.created_at ? new Date(build.created_at).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false }) : '—'}
               />
               <InfoRow
                 label="Finalized"
-                value={build.finalized_at ? new Date(build.finalized_at).toLocaleString() : '—'}
+                value={build.finalized_at ? new Date(build.finalized_at).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false }) : '—'}
               />
               {build.user_edited_at && (
                 <InfoRow
                   label="Last edited by you"
-                  value={new Date(build.user_edited_at).toLocaleString()}
+                  value={new Date(build.user_edited_at).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false })}
                 />
               )}
               {build.error && (

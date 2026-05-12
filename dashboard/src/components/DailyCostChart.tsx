@@ -58,9 +58,6 @@ export default function DailyCostChart({ rows, days, warning }: Props) {
  Stacked by provider · last {days} days
  </p>
  </div>
- <p className="text-2xs text-fg-subtle">
- source: <code className="text-fg-muted">v_daily_llm_cost</code>
- </p>
  </div>
 
  {warning && (
@@ -73,8 +70,7 @@ export default function DailyCostChart({ rows, days, warning }: Props) {
  <div className="text-center py-10 border border-dashed border-border rounded-lg">
  <p className="text-sm text-fg-muted">No LLM calls logged yet.</p>
  <p className="text-xs text-fg-subtle mt-1">
- Cost rows appear here once <code className="text-fg-muted">USE_G2_GRAPH=true</code>{' '}
- is set on Railway and a resume build runs.
+ Cost rows appear here once a resume build runs and the cost ledger receives its first entries.
  </p>
  </div>
  ) : (

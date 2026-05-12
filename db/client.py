@@ -180,7 +180,12 @@ async def search_story_bank(topic: str, match_count: int = 3) -> list[dict]:
 _JOBS_COLUMNS = {
     "id", "title", "company", "company_id", "location", "url", "description",
     "jd_embedding", "source", "match_score", "fit_details", "status",
-    "report_path", "resume_path", "email_path", "interview_path",
+    # BUG-030 (2026-05-12): `report_path` removed from this allow-list — the
+    # column exists in db/schema.sql:63 for historical reasons but no code
+    # path has ever written to it. Leaving it in the upsert allow-list let
+    # callers silently pass a value that never reached the DB. The column
+    # itself is intentionally NOT dropped (drops are irreversible).
+    "resume_path", "email_path", "interview_path",
     "discovered_at", "applied_at", "updated_at",
     # Workflow v2
     "archetype", "legitimacy_tier", "legitimacy_signals",
@@ -328,7 +333,24 @@ def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
     is NOT NULL but the writer here didn't pass it. Existing target rows
     have user_id set from prior backfills, but any first-discovery
     upsert (e.g. JobScout finding a brand-new company) crashed silently.
+
+    BUG-013 (2026-05-12): also gate against phantom names here. Any caller
+    passing a scraping-artifact name (e.g. "Adyen Careers",
+    "68 Vacancies Apr 2026", "Merchant Acquiring ...") gets a ValueError
+    instead of silently creating a row that would later be picked up by
+    persona deep-research and burn LLM spend.
     """
+    # Local import to avoid an import cycle (company_agent imports db.client).
+    from agents.company_agent import _is_phantom_company_name
+    name = (company_data or {}).get("name")
+    if _is_phantom_company_name(name):
+        raise ValueError(
+            f"upsert_company: refusing to insert phantom company name "
+            f"{name!r} (BUG-013 — looks like a job-listing fragment, date "
+            f"stamp, or pure title/function token). Caller should filter "
+            f"company names against agents.company_agent."
+            f"_is_phantom_company_name before reaching this point."
+        )
     db = get_supabase()
     if user_id is None:
         import os

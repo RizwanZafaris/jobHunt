@@ -172,12 +172,12 @@ export default function OutcomeLogger({
 
         <div className="text-2xs text-fg-subtle pt-3 border-t border-border">
           {outcome.logged_at && (
-            <>Started {new Date(outcome.logged_at).toLocaleDateString()}</>
+            <>Started {new Date(outcome.logged_at).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })}</>
           )}
           {outcome.updated_at && outcome.updated_at !== outcome.logged_at && (
             <>
               {' '}· Last updated{' '}
-              {new Date(outcome.updated_at).toLocaleDateString()}
+              {new Date(outcome.updated_at).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })}
             </>
           )}
         </div>

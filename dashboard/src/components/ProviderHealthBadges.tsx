@@ -35,9 +35,6 @@ export default function ProviderHealthBadges({ providers, warning }: Props) {
  Error rate + latency percentiles over last 7 days
  </p>
  </div>
- <p className="text-2xs text-fg-subtle">
- source: <code className="text-fg-muted">v_agent_call_health</code>
- </p>
  </div>
 
  {warning && (
@@ -50,8 +47,7 @@ export default function ProviderHealthBadges({ providers, warning }: Props) {
  <div className="text-center py-8 border border-dashed border-border rounded-lg">
  <p className="text-sm text-fg-subtle">No calls in last 7 days yet.</p>
  <p className="text-xs text-fg-subtle mt-1">
- Health metrics appear once LLM traffic flows through{' '}
- <code className="text-fg-subtle">agents/llm_router.py</code>.
+ Health metrics appear once LLM traffic starts flowing.
  </p>
  </div>
  ) : (

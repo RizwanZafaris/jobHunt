@@ -10,12 +10,25 @@ Each CompanyAgent:
   6. Builds the final tailored resume once gaps are filled
 
 This is the heart of the system — company agents live forever and get smarter.
+
+BUG-013 (2026-05-12)
+--------------------
+JobScout was creating "phantom" companies whenever it scraped a search-result
+listing where the company column held title fragments or job-listing chrome
+("SuperApp", "Adyen Careers", "Job in Dubai, UAE", "68 Vacancies Apr 2026",
+"Merchant Acquiring ...", "Careem (Uber subsidiary)", etc.). Persona
+deep-research then ran on those phantoms, burning Anthropic/Serper/Apify
+spend on garbage. `_is_phantom_company_name()` below is the validator that
+gates company creation. JobScoutAgent (and any other writer that calls
+`db.client.upsert_company`) must invoke it BEFORE upsert; this module also
+runs it inside the constructor and raises `PhantomCompanyError` early.
 """
 
 from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 import httpx
@@ -34,6 +47,103 @@ from db.client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class PhantomCompanyError(ValueError):
+    """Raised when a value passed as `company_name` is clearly a scraping
+    artifact, not a real company. See `_is_phantom_company_name`."""
+
+
+# ── BUG-013 phantom-name validator ──────────────────────────────────────
+# Rejects any of the following:
+#   * empty / whitespace-only / single-char names
+#   * names containing job-listing chrome: "Job in", "Jobs in", "Vacancies",
+#     "Vacancy", "Careers" / "Careers"-suffix, "Hiring", "Job Board",
+#     "Job ID", "Job Opening", "Job Details", "Job in ..."
+#   * names containing a month + year stamp ("Apr 2026", "May 2026", etc.)
+#   * names that are parenthetical descriptors only ("(Uber subsidiary)",
+#     "(Alibaba Group)")
+#   * names that are pure job-title / functional fragments
+#     ("Merchant Acquiring", "Wallet", "Card Processing", "LATAM", ...)
+#   * trailing ellipsis ("...") — almost always a truncated scrape
+
+_PHANTOM_PATTERNS = (
+    # Job listing / search-result chrome
+    re.compile(r"\bJob in\b", re.IGNORECASE),
+    re.compile(r"\bJobs in\b", re.IGNORECASE),
+    re.compile(r"\bVacanc(?:y|ies)\b", re.IGNORECASE),
+    re.compile(r"\bJob Board\b", re.IGNORECASE),
+    re.compile(r"\bJob ID\b", re.IGNORECASE),
+    re.compile(r"\bJob Opening\b", re.IGNORECASE),
+    re.compile(r"\bJob Details\b", re.IGNORECASE),
+    re.compile(r"\bjob with\b", re.IGNORECASE),
+    re.compile(r"\bHiring\b", re.IGNORECASE),
+    # "Careers" as a suffix or the whole string (e.g. "Adyen Careers",
+    # "Mastercard careers", "American Express Karriere", "Careers")
+    re.compile(r"\b(?:Careers|Karriere|careers)$"),
+    # Date stamps — "Apr 2026", "May 2026", "Q3 2024"
+    re.compile(
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+202[0-9]\b",
+        re.IGNORECASE,
+    ),
+    # Trailing ellipsis = truncated scrape
+    re.compile(r"\.\.\.\s*$"),
+    # Pure parenthetical descriptor at end
+    re.compile(r"\((?:Uber subsidiary|Alibaba Group|.*subsidiary)\)", re.IGNORECASE),
+    # "Role @ Company" — job-board scrape (e.g. "Vault Core @ Thought Machine",
+    # "Core Issuing Infrastructure @ Lithic", "New Fintech @ MoneyGram
+    # International"). A real company name doesn't contain "@".
+    re.compile(r"\s@\s"),
+)
+
+# Tokens that, on their own (case-insensitive, after trim), are NEVER a real
+# company name in the jobHunt domain. Kept conservative — only obvious
+# function/geography/title fragments.
+_PHANTOM_EXACT = frozenset(
+    s.lower() for s in (
+        "Careers", "Hiring",
+        "Wallet", "Wallet And Payment", "Card Payments", "Card Processing",
+        "Credit Card", "Payment methods", "Payments & Banking",
+        "Merchant Acquiring", "AI/ML Platforms", "CI/CD Infra & SCM",
+        "Marketing Platform", "Digital Product", "Product Owner",
+        "Product Growth", "Vice President", "Job ID",
+        "Fintech", "Fintech Payments", "Fintech/Payments",
+        "Data and AI", "New Product Development",
+        "Activities, Emerging Verticals", "Clients Portals",
+        "Business Account Experience", "Global Products and Initiatives",
+        "Light Commercial Vehicle", "LinkedIn Singapore",
+        "KSA/UAE Markets (Remote)", "LATAM", "Europe", "Remote",
+        "Dubai", "Riyadh", "Saudi Arabia",
+        "- PM Repo",
+    )
+)
+
+
+def _is_phantom_company_name(name: str | None) -> bool:
+    """Return True iff `name` is a known scraping artifact (BUG-013).
+
+    Used as a write-time guard before inserting / upserting any row into the
+    `companies` table. Call sites:
+      - `CompanyAgent.__init__` (raises PhantomCompanyError)
+      - `agents/job_scout_agent._save_qualifying_jobs` (skips the job)
+      - any future writer that touches `db.client.upsert_company`
+    """
+    if name is None:
+        return True
+    n = name.strip()
+    if not n:
+        return True
+    # Single character or no letters → garbage
+    if len(n) < 2:
+        return True
+    if not re.search(r"[A-Za-zА-Яа-я؀-ۿ]", n):
+        return True
+    if n.lower() in _PHANTOM_EXACT:
+        return True
+    for pat in _PHANTOM_PATTERNS:
+        if pat.search(n):
+            return True
+    return False
 
 
 COMPANY_RESEARCH_SECTIONS = [
@@ -61,6 +171,15 @@ class CompanyAgent(BaseAgent):
     """
 
     def __init__(self, company_name: str):
+        # BUG-013: refuse to instantiate the agent for phantom names. Doing
+        # the check here (rather than only at write time) means callers can't
+        # accidentally trigger a Serper / Apollo / Apify chain on garbage.
+        if _is_phantom_company_name(company_name):
+            raise PhantomCompanyError(
+                f"Refusing to build CompanyAgent for phantom company name "
+                f"{company_name!r} (matches BUG-013 phantom patterns: "
+                f"job-listing chrome, date stamp, or function/title fragment)."
+            )
         settings = get_settings()
         super().__init__(
             name=f"CompanyAgent[{company_name}]",

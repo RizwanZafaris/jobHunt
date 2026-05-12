@@ -933,7 +933,92 @@ remain open — logged here as the canonical follow-up backlog.
 - Anon key can read/write 5 rows. Decision needed: enable RLS + service-role policy, OR
   document as intentional debug-only.
 
-### BUG-030 onward — reserved for future agent sweeps
+### BUG-030: `jobs.report_path` dead column gated artifact card
+- **Discovered:** 2026-05-12 by Agent B (static code audit) | Severity: LOW
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `db/client.py::_JOBS_COLUMNS` (line 183), `api/server.py:1820`
+- **Symptom:** `report_path` listed in the upsert allow-list and the
+  `/jobs/{id}/detail` artifacts loop. Grep confirmed zero callers write to
+  it. Any value passed by a caller was silently dropped.
+- **Fix:** Removed `report_path` from `_JOBS_COLUMNS` and the artifacts loop.
+  Column itself NOT dropped (irreversible).
+- **Financial impact:** $0.
+
+### BUG-031: `/jobs/{id}/detail` Cover-email card stuck "missing" after every G2 build
+- **Discovered:** 2026-05-12 by Agent B | Severity: HIGH (UX trust)
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `dashboard/src/app/jobs/[id]/page.tsx:223`, `api/server.py::get_job_detail`
+- **Symptom:** Cover-email ArtifactCard renders "Not generated yet" after
+  every successful G2 build — even though G2 wrote `cover_email_md` to
+  the resume_builds row. Card was gated on `j.email_path` (dead column).
+- **Fix:** `/jobs/{id}/detail` now joins `resume_builds` and returns the
+  latest converged build's `cover_email_md` as a synthesised inline
+  artifact under `artifacts.email_path`. ArtifactCard updated to render
+  artifacts with content but no path.
+- **Archetype:** Dead-column gate.
+
+### BUG-032: `/jobs/{id}/detail` Interview-prep card stuck "missing" after every G3 build
+- **Discovered:** 2026-05-12 by Agent B | Severity: HIGH (UX trust)
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `dashboard/src/app/jobs/[id]/page.tsx:224`, `api/server.py::get_job_detail`
+- **Symptom:** Same archetype as BUG-031, for the interview pack card.
+  Gated on `j.interview_path` (dead column). G3 writes
+  `interview_prep.prep_pack_url` / `prep_pack_md`.
+- **Fix:** `/jobs/{id}/detail` joins `interview_prep` and exposes either
+  the remote URL (when storage upload succeeded) or an inline-rendered
+  pack (when upload returned None — graceful degradation path in
+  `interview_agents/g3_io.upload_prep_pack`).
+
+### BUG-033: ApplyTab "Cover note ready" gated on dead `applications.cover_email`
+- **Discovered:** 2026-05-12 by Agent B | Severity: MEDIUM (UX trust)
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `dashboard/src/components/workspace/ApplyTab.tsx:63`
+- **Symptom:** Apply tab checklist row "Cover note ready" never auto-checked
+  after a successful G2 build. Gate was `!!application?.cover_email`; no
+  pipeline writes that column. Detail copy also leaked the internal column
+  name `resume_builds.cover_email_md` (also covered by BUG-015).
+- **Fix:** Predicate now `!!resume?.cover_email_md || !!application?.cover_email`.
+  Workspace bundle exposes `cover_email_md` on the resume artifact (was
+  already in the SELECT for resume_builds, just not serialised). Detail
+  copy rewritten in capability language.
+
+### BUG-034: InterviewPrepTab `has_pack` false when Supabase Storage upload fails
+- **Discovered:** 2026-05-12 by Agent B | Severity: MEDIUM (data loss UX)
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `api/workspace.py::_get_interview_prep_summary` (line 215),
+  `dashboard/src/components/workspace/InterviewPrepTab.tsx:66`
+- **Symptom:** When `interview_agents/g3_io.upload_prep_pack` returns None
+  on storage error, `prep_pack_url` stays NULL while `prep_pack_md` holds
+  the rendered markdown. Old gate `bool(prep_pack_url) and converged`
+  reported no pack and the user re-spent ~$0.50 to rebuild G3.
+- **Fix (two layers):**
+  1. Backend `has_pack = converged AND (prep_pack_url OR prep_pack_md)`.
+     Bundle now serialises `prep_pack_md`.
+  2. Frontend: when only `prep_pack_md` is present, render a collapsible
+     inline preview under the "Open interview studio" CTA so the user
+     can read the pack even without storage.
+
+### BUG-035: Interview-studio Download .md link hidden when storage upload fails
+- **Discovered:** 2026-05-12 during BUG-030+ sweep | Severity: LOW | Status: OPEN
+- **Component:** `dashboard/src/components/interview-studio/PrepMaterial.tsx:143`
+- **Symptom:** Same archetype as BUG-034 — link is gated on
+  `prep.prep_pack_url`. When storage upload fails, the rest of the studio
+  still renders from `prep_pack_md` but the "Download .md" CTA disappears.
+- **Fix (suggested):** offer a client-side Blob URL download built from
+  `prep_pack_md` when `prep_pack_url` is null.
+
+### BUG-036: `applications.pdf_url` and `applications.report_url` have zero writers
+- **Discovered:** 2026-05-12 during BUG-030+ sweep | Severity: LOW | Status: OPEN
+- **Component:** `db/schema.sql:87-88`, `dashboard/src/lib/types/workspace.ts:59-60`
+- **Symptom:** Both columns are declared in schema and exposed in the
+  WorkspaceApplication TypeScript interface but no code path writes to
+  either. No current UI gates on them, but they are future BUG-031/032
+  in waiting. Same risk as `applications.cover_email` before BUG-033.
+- **Fix (suggested):** either wire a writer (G2 export → applications row)
+  or remove from the TS interface so future authors can't accidentally gate
+  on them. Column drops still deferred per repo convention.
+
+### BUG-037+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.

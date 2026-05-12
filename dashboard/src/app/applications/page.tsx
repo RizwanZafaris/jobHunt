@@ -22,7 +22,10 @@ export default async function ApplicationsPage() {
         title="Applications pipeline"
         description="Track each application as it moves through the funnel. Status changes save to Supabase immediately."
         actions={
-          <span className="text-2xs text-fg-subtle">
+          <span
+            className="text-2xs text-fg-subtle cursor-help"
+            title="Distinct applications submitted (any status). Does not include resumes built but not applied — those live on /today as “Ready to apply”."
+          >
             Total: <span className="text-fg font-semibold tnum">{data?.total ?? 0}</span>
           </span>
         }

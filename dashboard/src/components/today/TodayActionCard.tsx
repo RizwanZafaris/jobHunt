@@ -52,6 +52,24 @@ const KIND_ICON: Record<TodayActionKind, IconName> = {
   linkedin_post_due: 'note',
 }
 
+// BUG-021: the "company" chip on /today is rendered in uppercase. When
+// upstream extractors mis-classified a free-text field, values like
+// "UK MAY 2026" or "REMOTE · LONDON" leaked into the chip and looked
+// like a category label. Drop the chip when the value smells like a
+// location/date fragment rather than a real company name.
+const MONTH_TOKENS = /\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b/
+const COUNTRY_LOCATION_TOKENS = /\b(UK|US|USA|EU|EMEA|APAC|REMOTE|HYBRID|ONSITE)\b/
+
+function isUntrustworthyCompanyChip(value: string): boolean {
+  const v = value.trim()
+  if (!v) return true
+  // Pure 4-digit year → definitely not a company name
+  if (/^\d{4}$/.test(v)) return true
+  // ALL-CAPS short token that contains a month or location marker
+  if (v === v.toUpperCase() && (MONTH_TOKENS.test(v) || COUNTRY_LOCATION_TOKENS.test(v))) return true
+  return false
+}
+
 function handleStubClick(kind: TodayAction['primary']['onClick']) {
   // TODO: replace with real handlers (POST /jobs/:id/build, POST /applications/:id/outcome, copy-to-clipboard)
   if (typeof window === 'undefined') return
@@ -100,7 +118,7 @@ export function TodayActionCard({ action }: TodayActionCardProps) {
               <Pill tone={STATE_PILL_TONE[state]} size="xs">
                 {STATE_LABEL[state]}
               </Pill>
-              {meta?.company && (
+              {meta?.company && !isUntrustworthyCompanyChip(meta.company) && (
                 <span className="text-2xs text-fg-subtle font-medium tracking-wide uppercase">
                   {meta.company}
                 </span>

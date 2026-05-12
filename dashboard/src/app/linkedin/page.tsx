@@ -21,6 +21,7 @@ import {
   MOCK_LINKEDIN_STATS,
   MOCK_POSTING_SCHEDULE,
 } from '@/lib/mock/linkedin'
+import type { LinkedInDraft } from '@/lib/types/linkedin'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,11 +31,21 @@ export const metadata = {
     'News-anchored LinkedIn drafts with a user-approval gate. Never auto-posts.',
 }
 
+// BUG-019: header "Scheduled this week" used a date-window filter while
+// the tab badge counted drafts with status in {approved, scheduled}. The
+// two could legitimately differ, but produced confusing drift (header
+// said 2, the Scheduled tab said 4). Pick one definition — drafts with
+// status approved|scheduled — and use it everywhere on this page.
+function countScheduled(drafts: LinkedInDraft[]): number {
+  return drafts.filter((d) => d.status === 'approved' || d.status === 'scheduled').length
+}
+
 export default function LinkedInPage() {
   // TODO: replace with parallel fetch of /linkedin/drafts, /linkedin/posting-schedule
   //       once api/linkedin.py is wired into api/server.py — see api/LINKEDIN.md.
   const drafts = MOCK_DRAFTS
-  const stats = MOCK_LINKEDIN_STATS
+  const baseStats = MOCK_LINKEDIN_STATS
+  const stats = { ...baseStats, scheduledThisWeek: countScheduled(drafts) }
   const schedule = MOCK_POSTING_SCHEDULE
 
   return (
