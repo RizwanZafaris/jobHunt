@@ -615,6 +615,54 @@ def reset_router() -> None:
 
 
 # ─── Default cost-log callback ────────────────────────────────────────────
+def _derive_graph_and_node(agent_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """
+    Derive (graph, node_name) from an agent_name string.
+
+    Convention:
+      - g1.*  / JobScout* / scout.*           -> graph='G1', node = stripped
+      - g2.*                                   -> graph='G2', node = stripped
+      - g3.*                                   -> graph='G3', node = stripped
+      - g4.* / linkedin.*                      -> graph='G4', node = stripped
+      - persona.* / company.* / boss.* /
+        profile.* / debug.*                    -> graph=None (utility),
+                                                 node = stripped
+      - Any other label (RizwanAgent,
+        ResumeBuilder, InterviewAgent,
+        CompanyAgent[X], BossAgent, ...)       -> graph=None, node = full name
+
+    2026-05-12 BUG-024: agent_call_log.graph was 100% NULL (1,092/1,092)
+    because nothing ever populated it. Without graph, the cost dashboard
+    cannot attribute spend to G1/G2/G3/G4 — $32.40 of telemetry was
+    untraceable. We now derive both fields at insert time from the only
+    populated identifier (agent_name).
+    """
+    if not agent_name:
+        return None, None
+    name = agent_name
+    lower = name.lower()
+    # G1 — discovery / JobScout family.
+    if lower.startswith("g1.") or lower.startswith("jobscout") or lower.startswith("scout."):
+        node = name.split(".", 1)[1] if "." in name else name
+        return "G1", node
+    # G2 — resume builder family.
+    if lower.startswith("g2."):
+        return "G2", name.split(".", 1)[1]
+    # G3 — coach family.
+    if lower.startswith("g3."):
+        return "G3", name.split(".", 1)[1]
+    # G4 — LinkedIn / outreach family.
+    if lower.startswith("g4.") or lower.startswith("linkedin."):
+        node = name.split(".", 1)[1] if "." in name else name
+        return "G4", node
+    # Utility / non-graph workers — strip prefix for node_name, leave graph=None.
+    for prefix in ("persona.", "company.", "boss.", "profile.", "debug."):
+        if lower.startswith(prefix):
+            return None, name.split(".", 1)[1]
+    # Unknown / legacy bare names — keep as node_name verbatim.
+    return None, name
+
+
 def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
     """
     Best-effort write to agent_call_log table. Non-fatal on failure.
@@ -629,6 +677,9 @@ def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
 
     Same archetype as the 5 other user_id-NOT-NULL writers fixed earlier
     today (rizwan_profile, jobs, companies, resume_builds, applications).
+
+    2026-05-12 (BUG-024): also derive `graph` and `node_name` from
+    agent_name so cost attribution by graph works again (was 100% NULL).
     """
     try:
         from db.client import get_supabase
@@ -637,8 +688,11 @@ def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
             "RIZWAN_USER_ID",
             "00000000-0000-0000-0000-000000000001",
         )
+        graph, node_name = _derive_graph_and_node(agent_name)
         get_supabase().table("agent_call_log").insert({
             "agent_name": agent_name,
+            "graph": graph,
+            "node_name": node_name,
             "provider": result.provider,
             "model": result.model,
             "input_tokens": result.input_tokens,

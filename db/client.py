@@ -196,6 +196,36 @@ _JOBS_COLUMNS = {
 }
 
 
+_CONFIDENCE_BY_SOURCE = {
+    # First-party ATS APIs — high confidence (structured data, employer-owned).
+    "greenhouse": 80, "workday": 80, "lever": 80, "ashby": 80,
+    "smartrecruiters": 80, "bamboohr": 80, "jobvite": 80, "recruitee": 80,
+    "apify_career_page": 80,
+    # LinkedIn — medium-high (good metadata, occasional aggregator noise).
+    "linkedin": 70,
+    # Regional aggregators — medium (some staleness, but employer-confirmed).
+    "bayt": 60, "naukrigulf": 60, "gulftalent": 60, "indeed": 60,
+    # Generic web scrape / LLM-grounded — low (more validation needed).
+    "web": 50,
+    "perplexity_sonar": 50,
+}
+
+
+def _default_confidence_score(source: str | None) -> int:
+    """
+    Source-based default for jobs.confidence_score. Migration 011 added
+    the column but no backfill or writer-side default existed — 95% of
+    rows landed NULL. We seed a conservative default at upsert time so
+    downstream filters (e.g. confidence >= 60) work consistently.
+    Caller-supplied values always win.
+    """
+    if not source:
+        return 50
+    if source.startswith("ats_"):
+        return 80
+    return _CONFIDENCE_BY_SOURCE.get(source, 50)
+
+
 def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
     """Insert or update a job record. Filters out keys that aren't real columns.
 
@@ -211,6 +241,16 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
 
     user_id defaults to the seed user UUID via env override so callers
     in single-user mode (JobScoutAgent.run loop) don't need plumbing.
+
+    2026-05-12 (BUG-025): seed confidence_score from source when caller
+    didn't supply one (migration 011 had no backfill — 385/405 rows were
+    NULL pre-fix).
+
+    2026-05-12 (BUG-026): preserve the earliest discovered_at on
+    re-discovery. The previous behavior overwrote it every time JobScout
+    re-saw the same URL, causing resume_generated_at < discovered_at on
+    3 jobs (causally impossible). We now strip discovered_at from the
+    payload when the job already exists.
     """
     db = get_supabase()
     if user_id is None:
@@ -221,6 +261,32 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
         )
     payload = dict(job_data)
     payload["user_id"] = user_id  # always set — never let job_data null-shadow
+
+    # BUG-025: seed confidence_score from source if caller didn't supply.
+    if payload.get("confidence_score") is None:
+        payload["confidence_score"] = _default_confidence_score(payload.get("source"))
+
+    # BUG-026: preserve earliest discovered_at on re-discovery.
+    # If the URL already exists, never overwrite its discovered_at.
+    url = payload.get("url")
+    if url:
+        try:
+            existing = (
+                db.table("jobs")
+                .select("discovered_at")
+                .eq("url", url)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                # Drop discovered_at from the update payload — keep the
+                # original first-discovery timestamp.
+                payload.pop("discovered_at", None)
+        except Exception:
+            # Best-effort — if the lookup fails, fall through to upsert
+            # behaviour. (Misses the protection but doesn't break inserts.)
+            pass
+
     filtered = {k: v for k, v in payload.items() if k in _JOBS_COLUMNS}
     result = db.table("jobs").upsert(
         filtered,

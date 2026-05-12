@@ -878,33 +878,55 @@ remain open — logged here as the canonical follow-up backlog.
 - Severity: LOW | Status: OPEN
 
 ### BUG-024: `agent_call_log.graph` 100% NULL — cost-by-graph telemetry broken
-- Severity: HIGH (operational blindness — $32.40 spend untraceable) | Status: OPEN
-- 1,092 / 1,092 rows have `graph` NULL. Only `agent_name` is populated (which has the
+- Severity: HIGH (operational blindness — $32.40 spend untraceable) | Status: FIXED 2026-05-12
+- 1,092 / 1,092 rows had `graph` NULL. Only `agent_name` was populated (which had the
   prefix info — `g2.writer`, `g3.coach`, etc.).
-- Fix: parse `agent_name` prefix at write time in `agents/llm_router.py::_with_log` shim;
-  backfill 1,092 rows via SQL using same parsing.
+- Fix: `_derive_graph_and_node()` in `agents/llm_router.py` maps agent_name prefixes
+  (g1./jobscout/scout, g2., g3., g4./linkedin) to G1-G4 (utility prefixes
+  persona./company./boss./profile./debug. resolve to graph=NULL by design) and
+  strips the prefix into `node_name`. Both columns now populated at insert time.
+  Backfilled all 1,092 rows via MCP. Post-fix: G1=702, G2=153, NULL=237 (utility/
+  bare-name agents — semantically correct). node_name NULL=0.
 
 ### BUG-025: `jobs.confidence_score` populated for only 20 / 405 rows (95% drift)
-- Severity: HIGH (ranking integrity) | Status: OPEN
-- Migration 011 added the column but never backfilled for jobs discovered pre-v2 validator.
-- Fix: backfill via re-validation pass on 385 NULL rows OR `COALESCE(confidence_score, 50)`
-  in /today query.
+- Severity: HIGH (ranking integrity) | Status: FIXED 2026-05-12
+- Migration 011 added the column but had no backfill and no writer set a default.
+- Fix: `_default_confidence_score(source)` in `db/client.py` seeds a source-keyed
+  default in `upsert_job` when caller didn't supply one (ATS=80, LinkedIn=70,
+  regional aggregators=60, generic web/perplexity=50). Backfilled all 385 NULL rows
+  via MCP using the same map. Post-fix: 0 NULL, min=50, max=85.
 
 ### BUG-026: `jobs.discovered_at` is overwritten by re-discovery → corrupts "true age"
-- Severity: HIGH | Status: OPEN
-- 3 jobs have `resume_generated_at < discovered_at` (causally impossible).
-- Fix: change upsert to `discovered_at = LEAST(EXCLUDED.discovered_at, jobs.discovered_at)`.
-  Backfill jobs 89, 103, 3109 (`SET discovered_at = resume_generated_at - INTERVAL '1 minute'`).
+- Severity: HIGH | Status: FIXED 2026-05-12
+- 3 jobs had `resume_generated_at < discovered_at` (causally impossible).
+- Fix: `upsert_job` in `db/client.py` now reads any existing row by URL and strips
+  `discovered_at` from the payload before upsert, preserving the first-discovery
+  timestamp. Backfilled jobs 89, 103, 3109 to `resume_generated_at - 1 minute`.
+  Post-fix: 0 anomalies.
 
 ### BUG-027: 2 applications stuck `status=rejected` with `applied_date IS NULL`
-- Severity: MEDIUM | Status: OPEN
+- Severity: MEDIUM | Status: FIXED 2026-05-12
 - Affected: `6469d8cd-...` (SuperApp), `7ce700f3-...` (Emirates NBD).
-- Fix: backfill `applied_date = created_at::date`; add CHECK constraint.
+- Fix: backfilled `applied_date = created_at::date` for both rows via MCP. Added
+  migration `db/migrations/2026_05_12_014_applications_applied_date_check.sql`
+  with a CHECK constraint preventing future post-apply rows (applied/interviewing/
+  offered/rejected/withdrawn) from having NULL applied_date. Migration NOT yet
+  applied — runs via `db/migrations/APPLY.sh`. Post-fix: 0 anomalies.
 
 ### BUG-028: All 15 failed resume_builds have `cost_usd_total=0` AND zero `agent_call_log` rows
-- Severity: MEDIUM (investigate first — could be correct OR cost leak) | Status: OPEN
-- Fix: inspect one failed Stripe build's `error` + `agent_transcript`; if real, add
-  explicit zero-cost test; if leak, fix `_with_log` to log on exception paths.
+- Severity: MEDIUM (investigate first — could be correct OR cost leak) | Status: NO-FIX (true zero-progress) 2026-05-12
+- All 15 rows confirmed: `iterations=0`, `cost_usd_total=0.0000`, `agent_transcript=[]`
+  (empty array), `error IS NULL`, all `finalized_at` identical at
+  `2026-05-11 23:34:13.070859+00`. The exception handler in
+  `resume_agents/g2_run.py:309-327` writes both `error` and `finalized_at` on graph
+  failure — these rows have neither, so they did not fail through that path. The
+  identical finalized_at and absence of an `error` string indicate a one-shot bulk
+  cleanup of stuck-`running` rows (likely operator-initiated SQL UPDATE after
+  process kill/OOM). No LLM calls were made — no cost was incurred — no leak.
+  agent_transcript snippet: `[]` (literal empty JSON array on every row).
+  No code change required. Recommend adding a dedicated reaper that sets
+  `error='reaped: stuck in running >Nm'` for future bulk cleanups so the failure
+  mode is self-documenting.
 
 ### BUG-029: `boss_audit_log` table has RLS DISABLED (security)
 - Severity: HIGH | Status: OPEN — DO NOT AUTO-FIX (would break writes)
