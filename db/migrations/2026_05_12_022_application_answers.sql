@@ -55,9 +55,8 @@
 -- FK types
 --   Live DB: applications.id is UUID and user_id references users(id)
 --   (the earlier "BIGINT" / "profiles" types described in migration 001
---   were rewritten by a later migration not represented in db/migrations/
---   before this one landed). Both FKs are NOT NULL because every row
---   needs an owner + parent app.
+--   were rewritten by a later migration before this one landed). Both
+--   FKs are NOT NULL because every row needs an owner + parent app.
 --
 -- Rollback
 --   DROP TABLE application_answers;

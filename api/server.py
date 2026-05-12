@@ -109,6 +109,8 @@ from api.apollo import router as apollo_router  # noqa: E402  Apollo firmographi
 from api.stories import router as stories_router  # noqa: E402  /workspace/stories/* (Phase 1.2 G9 + story_bank)
 from api.follow_ups import router as follow_ups_router  # noqa: E402  /workspace/follow-ups/* (Phase 1.3, G6)
 from api.g7 import router as g7_router  # noqa: E402  /workspace/{job_id}/apply + /workspace/applications/* (Tier 3, G7)
+from api.proof_points import router as proof_points_router  # noqa: E402  /profile/proof-points/* (Tier 4 §6.4)
+from api.profile import router as profile_router  # noqa: E402  /profile/* (Tier 4 G11 voice calibration)
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
@@ -119,6 +121,8 @@ app.include_router(apollo_router)
 app.include_router(stories_router)
 app.include_router(follow_ups_router)
 app.include_router(g7_router)
+app.include_router(proof_points_router)
+app.include_router(profile_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -423,6 +427,7 @@ async def list_jobs(
     min_score: int = 0,
     limit: int = 50,
     include_closed: bool = False,
+    letter_grade: Optional[str] = None,
     _auth=Depends(verify_secret)
 ):
     """List all discovered jobs.
@@ -431,6 +436,12 @@ async def list_jobs(
     The OKX-1641 archetype (1-year-old LinkedIn listing scoring 95/100) was
     surfacing on this endpoint pre-fix. Pass include_closed=true to see
     everything (admin / debugging use).
+
+    Phase 2 §4.1 (G5): exposes `letter_grade` on every row + accepts a
+    `letter_grade` query filter (e.g. `?letter_grade=A` to surface only
+    A-grade fits). Unscored rows have letter_grade IS NULL — they are
+    NOT filtered out unless an explicit `letter_grade` filter is passed,
+    so the dashboard can render a "Score now" state on those.
     """
     from db.client import get_supabase
     from api._job_guards import filter_open_jobs_query
@@ -438,7 +449,11 @@ async def list_jobs(
     query = db.table("jobs").select(
         "id, title, company, location, match_score, status, url, discovered_at, "
         "archetype, legitimacy_tier, resume_generated_at, "
-        "posting_closed_at, validation_failed"
+        "posting_closed_at, validation_failed, "
+        # Phase 2 §4.1 — G5 surface columns. Dashboard reads letter_grade
+        # for the A-F chip; fit_score_breakdown carries the per-dim
+        # rationale + composite for the workspace detail view.
+        "letter_grade, fit_score_breakdown"
     ).gte("match_score", min_score).order("match_score", desc=True).limit(limit)
 
     # Hide stale rows unless explicitly requested. Keeps the canonical list
@@ -449,6 +464,11 @@ async def list_jobs(
 
     if status:
         query = query.eq("status", status)
+    if letter_grade:
+        # Accept single grade ("A") or comma-separated set ("A,B").
+        grades = [g.strip().upper() for g in letter_grade.split(",") if g.strip()]
+        if grades:
+            query = query.in_("letter_grade", grades)
 
     result = query.execute()
     return {"jobs": result.data or [], "count": len(result.data or [])}

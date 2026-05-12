@@ -719,6 +719,9 @@ async def story_retriever_node(state: InterviewPrepState) -> dict:
     "needs_rizwan_input" callout in the rendered pack).
     """
     from agents.story_bank_agent import search_stories, story_to_dict
+    # Tier 4 §6.4 — proof points sidecar.
+    from agents.proof_point_agent import match_to_dict as pp_match_to_dict
+    from agents.proof_point_agent import search_proof_points
 
     questions = state.get("likely_questions") or []
     # Restrict to behavioural / domain — technical questions don't typically
@@ -739,10 +742,12 @@ async def story_retriever_node(state: InterviewPrepState) -> dict:
     )
 
     retrieved: dict[str, dict] = {}
+    retrieved_pp: dict[str, list[dict]] = {}
     searched = 0
     skipped = 0
     hit_count = 0
     miss_count = 0
+    pp_hit_count = 0
     for idx, q in enumerate(questions):
         question_text = (q.get("question") or "").strip()
         if not question_text:
@@ -751,6 +756,7 @@ async def story_retriever_node(state: InterviewPrepState) -> dict:
         if competency in NON_STORY_COMPETENCIES:
             skipped += 1
             continue
+        story_search_failed = False
         try:
             matches = await search_stories(
                 user_id=user_id,
@@ -761,6 +767,30 @@ async def story_retriever_node(state: InterviewPrepState) -> dict:
         except Exception as e:
             logger.warning(f"story_retriever: search_stories failed for q={idx}: {e}")
             miss_count += 1
+            story_search_failed = True
+            matches = []
+
+        # Tier 4 §6.4 — also pull top-3 proof points for this question.
+        # Pure code, no LLM cost. Proof points are a sidecar to stories:
+        # they don't replace STAR answers, they're crisp facts the
+        # candidate can sprinkle in alongside ("we also wrote a piece on
+        # this — 12k views").
+        try:
+            pp_matches = await search_proof_points(
+                user_id=user_id,
+                query=question_text,
+                k=3,
+            )
+            if pp_matches:
+                retrieved_pp[str(idx)] = [pp_match_to_dict(m) for m in pp_matches]
+                pp_hit_count += 1
+        except Exception as e:
+            logger.warning(
+                f"story_retriever: search_proof_points failed for q={idx}: {e}"
+            )
+
+        # If the story search blew up, skip the rest — already counted as miss.
+        if story_search_failed:
             continue
         searched += 1
         if not matches:
@@ -782,6 +812,7 @@ async def story_retriever_node(state: InterviewPrepState) -> dict:
 
     return {
         "retrieved_stories": retrieved,
+        "retrieved_proof_points": retrieved_pp,
         "transcript": [
             make_turn(
                 node="story_retriever",
@@ -791,6 +822,7 @@ async def story_retriever_node(state: InterviewPrepState) -> dict:
                     "n_skipped_non_story": skipped,
                     "n_hits": hit_count,
                     "n_misses": miss_count,
+                    "n_proof_point_hits": pp_hit_count,
                 },
             )
         ],

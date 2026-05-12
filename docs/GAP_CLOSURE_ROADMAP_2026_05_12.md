@@ -1098,7 +1098,92 @@ remain open — logged here as the canonical follow-up backlog.
   hits ≥50. The static weights become a regression problem then —
   career-ops calibrates weights on outcome data; we'll do the same.
 
-### BUG-039+ onward — reserved for future agent sweeps
+- **Discovered:** 2026-05-12 by Claude during Tier 2 §4.1 implementation
+- **Severity:** MEDIUM (limits decision quality; downstream blocker for G7)
+- **Status:** FIX_SHIPPED on `tier2/g5-evaluation-scoring` (PR #100, merged)
+- **Component:** `db/schema.sql` (jobs table), `dashboard/src/app/today/page.tsx`
+- **Symptom:** /today ranked jobs by `match_score` only (0-100 integer). User
+  couldn't see WHY a role was a fit (role vs comp vs growth vs culture),
+  and the upcoming G7 application assistant had no structured way to
+  prioritise A/B-grade jobs over C/D fits. Same archetype gap career-ops
+  closes with its A-F scoring, except career-ops is markdown files and we
+  needed Postgres.
+- **Fix:** Migration 019 adds `jobs.fit_score_breakdown JSONB` and
+  `jobs.letter_grade TEXT` (B-tree indexed). New `agents.scoring_agent`
+  scores six dimensions (role_fit 25, growth 20, comp 20, culture 15,
+  remote 10, trajectory 10) with persona-as-critic downgrade and
+  cite:knowledge_id breadcrumbs.
+
+### BUG-040: G11 voice calibration must prepend voice block to USER message (not system) to preserve cache
+- **Discovered:** 2026-05-12 during Tier 4 §6.3 build | Severity: MEDIUM | Status: AVOIDED (designed-in)
+- **Risk class:** prompt-caching regression that would silently 10× the cost of
+  G2/G6/G7 writer calls — the kind of failure that doesn't break tests but
+  shows up as a spike on the cost dashboard a week later.
+- **Symptom (would have been):** the obvious spot to inject the
+  voice profile block is the writer's `system` prompt — that's where
+  WRITER_SYSTEM, DRAFT_GENERATOR_SYSTEM, answer-generator-system live.
+  But the system prompts in G2 (~3K tokens), G6 (~1.5K tokens) and G7
+  (~2K tokens) are all >1024 tokens and therefore prompt-cached by
+  llm_router._call_anthropic. Splicing a per-user voice block into the
+  system prompt would mean every user has a different system-prompt
+  prefix, blowing the cache on every call and turning the 90% read
+  discount into a cache MISS. For G2 (the biggest writer) that's
+  ~$0.03 of extra spend per resume × ~30 builds/day = ~$30/month per
+  user.
+- **Mitigation (shipped in this PR):** `agents/voice_injector.prepend_voice_block`
+  prepends the block to the USER message (not system). The user
+  message changes per call anyway (different JD, different RAG chunks)
+  so cache behaviour is unaffected — system prompts continue to hit
+  the cache and the voice block rides along as a small (~300 token)
+  user-message prefix. Documented in voice_injector.py module header
+  + at every call site (g2_nodes.writer_node, g6_nodes.draft_generator_node).
+- **Detection:** if anyone modifies a writer to inject the voice block
+  into `system=` instead of into the user message, cost-dashboard's
+  cache-read-rate for G2/G6/G7 will drop from ~90% to 0% within hours.
+  Already covered by the prompt-caching telemetry that fixed BUG-024.
+
+### BUG-041: G7 cover-letter generation does not yet cite proof_points
+- **Discovered:** 2026-05-12 during Tier 4 §6.4 proof-point agent build |
+  Severity: LOW (forward-looking — proof_points is the new substrate;
+  G7's cover-letter path predates it) | Status: OPEN
+- **Component:** `agents/proof_point_agent.py`, future
+  `resume_agents/g7_*.py` cover-letter extension
+- **Symptom:** Tier 4 ships the proof_points table, search RPC, agent
+  module, REST API, extractor, LinkedIn-post auto-seeding, and G3
+  story_retriever_node sidecar — but G7's existing cover-letter writer
+  doesn't yet pull `search_proof_points` when drafting "why I'm a fit"
+  paragraphs. The proof_point.id needs to flow into the agent_transcript
+  so outcome_to_persona can credit them on callbacks.
+- **Fix (suggested):** in a follow-up PR, add one node that runs
+  alongside G7's JD-extractor and writes
+  `state.proof_point_hits: list[ProofPointMatch.asdict()]`. The
+  finaliser embeds the IDs into cite:knowledge_id markers, same shape
+  as story_bank.
+- **Workaround until then:** none required — Tier 4 surface is complete
+  from G3 + LinkedIn + extractor sides; G7 cover-letter integration is
+  a deliberate follow-up.
+
+### BUG-042: Migration 022 file declared `profiles(id)` + `BIGINT application_id`; live DB diverged to `users(id)` + UUID
+- **Discovered:** 2026-05-12 during Tier 3 G7 ship | Severity: LOW | Status: FIX_SHIPPED on `tier3/g7-application-graph`
+- **Component:** `db/migrations/2026_05_12_022_application_answers.sql` (intended FK targets) vs the live Supabase schema (actual FK targets)
+- **Symptom:** First `mcp__supabase__apply_migration` attempt for 022
+  failed with `relation "profiles" does not exist`. After switching to
+  `users(id)`, the second attempt failed with `incompatible types:
+  bigint and uuid` on the application_id FK. The on-disk migration file
+  was authored against the documented schema in migration 001 (which
+  documents `profiles` + BIGINT applications.id) but the live DB has
+  been rewritten by a later migration not represented in `db/migrations/`.
+- **Fix:** Updated migration 022 in-place to `users(id)` + `UUID
+  application_id`, applied successfully via Supabase MCP. The G7 state
+  TypedDict was also retyped from `int` to `str` for `application_id`
+  so the Python side matches the live FK shape.
+- **Note:** This is the same migration-source vs live-DB drift that
+  `fix/migrations-fk-to-users` PR fixes for migrations 013 + 016 (and
+  now 022 too). Same root cause — documented migration 001 doesn't
+  match live shape. Discovery pass worth doing once all open PRs land.
+- **Financial impact:** $0 — caught at migration time, no app spend.
+
+### BUG-043+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.

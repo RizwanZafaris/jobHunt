@@ -426,6 +426,69 @@ def enqueue_g9_story_extract(
     )
 
 
+def enqueue_g5_score(
+    user_id: UUID | str,
+    job_id: int,
+    *,
+    force: bool = False,
+) -> str:
+    """Enqueue a G5 fit-score evaluation for one job.
+
+    Phase 2 §4.1: scoring is INFORMATIONAL (no auto-actions), so we never
+    block JobScout's persistence on this run. The auto-trigger inside
+    `JobScoutAgent.run` enqueues this for every freshly-upserted job and
+    forgets about it; the worker calls into `agents.scoring_agent.score_role`,
+    which idempotency-gates within a 7-day window.
+
+    `force=True` re-scores even if the job was scored < 7 days ago.
+
+    Returns the jobs_runs.id (UUID string). The G5 scoring call itself
+    costs ~$0.15 in LLM tokens.
+    """
+    payload: dict[str, Any] = {"job_id": int(job_id), "force": bool(force)}
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="g5_score",
+        payload=payload,
+        worker_func="api.worker.worker_run_g5",
+        # G5 is fixed-shape (no critic loop, no iteration). 5 min is more
+        # than enough; the four Sonnet calls + comp_cache + 2 RAG calls
+        # add up to ~12s.
+        job_timeout=300,
+    )
+
+
+def enqueue_g11_voice_calibration(
+    user_id: UUID | str,
+    *,
+    force: bool = False,
+) -> str:
+    """Enqueue a G11 voice-calibration run for one user.
+
+    Triggered on (a) the user clicking POST /profile/voice-calibration/run
+    and (b) auto-triggered when a writing-sample upload pushes the user
+    over 5 total samples AND ≥ 24h have passed since the last calibration.
+
+    Idempotency: re-enqueueing within the same queued/running window
+    collapses to the existing run. The graph itself is idempotent at
+    user_id (re-running just overwrites voice_calibration with a fresher
+    snapshot from whatever fresh + previously-used samples are present),
+    so back-to-back force=True runs are safe.
+
+    Cost: ~$0.08 per run. Bounded by structure (no critic loop, two LLM
+    calls).
+    """
+    payload: dict[str, Any] = {"force": bool(force)}
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="g11_voice_calibration",
+        payload=payload,
+        worker_func="api.worker.worker_run_g11",
+        # G11 is bounded to ~10s wall time; 2 min is generous.
+        job_timeout=120,
+    )
+
+
 def enqueue_g4_linkedin_post(
     user_id: UUID | str,
     *,
