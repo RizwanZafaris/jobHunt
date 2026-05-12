@@ -23,7 +23,7 @@ import os
 import sys
 from datetime import datetime
 
-from apscheduler.events import EVENT_JOB_MISFIRE
+from apscheduler.events import EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -178,7 +178,7 @@ def start_scheduler():
             f"scheduled_run_time={event.scheduled_run_time}"
         )
 
-    scheduler.add_listener(on_job_misfire, EVENT_JOB_MISFIRE)
+    scheduler.add_listener(on_job_misfire, EVENT_JOB_MISSED)
 
     # Parse times
     scout_h, scout_m = map(int, s.job_scout_time.split(":"))
