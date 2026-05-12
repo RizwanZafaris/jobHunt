@@ -91,6 +91,13 @@ class LLMResult:
     latency_ms: int = 0
     raw: Any = field(default=None, repr=False)
     tool_calls: list = field(default_factory=list)
+    # Anthropic prompt-caching telemetry. Only Anthropic returns these today;
+    # other providers leave them at 0. cache_creation_input_tokens = tokens
+    # written to the cache on this call (billed at 1.25× input rate);
+    # cache_read_input_tokens = tokens read from a previously cached prefix
+    # (billed at 0.10× input rate — the 90% discount).
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
     def to_log_dict(self) -> dict:
         d = asdict(self)
@@ -98,7 +105,23 @@ class LLMResult:
         return d
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+def _anthropic_cache_enabled() -> bool:
+    """
+    Feature flag for Anthropic prompt caching. Defaults ON (the cost is
+    purely positive — a cache miss costs the same as no cache, and a cache
+    hit gives a 90% input-token discount). Set ANTHROPIC_PROMPT_CACHE_ENABLED=0
+    to disable for staged rollback.
+    """
+    return os.environ.get("ANTHROPIC_PROMPT_CACHE_ENABLED", "1") != "0"
+
+
+def _estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> float:
     pricing = PRICING_PER_1M.get(model)
     if not pricing:
         # Try a prefix match (e.g. "gemini-2.5-pro-001" → "gemini-2.5-pro")
@@ -113,9 +136,17 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     # are None instead of an int, which used to crash this function.
     in_toks = int(input_tokens or 0)
     out_toks = int(output_tokens or 0)
-    in_cost = in_toks * pricing[0] / 1_000_000
-    out_cost = out_toks * pricing[1] / 1_000_000
-    return round(in_cost + out_cost, 6)
+    cache_create = int(cache_creation_input_tokens or 0)
+    cache_read = int(cache_read_input_tokens or 0)
+    in_rate, out_rate = pricing[0], pricing[1]
+    in_cost = in_toks * in_rate / 1_000_000
+    out_cost = out_toks * out_rate / 1_000_000
+    # Anthropic prompt-cache pricing: writes cost 1.25× the input rate, reads
+    # cost 0.10× the input rate. Per the Anthropic prompt-caching docs.
+    # Non-Anthropic providers always pass 0 for these so the math is a no-op.
+    cache_create_cost = cache_create * in_rate * 1.25 / 1_000_000
+    cache_read_cost = cache_read * in_rate * 0.10 / 1_000_000
+    return round(in_cost + out_cost + cache_create_cost + cache_read_cost, 6)
 
 
 def _resolve_temperature(model: str, requested: float) -> float:
@@ -257,7 +288,13 @@ class LLMRouter:
             raise
 
         result.latency_ms = int((time.perf_counter() - start) * 1000)
-        result.cost_usd = _estimate_cost(model, result.input_tokens, result.output_tokens)
+        result.cost_usd = _estimate_cost(
+            model,
+            result.input_tokens,
+            result.output_tokens,
+            result.cache_creation_input_tokens,
+            result.cache_read_input_tokens,
+        )
 
         if self._log_callback:
             try:
@@ -308,11 +345,33 @@ class LLMRouter:
         **kwargs,
     ) -> LLMResult:
         client = self._get_client("anthropic")
+
+        # Prompt caching: wrap large system prompts in a single text block with
+        # cache_control={"type":"ephemeral"} so Anthropic caches the prefix.
+        # On a cache hit, those input tokens are billed at 10% of the input
+        # rate (the 90% discount). Anthropic's minimum is 1024 tokens; below
+        # that the cache_control field is silently ignored, so we gate on a
+        # chars/4 heuristic to skip the wrapping when it can't help.
+        # Per https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching.
+        system_arg: Any = system
+        if (
+            isinstance(system, str)
+            and len(system) >= 1024 * 4  # ~1024 tokens, chars/4 heuristic
+            and _anthropic_cache_enabled()
+        ):
+            system_arg = [
+                {
+                    "type": "text",
+                    "text": system,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+
         kw = dict(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            system=system,
+            system=system_arg,
             messages=messages,
         )
         if tools:
@@ -337,12 +396,25 @@ class LLMRouter:
         usage = getattr(resp, "usage", None)
         in_toks = (getattr(usage, "input_tokens", 0) or 0) if usage else 0
         out_toks = (getattr(usage, "output_tokens", 0) or 0) if usage else 0
+        # Anthropic returns cache hits/misses on usage:
+        #   cache_creation_input_tokens — tokens written to the cache (1.25× rate)
+        #   cache_read_input_tokens     — tokens read from the cache (0.10× rate)
+        # Both default to 0 when caching is disabled, the prefix is too short,
+        # or the cache is not yet warm.
+        cache_create = (
+            (getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0
+        )
+        cache_read = (
+            (getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0
+        )
         return LLMResult(
             text="\n".join(text_parts).strip(),
             provider="anthropic",
             model=model,
             input_tokens=int(in_toks),
             output_tokens=int(out_toks),
+            cache_creation_input_tokens=int(cache_create),
+            cache_read_input_tokens=int(cache_read),
             raw=resp,
             tool_calls=tool_calls,
         )

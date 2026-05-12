@@ -12,7 +12,9 @@ import pytest
 
 from agents.llm_router import (
     LLMResult,
+    LLMRouter,
     PRICING_PER_1M,
+    _anthropic_cache_enabled,
     _estimate_cost,
     _parse_json_loose,
     _resolve_temperature,
@@ -232,3 +234,232 @@ class TestLLMResult:
         # Should be JSON-serializable (after raw dropped)
         d = r.to_log_dict()
         json.dumps(d)  # raises if not serializable
+
+    def test_cache_token_fields_default_zero(self):
+        # Other providers (OpenAI / Gemini / DeepSeek / Moonshot) never set
+        # these — they must default to 0 so the cost estimator stays a no-op.
+        r = LLMResult(text="x", provider="openai", model="gpt-4.1")
+        assert r.cache_creation_input_tokens == 0
+        assert r.cache_read_input_tokens == 0
+
+    def test_cache_token_fields_in_log_dict(self):
+        r = LLMResult(
+            text="x",
+            provider="anthropic",
+            model="claude-opus-4-5",
+            cache_creation_input_tokens=1500,
+            cache_read_input_tokens=10000,
+        )
+        d = r.to_log_dict()
+        assert d["cache_creation_input_tokens"] == 1500
+        assert d["cache_read_input_tokens"] == 10000
+
+
+# ─── Anthropic prompt caching ──────────────────────────────────────────
+class TestAnthropicPromptCaching:
+    def test_cache_enabled_default_on(self, monkeypatch):
+        # Default behaviour: caching is ON (cost-positive).
+        monkeypatch.delenv("ANTHROPIC_PROMPT_CACHE_ENABLED", raising=False)
+        assert _anthropic_cache_enabled() is True
+
+    def test_cache_disabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "0")
+        assert _anthropic_cache_enabled() is False
+
+    def test_cache_explicit_enabled(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "1")
+        assert _anthropic_cache_enabled() is True
+
+    def test_cache_other_truthy_value_enabled(self, monkeypatch):
+        # Anything that isn't "0" counts as enabled.
+        monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "true")
+        assert _anthropic_cache_enabled() is True
+
+    def test_cost_with_cache_read_discount(self):
+        # Cache reads cost 10% of the input rate.
+        # claude-opus-4-5 input rate = $15/1M, so 1M cache-read tokens
+        # should cost $1.50, not $15.00.
+        cost = _estimate_cost(
+            "claude-opus-4-5",
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_input_tokens=1_000_000,
+        )
+        assert cost == pytest.approx(1.50)
+
+    def test_cost_with_cache_creation_surcharge(self):
+        # Cache creation costs 125% of the input rate.
+        # claude-opus-4-5 input rate = $15/1M, so 1M cache-create tokens
+        # should cost $18.75.
+        cost = _estimate_cost(
+            "claude-opus-4-5",
+            input_tokens=0,
+            output_tokens=0,
+            cache_creation_input_tokens=1_000_000,
+        )
+        assert cost == pytest.approx(18.75)
+
+    def test_cost_full_mix_of_input_cache_output(self):
+        # Realistic call: 500 fresh-input tokens, 2000-token system prompt
+        # cached (read), 600 output tokens.
+        # claude-sonnet-4-6: input $3/1M, output $15/1M
+        # 500 input        * 3   / 1M = 0.0015
+        # 2000 cache_read  * 3   * 0.10 / 1M = 0.0006
+        # 600 output       * 15  / 1M = 0.009
+        # total ≈ 0.0111
+        cost = _estimate_cost(
+            "claude-sonnet-4-6",
+            input_tokens=500,
+            output_tokens=600,
+            cache_read_input_tokens=2000,
+        )
+        assert cost == pytest.approx(0.0015 + 0.0006 + 0.009, abs=1e-6)
+
+    def test_cost_no_cache_tokens_is_backward_compatible(self):
+        # When cache token counts default to 0, cost must match the legacy
+        # 2-arg behaviour exactly. Sanity guard against accidental drift.
+        legacy = _estimate_cost("claude-opus-4-5", 100_000, 50_000)
+        with_zero_cache = _estimate_cost(
+            "claude-opus-4-5",
+            input_tokens=100_000,
+            output_tokens=50_000,
+            cache_creation_input_tokens=0,
+            cache_read_input_tokens=0,
+        )
+        assert legacy == with_zero_cache
+
+    def test_cost_with_none_cache_tokens(self):
+        # Defensive: if a provider returns None instead of 0 for these
+        # (mirroring the Gemini usage_metadata footgun), don't crash.
+        cost = _estimate_cost(
+            "claude-opus-4-5",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_creation_input_tokens=None,
+            cache_read_input_tokens=None,
+        )
+        # Should equal cost with no cache tokens at all.
+        assert cost == _estimate_cost("claude-opus-4-5", 1000, 500)
+
+
+# ─── Anthropic system-prompt wrapping ──────────────────────────────────
+class TestAnthropicSystemWrapping:
+    """
+    Validate that _call_anthropic wraps long system prompts with the
+    cache_control directive and leaves short ones untouched. We don't
+    hit the network — we inject a stub client and inspect the kwargs
+    passed to messages.create().
+    """
+
+    @pytest.mark.asyncio
+    async def test_long_system_prompt_gets_cache_control(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "1")
+        router, captured = _make_stub_router()
+        long_system = "x" * (1024 * 4)  # ≥1024 tokens via chars/4 heuristic
+        await router.ask(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            system=long_system,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        system_arg = captured["create_kwargs"]["system"]
+        assert isinstance(system_arg, list)
+        assert system_arg[0]["type"] == "text"
+        assert system_arg[0]["text"] == long_system
+        assert system_arg[0]["cache_control"] == {"type": "ephemeral"}
+
+    @pytest.mark.asyncio
+    async def test_short_system_prompt_left_as_string(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "1")
+        router, captured = _make_stub_router()
+        short_system = "You are a helper."
+        await router.ask(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            system=short_system,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        # Short prompt should be passed through unchanged (string, not list).
+        assert captured["create_kwargs"]["system"] == short_system
+
+    @pytest.mark.asyncio
+    async def test_caching_disabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "0")
+        router, captured = _make_stub_router()
+        long_system = "x" * (1024 * 4)
+        await router.ask(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            system=long_system,
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        # With the flag off, the long prompt should pass through as a string.
+        assert captured["create_kwargs"]["system"] == long_system
+
+    @pytest.mark.asyncio
+    async def test_cache_usage_fields_recorded_on_result(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_PROMPT_CACHE_ENABLED", "1")
+        router, _captured = _make_stub_router(
+            cache_creation_input_tokens=1500,
+            cache_read_input_tokens=8500,
+        )
+        result = await router.ask(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            system="x" * (1024 * 4),
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert result.cache_creation_input_tokens == 1500
+        assert result.cache_read_input_tokens == 8500
+        # Cost must factor in the cached tokens. Verify it's strictly greater
+        # than naive input+output cost (because cache_creation is 1.25× rate).
+        plain = _estimate_cost(
+            "claude-sonnet-4-6",
+            result.input_tokens,
+            result.output_tokens,
+        )
+        assert result.cost_usd > plain
+
+
+def _make_stub_router(
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> tuple["LLMRouter", dict]:
+    """
+    Build an LLMRouter whose Anthropic client is replaced by an in-memory
+    stub. Captures the kwargs passed to client.messages.create() so tests
+    can assert on the system-block shape without hitting the network.
+    """
+    captured: dict = {}
+
+    class _Usage:
+        def __init__(self):
+            self.input_tokens = 100
+            self.output_tokens = 50
+            self.cache_creation_input_tokens = cache_creation_input_tokens
+            self.cache_read_input_tokens = cache_read_input_tokens
+
+    class _TextBlock:
+        type = "text"
+        text = "stubbed response"
+
+    class _Response:
+        def __init__(self):
+            self.content = [_TextBlock()]
+            self.usage = _Usage()
+
+    class _Messages:
+        async def create(self, **kw):
+            captured["create_kwargs"] = kw
+            return _Response()
+
+    class _StubClient:
+        def __init__(self):
+            self.messages = _Messages()
+
+    router = LLMRouter(
+        anthropic_key="stub",
+        log_callback=None,
+    )
+    router._clients["anthropic"] = _StubClient()
+    return router, captured
