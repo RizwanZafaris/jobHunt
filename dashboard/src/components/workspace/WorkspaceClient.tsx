@@ -136,16 +136,43 @@ export function WorkspaceClient({ workspace: initial, initialTab }: WorkspaceCli
                 Applied {application?.applied_date ? `· ${application.applied_date}` : ''}
               </Pill>
             )}
-            {job.url && (
-              <a
-                href={job.url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-2xs font-medium text-fg-muted hover:text-fg underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
-              >
-                Open posting <Icon name="arrow-up-right" size={10} />
-              </a>
-            )}
+            {/* BUG-022: when the validator has marked the posting closed,
+                 keep the link but flag it so the user is not surprised by
+                 a 404. Cheaper than a HEAD-probe and correct on the cases
+                 we actually care about (staleness, not transient errors). */}
+            {job.url && (() => {
+              const isLikelyDead = !!job.posting_closed_at
+              const closedOn = isLikelyDead
+                ? new Date(job.posting_closed_at as string).toLocaleDateString('en-US', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                    timeZone: 'UTC',
+                  })
+                : null
+              return (
+                <a
+                  href={job.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-disabled={isLikelyDead || undefined}
+                  title={
+                    isLikelyDead
+                      ? `This posting may have expired (closed ${closedOn})`
+                      : undefined
+                  }
+                  className={clsx(
+                    'inline-flex items-center gap-1 text-2xs font-medium underline-offset-2 hover:underline rounded',
+                    'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                    isLikelyDead
+                      ? 'text-fg-subtle line-through decoration-fg-subtle/60'
+                      : 'text-fg-muted hover:text-fg',
+                  )}
+                >
+                  Open posting <Icon name="arrow-up-right" size={10} />
+                </a>
+              )
+            })()}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">

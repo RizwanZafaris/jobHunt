@@ -33,6 +33,9 @@ export interface WorkspaceJob {
   resume_generated_at?: string | null
   validation_status?: string | null
   archetype?: string | null
+  /** BUG-022: set by agents/job_validator.py when the posting closes;
+   *  drives a "this posting may have expired" tooltip on "Open posting". */
+  posting_closed_at?: string | null
 }
 
 export interface WorkspaceFitDetails {
