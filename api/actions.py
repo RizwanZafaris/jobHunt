@@ -7,24 +7,31 @@ Output contract (must match dashboard/src/lib/types/today.ts::TodayAction):
     {
       id: str,
       kind: 'resume_ready' | 'score_high_no_resume' | 'score_below_threshold'
-            | 'stale_application' | 'persona_stale' | 'linkedin_post_due',
+            | 'stale_application' | 'persona_stale' | 'linkedin_post_due'
+            | 'follow_up_urgent' | 'follow_up_overdue',
       title: str,
       subtitle: str | None,
       state: 'ready' | 'blocked' | 'stale' | 'pending',
-      primary: { label: str, href?: str, onClick?: 'copy' | 'kickoff_g2' | 'log_outcome' },
+      primary: { label: str, href?: str, onClick?: 'copy' | 'kickoff_g2'
+                 | 'log_outcome' | 'approve_follow_up' },
       secondary: { label: str, href?: str } | None,
       meta: { score?: int, company?: str, date?: str } | None,
     }
 
 Ranking (descending priority):
-  1. linkedin_post_due       — today's approved draft, top of the stack for visibility
-  2. resume_ready            — resume URL exists, application not yet applied — ready to ship
-  3. score_high_no_resume    — score ≥ 85, no resume yet — kick off G2
-  4. stale_application       — applied 7+ days ago with no outcome logged
-  5. score_below_threshold   — 80 ≤ score < 85 — surface but muted
-  6. persona_stale           — last_synthesized > 14 days — refresh recommended
+  0. follow_up_overdue      — past 2x cadence window: severe time decay
+  1. follow_up_urgent       — past cadence window: every day = ~5% callback loss
+  2. linkedin_post_due      — today's approved draft, top of the stack for visibility
+  3. resume_ready           — resume URL exists, application not yet applied — ready to ship
+  4. score_high_no_resume   — score ≥ 85, no resume yet — kick off G2
+  5. stale_application      — applied 7+ days ago with no outcome logged
+  6. score_below_threshold  — 80 ≤ score < 85 — surface but muted
+  7. persona_stale          — last_synthesized > 14 days — refresh recommended
 
-Returns top N (default 8) plus total counts for the "View all" badge.
+Follow-ups rank ABOVE resume builds because unanswered follow-ups have
+time decay (every day without follow-up reduces callback probability ~5%
+per career-ops data). Resume builds don't carry the same penalty — a
+job posting that's still open today will still be open tomorrow.
 
 Closed listings (jobs.posting_closed_at IS NOT NULL) are filtered out
 across all kinds. The /today page never surfaces a dead URL.
@@ -298,6 +305,102 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
     return out
 
 
+def _build_follow_up_actions(user_id: UUID) -> list[dict[str, Any]]:
+    """URGENT + OVERDUE follow-ups from follow_up_cadence.
+
+    Returns the latest cadence row per application (deduped client-side
+    because PostgREST doesn't expose DISTINCT ON). Only rows with a
+    non-empty draft_email are surfaced — a row without a draft means G6
+    couldn't build one (no signal pool) and there's nothing actionable.
+
+    The cards ride at the TOP of /today because unanswered follow-ups
+    have time decay — every day without contact reduces callback
+    probability by roughly 5% per career-ops data. This is a higher
+    expected-value action than building another resume.
+    """
+    db = get_supabase()
+    rows = (
+        db.table("follow_up_cadence")
+        .select(
+            "id, application_id, current_status, urgency, "
+            "follow_up_count, next_follow_up_date, draft_email"
+        )
+        .eq("user_id", str(user_id))
+        .in_("urgency", ["URGENT", "OVERDUE"])
+        .order("created_at", desc=True)
+        .limit(50)
+        .execute()
+        .data
+    ) or []
+
+    # Dedupe to the latest row per application_id.
+    seen: set[int] = set()
+    latest: list[dict] = []
+    for r in rows:
+        aid = r.get("application_id")
+        if aid is None or aid in seen:
+            continue
+        seen.add(aid)
+        latest.append(r)
+
+    # Filter out rows with no draft — they have nothing actionable.
+    latest = [r for r in latest if (r.get("draft_email") or "").strip()]
+    if not latest:
+        return []
+
+    # Pull application metadata in a single round-trip for the cards.
+    app_ids = [r["application_id"] for r in latest]
+    apps_by_id: dict[int, dict] = {}
+    if app_ids:
+        app_rows = (
+            db.table("applications")
+            .select("id, company, role, job_id")
+            .in_("id", app_ids)
+            .eq("user_id", str(user_id))
+            .execute()
+            .data
+        ) or []
+        apps_by_id = {a["id"]: a for a in app_rows}
+
+    out: list[dict[str, Any]] = []
+    for r in latest:
+        urgency = r.get("urgency")
+        kind = (
+            "follow_up_overdue" if urgency == "OVERDUE" else "follow_up_urgent"
+        )
+        app_info = apps_by_id.get(r["application_id"]) or {}
+        company = app_info.get("company") or ""
+        role = (app_info.get("role") or "").strip()
+        title = f"Follow up: {company}"
+        if role:
+            title = f"{title} — {role}"
+        count = r.get("follow_up_count") or 0
+        next_human = (r.get("next_follow_up_date") or "")[:10]
+        subtitle_parts = [
+            f"#{int(count) + 1} follow-up",
+        ]
+        if urgency == "OVERDUE":
+            subtitle_parts.append("OVERDUE — every day costs ~5% callback rate")
+        else:
+            subtitle_parts.append("past cadence window")
+        if next_human:
+            subtitle_parts.append(f"next: {next_human}")
+        out.append(_action(
+            id=f"followup-{r['id']}",
+            kind=kind,
+            title=title,
+            subtitle=" · ".join(subtitle_parts),
+            state="ready",
+            primary_label="Review & approve",
+            primary_href=f"/applications/{app_info.get('job_id') or r['application_id']}/follow-ups/{r['id']}",
+            primary_on_click="approve_follow_up",
+            secondary_label="Skip",
+            secondary_href=f"/applications/{app_info.get('job_id') or r['application_id']}/follow-ups/{r['id']}?action=skip",
+            company=company,
+        ))
+    return out
+
+
 def _build_stale_applications(user_id: UUID) -> list[dict[str, Any]]:
     """Applications still 'applied' 7+ days ago with no outcome logged."""
     db = get_supabase()
@@ -365,13 +468,21 @@ def _build_stale_personas(user_id: UUID) -> list[dict[str, Any]]:
 
 # ─── ranking ──────────────────────────────────────────────────────────────
 # Lower priority value = appears first in the stack.
+#
+# Phase 1.3 (G6): follow_up_overdue + follow_up_urgent slot ABOVE every
+# other kind. Reasoning: unanswered follow-ups carry time decay (~5%
+# callback probability lost per day past the cadence window). Other
+# kinds — resume builds, persona refreshes — don't have the same
+# perishability, so the math favours surfacing follow-ups first.
 _KIND_PRIORITY = {
-    "linkedin_post_due":      0,
-    "resume_ready":           1,
-    "score_high_no_resume":   2,
-    "stale_application":      3,
-    "score_below_threshold":  4,
-    "persona_stale":          5,
+    "follow_up_overdue":      0,
+    "follow_up_urgent":       1,
+    "linkedin_post_due":      2,
+    "resume_ready":           3,
+    "score_high_no_resume":   4,
+    "stale_application":      5,
+    "score_below_threshold":  6,
+    "persona_stale":          7,
 }
 
 
@@ -405,6 +516,14 @@ def get_today_actions(
             actions.append(post)
     except Exception:
         logger.exception("linkedin_post_due builder failed")
+
+    # Phase 1.3: G6 follow-up queue. These cards rank above everything else
+    # (see _KIND_PRIORITY) because of time-decay. Failure here MUST NOT
+    # black out /today — the table may not exist yet on first deploy.
+    try:
+        actions.extend(_build_follow_up_actions(user_id))
+    except Exception:
+        logger.exception("follow_up builder failed")
 
     try:
         actions.extend(_build_job_actions(user_id))

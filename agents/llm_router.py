@@ -655,6 +655,13 @@ def _derive_graph_and_node(agent_name: Optional[str]) -> tuple[Optional[str], Op
     if lower.startswith("g4.") or lower.startswith("linkedin."):
         node = name.split(".", 1)[1] if "." in name else name
         return "G4", node
+    # G5 — reserved for the next phase; routed here so cost reports already
+    # have a slot when it lands. No-op until agents start emitting g5.*.
+    if lower.startswith("g5."):
+        return "G5", name.split(".", 1)[1]
+    # G6 — follow-up cadence family (Phase 1.3, 2026-05-12).
+    if lower.startswith("g6."):
+        return "G6", name.split(".", 1)[1]
     # Utility / non-graph workers — strip prefix for node_name, leave graph=None.
     for prefix in ("persona.", "company.", "boss.", "profile.", "debug."):
         if lower.startswith(prefix):
