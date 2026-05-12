@@ -1,4 +1,23 @@
 -- ══════════════════════════════════════════════════════════════════════════
+-- ⚠ LIVE-DB CANONICAL-SHAPE NOTICE — 2026-05-12
+-- ──────────────────────────────────────────────────────────────────────────
+-- Three bugs in one session (BUG-037 / BUG-041 / BUG-042) authored new
+-- migrations against an *imagined* historical shape — `profiles(id)` FK
+-- + `applications.id BIGINT`. **Neither has ever been real.** The
+-- original `db/schema.sql` bootstrap declared `applications.id UUID`
+-- with `gen_random_uuid()` from day one; this migration introduces
+-- `users` (not `profiles`) and every `user_id` FK below targets
+-- `users(id)`. There is no "missing rewrite migration" — there is no
+-- rewrite to find.
+--
+-- BEFORE AUTHORING A NEW MIGRATION, READ `db/SCHEMA_LIVE_STATE.md`.
+-- It carries the canonical PK-type + FK-target table and the audit of
+-- every session migration vs the live Supabase project. The narrative
+-- prose in this file documents *this* migration's contribution to the
+-- shape; it is NOT a complete schema specification.
+-- ══════════════════════════════════════════════════════════════════════════
+
+-- ══════════════════════════════════════════════════════════════════════════
 -- Migration: 2026_05_10_001 — Multi-tenancy foundation
 -- ──────────────────────────────────────────────────────────────────────────
 -- Purpose
