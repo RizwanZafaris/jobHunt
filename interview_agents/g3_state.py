@@ -68,6 +68,13 @@ class InterviewPrepState(TypedDict, total=False):
     # Keyed by question index (string of int) so the prep pack template can
     # zip them with likely_questions.
     retrieved_stories: dict             # {q_idx: {story: StoryBankRow.asdict(), similarity: float, source_text, source_experience_id}}
+    # ─── Tier 4 G3 — proof_points sidecar (roadmap §6.4) ───────────────
+    # 2026-05-12: story_retriever_node also pulls top-3 proof points per
+    # question via agents.proof_point_agent.search_proof_points. The
+    # prep_pack renderer surfaces them under each question alongside
+    # stories so the candidate has a crisp "you can also mention X
+    # (link)" cue at-a-glance.
+    retrieved_proof_points: dict        # {q_idx: list[ProofPointMatch.asdict()]}
     # Per-question gap suggestions for low-similarity (< 0.5) hits.
     story_gaps: list[dict]              # [{question, missing_competency, reframe_suggestion}]
     # Identity-lock drops: competencies fabricated by gap_analyzer that

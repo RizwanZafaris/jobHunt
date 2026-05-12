@@ -109,6 +109,7 @@ from api.apollo import router as apollo_router  # noqa: E402  Apollo firmographi
 from api.stories import router as stories_router  # noqa: E402  /workspace/stories/* (Phase 1.2 G9 + story_bank)
 from api.follow_ups import router as follow_ups_router  # noqa: E402  /workspace/follow-ups/* (Phase 1.3, G6)
 from api.g7 import router as g7_router  # noqa: E402  /workspace/{job_id}/apply + /workspace/applications/* (Tier 3, G7)
+from api.proof_points import router as proof_points_router  # noqa: E402  /profile/proof-points/* (Tier 4 §6.4)
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
@@ -119,6 +120,7 @@ app.include_router(apollo_router)
 app.include_router(stories_router)
 app.include_router(follow_ups_router)
 app.include_router(g7_router)
+app.include_router(proof_points_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────

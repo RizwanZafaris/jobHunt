@@ -1098,16 +1098,44 @@ remain open — logged here as the canonical follow-up backlog.
   hits ≥50. The static weights become a regression problem then —
   career-ops calibrates weights on outcome data; we'll do the same.
 
-### BUG-039: `jobs.match_score` is a single integer with no dimensional breakdown
-- **Discovered:** 2026-05-12 during Tier 2 §4.1 implementation
-- **Severity:** MEDIUM | **Status:** FIX_SHIPPED on `tier2/g5-evaluation-scoring` (PR #100)
+- **Discovered:** 2026-05-12 by Claude during Tier 2 §4.1 implementation
+- **Severity:** MEDIUM (limits decision quality; downstream blocker for G7)
+- **Status:** FIX_SHIPPED on `tier2/g5-evaluation-scoring` (PR #100, merged)
+- **Component:** `db/schema.sql` (jobs table), `dashboard/src/app/today/page.tsx`
+- **Symptom:** /today ranked jobs by `match_score` only (0-100 integer). User
+  couldn't see WHY a role was a fit (role vs comp vs growth vs culture),
+  and the upcoming G7 application assistant had no structured way to
+  prioritise A/B-grade jobs over C/D fits. Same archetype gap career-ops
+  closes with its A-F scoring, except career-ops is markdown files and we
+  needed Postgres.
 - **Fix:** Migration 019 adds `jobs.fit_score_breakdown JSONB` and
-  `jobs.letter_grade TEXT`. New `agents.scoring_agent` scores six
-  dimensions with persona-as-critic + cite breadcrumbs.
+  `jobs.letter_grade TEXT` (B-tree indexed). New `agents.scoring_agent`
+  scores six dimensions (role_fit 25, growth 20, comp 20, culture 15,
+  remote 10, trajectory 10) with persona-as-critic downgrade and
+  cite:knowledge_id breadcrumbs.
 
-### BUG-040 reserved for `tier4/g11-voice-calibration` (PR pending — fills this slot on land)
+### BUG-040 reserved for `tier4/g11-voice-calibration` (PR pending merge — fills this slot on land)
 
-### BUG-041 reserved for `tier4/proof-point-agent` (PR pending — fills this slot on land)
+### BUG-041: G7 cover-letter generation does not yet cite proof_points
+- **Discovered:** 2026-05-12 during Tier 4 §6.4 proof-point agent build |
+  Severity: LOW (forward-looking — proof_points is the new substrate;
+  G7's cover-letter path predates it) | Status: OPEN
+- **Component:** `agents/proof_point_agent.py`, future
+  `resume_agents/g7_*.py` cover-letter extension
+- **Symptom:** Tier 4 ships the proof_points table, search RPC, agent
+  module, REST API, extractor, LinkedIn-post auto-seeding, and G3
+  story_retriever_node sidecar — but G7's existing cover-letter writer
+  doesn't yet pull `search_proof_points` when drafting "why I'm a fit"
+  paragraphs. The proof_point.id needs to flow into the agent_transcript
+  so outcome_to_persona can credit them on callbacks.
+- **Fix (suggested):** in a follow-up PR, add one node that runs
+  alongside G7's JD-extractor and writes
+  `state.proof_point_hits: list[ProofPointMatch.asdict()]`. The
+  finaliser embeds the IDs into cite:knowledge_id markers, same shape
+  as story_bank.
+- **Workaround until then:** none required — Tier 4 surface is complete
+  from G3 + LinkedIn + extractor sides; G7 cover-letter integration is
+  a deliberate follow-up.
 
 ### BUG-042: Migration 022 file declared `profiles(id)` + `BIGINT application_id`; live DB diverged to `users(id)` + UUID
 - **Discovered:** 2026-05-12 during Tier 3 G7 ship | Severity: LOW | Status: FIX_SHIPPED on `tier3/g7-application-graph`
