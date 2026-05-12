@@ -878,40 +878,147 @@ remain open — logged here as the canonical follow-up backlog.
 - Severity: LOW | Status: OPEN
 
 ### BUG-024: `agent_call_log.graph` 100% NULL — cost-by-graph telemetry broken
-- Severity: HIGH (operational blindness — $32.40 spend untraceable) | Status: OPEN
-- 1,092 / 1,092 rows have `graph` NULL. Only `agent_name` is populated (which has the
+- Severity: HIGH (operational blindness — $32.40 spend untraceable) | Status: FIXED 2026-05-12
+- 1,092 / 1,092 rows had `graph` NULL. Only `agent_name` was populated (which had the
   prefix info — `g2.writer`, `g3.coach`, etc.).
-- Fix: parse `agent_name` prefix at write time in `agents/llm_router.py::_with_log` shim;
-  backfill 1,092 rows via SQL using same parsing.
+- Fix: `_derive_graph_and_node()` in `agents/llm_router.py` maps agent_name prefixes
+  (g1./jobscout/scout, g2., g3., g4./linkedin) to G1-G4 (utility prefixes
+  persona./company./boss./profile./debug. resolve to graph=NULL by design) and
+  strips the prefix into `node_name`. Both columns now populated at insert time.
+  Backfilled all 1,092 rows via MCP. Post-fix: G1=702, G2=153, NULL=237 (utility/
+  bare-name agents — semantically correct). node_name NULL=0.
 
 ### BUG-025: `jobs.confidence_score` populated for only 20 / 405 rows (95% drift)
-- Severity: HIGH (ranking integrity) | Status: OPEN
-- Migration 011 added the column but never backfilled for jobs discovered pre-v2 validator.
-- Fix: backfill via re-validation pass on 385 NULL rows OR `COALESCE(confidence_score, 50)`
-  in /today query.
+- Severity: HIGH (ranking integrity) | Status: FIXED 2026-05-12
+- Migration 011 added the column but had no backfill and no writer set a default.
+- Fix: `_default_confidence_score(source)` in `db/client.py` seeds a source-keyed
+  default in `upsert_job` when caller didn't supply one (ATS=80, LinkedIn=70,
+  regional aggregators=60, generic web/perplexity=50). Backfilled all 385 NULL rows
+  via MCP using the same map. Post-fix: 0 NULL, min=50, max=85.
 
 ### BUG-026: `jobs.discovered_at` is overwritten by re-discovery → corrupts "true age"
-- Severity: HIGH | Status: OPEN
-- 3 jobs have `resume_generated_at < discovered_at` (causally impossible).
-- Fix: change upsert to `discovered_at = LEAST(EXCLUDED.discovered_at, jobs.discovered_at)`.
-  Backfill jobs 89, 103, 3109 (`SET discovered_at = resume_generated_at - INTERVAL '1 minute'`).
+- Severity: HIGH | Status: FIXED 2026-05-12
+- 3 jobs had `resume_generated_at < discovered_at` (causally impossible).
+- Fix: `upsert_job` in `db/client.py` now reads any existing row by URL and strips
+  `discovered_at` from the payload before upsert, preserving the first-discovery
+  timestamp. Backfilled jobs 89, 103, 3109 to `resume_generated_at - 1 minute`.
+  Post-fix: 0 anomalies.
 
 ### BUG-027: 2 applications stuck `status=rejected` with `applied_date IS NULL`
-- Severity: MEDIUM | Status: OPEN
+- Severity: MEDIUM | Status: FIXED 2026-05-12
 - Affected: `6469d8cd-...` (SuperApp), `7ce700f3-...` (Emirates NBD).
-- Fix: backfill `applied_date = created_at::date`; add CHECK constraint.
+- Fix: backfilled `applied_date = created_at::date` for both rows via MCP. Added
+  migration `db/migrations/2026_05_12_014_applications_applied_date_check.sql`
+  with a CHECK constraint preventing future post-apply rows (applied/interviewing/
+  offered/rejected/withdrawn) from having NULL applied_date. Migration NOT yet
+  applied — runs via `db/migrations/APPLY.sh`. Post-fix: 0 anomalies.
 
 ### BUG-028: All 15 failed resume_builds have `cost_usd_total=0` AND zero `agent_call_log` rows
-- Severity: MEDIUM (investigate first — could be correct OR cost leak) | Status: OPEN
-- Fix: inspect one failed Stripe build's `error` + `agent_transcript`; if real, add
-  explicit zero-cost test; if leak, fix `_with_log` to log on exception paths.
+- Severity: MEDIUM (investigate first — could be correct OR cost leak) | Status: NO-FIX (true zero-progress) 2026-05-12
+- All 15 rows confirmed: `iterations=0`, `cost_usd_total=0.0000`, `agent_transcript=[]`
+  (empty array), `error IS NULL`, all `finalized_at` identical at
+  `2026-05-11 23:34:13.070859+00`. The exception handler in
+  `resume_agents/g2_run.py:309-327` writes both `error` and `finalized_at` on graph
+  failure — these rows have neither, so they did not fail through that path. The
+  identical finalized_at and absence of an `error` string indicate a one-shot bulk
+  cleanup of stuck-`running` rows (likely operator-initiated SQL UPDATE after
+  process kill/OOM). No LLM calls were made — no cost was incurred — no leak.
+  agent_transcript snippet: `[]` (literal empty JSON array on every row).
+  No code change required. Recommend adding a dedicated reaper that sets
+  `error='reaped: stuck in running >Nm'` for future bulk cleanups so the failure
+  mode is self-documenting.
 
 ### BUG-029: `boss_audit_log` table has RLS DISABLED (security)
 - Severity: HIGH | Status: OPEN — DO NOT AUTO-FIX (would break writes)
 - Anon key can read/write 5 rows. Decision needed: enable RLS + service-role policy, OR
   document as intentional debug-only.
 
-### BUG-030 onward — reserved for future agent sweeps
+### BUG-030: `jobs.report_path` dead column gated artifact card
+- **Discovered:** 2026-05-12 by Agent B (static code audit) | Severity: LOW
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `db/client.py::_JOBS_COLUMNS` (line 183), `api/server.py:1820`
+- **Symptom:** `report_path` listed in the upsert allow-list and the
+  `/jobs/{id}/detail` artifacts loop. Grep confirmed zero callers write to
+  it. Any value passed by a caller was silently dropped.
+- **Fix:** Removed `report_path` from `_JOBS_COLUMNS` and the artifacts loop.
+  Column itself NOT dropped (irreversible).
+- **Financial impact:** $0.
+
+### BUG-031: `/jobs/{id}/detail` Cover-email card stuck "missing" after every G2 build
+- **Discovered:** 2026-05-12 by Agent B | Severity: HIGH (UX trust)
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `dashboard/src/app/jobs/[id]/page.tsx:223`, `api/server.py::get_job_detail`
+- **Symptom:** Cover-email ArtifactCard renders "Not generated yet" after
+  every successful G2 build — even though G2 wrote `cover_email_md` to
+  the resume_builds row. Card was gated on `j.email_path` (dead column).
+- **Fix:** `/jobs/{id}/detail` now joins `resume_builds` and returns the
+  latest converged build's `cover_email_md` as a synthesised inline
+  artifact under `artifacts.email_path`. ArtifactCard updated to render
+  artifacts with content but no path.
+- **Archetype:** Dead-column gate.
+
+### BUG-032: `/jobs/{id}/detail` Interview-prep card stuck "missing" after every G3 build
+- **Discovered:** 2026-05-12 by Agent B | Severity: HIGH (UX trust)
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `dashboard/src/app/jobs/[id]/page.tsx:224`, `api/server.py::get_job_detail`
+- **Symptom:** Same archetype as BUG-031, for the interview pack card.
+  Gated on `j.interview_path` (dead column). G3 writes
+  `interview_prep.prep_pack_url` / `prep_pack_md`.
+- **Fix:** `/jobs/{id}/detail` joins `interview_prep` and exposes either
+  the remote URL (when storage upload succeeded) or an inline-rendered
+  pack (when upload returned None — graceful degradation path in
+  `interview_agents/g3_io.upload_prep_pack`).
+
+### BUG-033: ApplyTab "Cover note ready" gated on dead `applications.cover_email`
+- **Discovered:** 2026-05-12 by Agent B | Severity: MEDIUM (UX trust)
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `dashboard/src/components/workspace/ApplyTab.tsx:63`
+- **Symptom:** Apply tab checklist row "Cover note ready" never auto-checked
+  after a successful G2 build. Gate was `!!application?.cover_email`; no
+  pipeline writes that column. Detail copy also leaked the internal column
+  name `resume_builds.cover_email_md` (also covered by BUG-015).
+- **Fix:** Predicate now `!!resume?.cover_email_md || !!application?.cover_email`.
+  Workspace bundle exposes `cover_email_md` on the resume artifact (was
+  already in the SELECT for resume_builds, just not serialised). Detail
+  copy rewritten in capability language.
+
+### BUG-034: InterviewPrepTab `has_pack` false when Supabase Storage upload fails
+- **Discovered:** 2026-05-12 by Agent B | Severity: MEDIUM (data loss UX)
+- **Status:** FIX_SHIPPED on `fix/bug-dead-column-gates`
+- **Component:** `api/workspace.py::_get_interview_prep_summary` (line 215),
+  `dashboard/src/components/workspace/InterviewPrepTab.tsx:66`
+- **Symptom:** When `interview_agents/g3_io.upload_prep_pack` returns None
+  on storage error, `prep_pack_url` stays NULL while `prep_pack_md` holds
+  the rendered markdown. Old gate `bool(prep_pack_url) and converged`
+  reported no pack and the user re-spent ~$0.50 to rebuild G3.
+- **Fix (two layers):**
+  1. Backend `has_pack = converged AND (prep_pack_url OR prep_pack_md)`.
+     Bundle now serialises `prep_pack_md`.
+  2. Frontend: when only `prep_pack_md` is present, render a collapsible
+     inline preview under the "Open interview studio" CTA so the user
+     can read the pack even without storage.
+
+### BUG-035: Interview-studio Download .md link hidden when storage upload fails
+- **Discovered:** 2026-05-12 during BUG-030+ sweep | Severity: LOW | Status: OPEN
+- **Component:** `dashboard/src/components/interview-studio/PrepMaterial.tsx:143`
+- **Symptom:** Same archetype as BUG-034 — link is gated on
+  `prep.prep_pack_url`. When storage upload fails, the rest of the studio
+  still renders from `prep_pack_md` but the "Download .md" CTA disappears.
+- **Fix (suggested):** offer a client-side Blob URL download built from
+  `prep_pack_md` when `prep_pack_url` is null.
+
+### BUG-036: `applications.pdf_url` and `applications.report_url` have zero writers
+- **Discovered:** 2026-05-12 during BUG-030+ sweep | Severity: LOW | Status: OPEN
+- **Component:** `db/schema.sql:87-88`, `dashboard/src/lib/types/workspace.ts:59-60`
+- **Symptom:** Both columns are declared in schema and exposed in the
+  WorkspaceApplication TypeScript interface but no code path writes to
+  either. No current UI gates on them, but they are future BUG-031/032
+  in waiting. Same risk as `applications.cover_email` before BUG-033.
+- **Fix (suggested):** either wire a writer (G2 export → applications row)
+  or remove from the TS interface so future authors can't accidentally gate
+  on them. Column drops still deferred per repo convention.
+
+### BUG-037+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.

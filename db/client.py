@@ -180,7 +180,12 @@ async def search_story_bank(topic: str, match_count: int = 3) -> list[dict]:
 _JOBS_COLUMNS = {
     "id", "title", "company", "company_id", "location", "url", "description",
     "jd_embedding", "source", "match_score", "fit_details", "status",
-    "report_path", "resume_path", "email_path", "interview_path",
+    # BUG-030 (2026-05-12): `report_path` removed from this allow-list — the
+    # column exists in db/schema.sql:63 for historical reasons but no code
+    # path has ever written to it. Leaving it in the upsert allow-list let
+    # callers silently pass a value that never reached the DB. The column
+    # itself is intentionally NOT dropped (drops are irreversible).
+    "resume_path", "email_path", "interview_path",
     "discovered_at", "applied_at", "updated_at",
     # Workflow v2
     "archetype", "legitimacy_tier", "legitimacy_signals",
@@ -194,6 +199,36 @@ _JOBS_COLUMNS = {
     "discovery_sources", "confidence_score", "freshness",
     "validation_failed", "validated_at",
 }
+
+
+_CONFIDENCE_BY_SOURCE = {
+    # First-party ATS APIs — high confidence (structured data, employer-owned).
+    "greenhouse": 80, "workday": 80, "lever": 80, "ashby": 80,
+    "smartrecruiters": 80, "bamboohr": 80, "jobvite": 80, "recruitee": 80,
+    "apify_career_page": 80,
+    # LinkedIn — medium-high (good metadata, occasional aggregator noise).
+    "linkedin": 70,
+    # Regional aggregators — medium (some staleness, but employer-confirmed).
+    "bayt": 60, "naukrigulf": 60, "gulftalent": 60, "indeed": 60,
+    # Generic web scrape / LLM-grounded — low (more validation needed).
+    "web": 50,
+    "perplexity_sonar": 50,
+}
+
+
+def _default_confidence_score(source: str | None) -> int:
+    """
+    Source-based default for jobs.confidence_score. Migration 011 added
+    the column but no backfill or writer-side default existed — 95% of
+    rows landed NULL. We seed a conservative default at upsert time so
+    downstream filters (e.g. confidence >= 60) work consistently.
+    Caller-supplied values always win.
+    """
+    if not source:
+        return 50
+    if source.startswith("ats_"):
+        return 80
+    return _CONFIDENCE_BY_SOURCE.get(source, 50)
 
 
 def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
@@ -211,6 +246,16 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
 
     user_id defaults to the seed user UUID via env override so callers
     in single-user mode (JobScoutAgent.run loop) don't need plumbing.
+
+    2026-05-12 (BUG-025): seed confidence_score from source when caller
+    didn't supply one (migration 011 had no backfill — 385/405 rows were
+    NULL pre-fix).
+
+    2026-05-12 (BUG-026): preserve the earliest discovered_at on
+    re-discovery. The previous behavior overwrote it every time JobScout
+    re-saw the same URL, causing resume_generated_at < discovered_at on
+    3 jobs (causally impossible). We now strip discovered_at from the
+    payload when the job already exists.
     """
     db = get_supabase()
     if user_id is None:
@@ -221,6 +266,32 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
         )
     payload = dict(job_data)
     payload["user_id"] = user_id  # always set — never let job_data null-shadow
+
+    # BUG-025: seed confidence_score from source if caller didn't supply.
+    if payload.get("confidence_score") is None:
+        payload["confidence_score"] = _default_confidence_score(payload.get("source"))
+
+    # BUG-026: preserve earliest discovered_at on re-discovery.
+    # If the URL already exists, never overwrite its discovered_at.
+    url = payload.get("url")
+    if url:
+        try:
+            existing = (
+                db.table("jobs")
+                .select("discovered_at")
+                .eq("url", url)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                # Drop discovered_at from the update payload — keep the
+                # original first-discovery timestamp.
+                payload.pop("discovered_at", None)
+        except Exception:
+            # Best-effort — if the lookup fails, fall through to upsert
+            # behaviour. (Misses the protection but doesn't break inserts.)
+            pass
+
     filtered = {k: v for k, v in payload.items() if k in _JOBS_COLUMNS}
     result = db.table("jobs").upsert(
         filtered,
@@ -262,7 +333,24 @@ def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
     is NOT NULL but the writer here didn't pass it. Existing target rows
     have user_id set from prior backfills, but any first-discovery
     upsert (e.g. JobScout finding a brand-new company) crashed silently.
+
+    BUG-013 (2026-05-12): also gate against phantom names here. Any caller
+    passing a scraping-artifact name (e.g. "Adyen Careers",
+    "68 Vacancies Apr 2026", "Merchant Acquiring ...") gets a ValueError
+    instead of silently creating a row that would later be picked up by
+    persona deep-research and burn LLM spend.
     """
+    # Local import to avoid an import cycle (company_agent imports db.client).
+    from agents.company_agent import _is_phantom_company_name
+    name = (company_data or {}).get("name")
+    if _is_phantom_company_name(name):
+        raise ValueError(
+            f"upsert_company: refusing to insert phantom company name "
+            f"{name!r} (BUG-013 — looks like a job-listing fragment, date "
+            f"stamp, or pure title/function token). Caller should filter "
+            f"company names against agents.company_agent."
+            f"_is_phantom_company_name before reaching this point."
+        )
     db = get_supabase()
     if user_id is None:
         import os

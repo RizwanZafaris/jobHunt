@@ -60,7 +60,14 @@ export function ApplyTab({
   const paths = workspace.warm_intro_paths
 
   const resumeDone = !!resume && (resume.status === 'converged' || !!resume.user_edited_md)
-  const coverDone = !!application?.cover_email
+  // BUG-033 (2026-05-12): "Cover note ready" used to gate on
+  // `application?.cover_email`, a dead column. G2 writes the cover email
+  // markdown to `resume_builds.cover_email_md`. Apply tab now sources
+  // from the resume artifact in the workspace bundle. The legacy
+  // application column is kept as a fallback so older rows (or any
+  // future writer that lands on the application row directly) still
+  // count.
+  const coverDone = !!resume?.cover_email_md || !!application?.cover_email
 
   const networkDone =
     paths.length > 0 || coldAck
@@ -83,8 +90,8 @@ export function ApplyTab({
       label: 'Cover note ready',
       state: coverDone ? 'done' : 'optional',
       detail: coverDone
-        ? 'Cover email stored on the application.'
-        : 'Optional — many ATS flows don\'t require one. G2 generates a cover note alongside the resume if you want it.',
+        ? 'Cover email on file from the latest build.'
+        : 'Optional — many ATS flows don\'t require one. The Resume build emits a cover email alongside the resume if you want it.',
       jumpTo: 'resume',
       jumpLabel: coverDone ? 'View cover' : undefined,
     },

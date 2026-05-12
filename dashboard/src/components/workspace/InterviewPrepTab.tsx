@@ -64,6 +64,13 @@ export function InterviewPrepTab({
 
   // ── Pack ready: link out to the (Phase 3) studio. ─────────────────
   if (interviewPrep?.has_pack) {
+    // BUG-034 (2026-05-12): when the Supabase Storage upload fails, G3
+    // still stores the rendered markdown in `interview_prep.prep_pack_md`
+    // (see `interview_agents/g3_io.upload_prep_pack`). The "Pack" CTA
+    // points at `prep_pack_url` when present; otherwise we expose an
+    // inline preview so the user is never stuck without the content.
+    const hasUrl = !!interviewPrep.prep_pack_url
+    const hasMd = !!interviewPrep.prep_pack_md
     return (
       <Card
         padding="md"
@@ -83,9 +90,9 @@ export function InterviewPrepTab({
             )}
           </div>
           <div className="flex items-center gap-2">
-            {interviewPrep.prep_pack_url && (
+            {hasUrl && (
               <a
-                href={interviewPrep.prep_pack_url}
+                href={interviewPrep.prep_pack_url!}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center gap-1 text-2xs font-medium text-fg-muted hover:text-fg px-2 py-1 rounded-md border border-border-strong hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
@@ -103,6 +110,18 @@ export function InterviewPrepTab({
             </Link>
           </div>
         </div>
+        {!hasUrl && hasMd && (
+          <details className="mt-3 rounded-md border border-border bg-surface p-3">
+            <summary className="cursor-pointer text-2xs font-medium text-fg-muted hover:text-fg select-none">
+              Storage upload unavailable — view inline (
+              {(interviewPrep.prep_pack_md!.length / 1024).toFixed(1)} KB)
+            </summary>
+            <pre className="mt-2 text-2xs text-fg-muted leading-relaxed whitespace-pre-wrap font-mono bg-surface-raised border border-border rounded p-2 max-h-96 overflow-y-auto">
+              {interviewPrep.prep_pack_md!.slice(0, 8000)}
+              {interviewPrep.prep_pack_md!.length > 8000 ? '\n\n... (truncated)' : ''}
+            </pre>
+          </details>
+        )}
         {applicationId && (
           <p className="mt-3 text-2xs text-fg-subtle">
             Tied to application <span className="font-mono">{applicationId.slice(0, 8)}</span>.
