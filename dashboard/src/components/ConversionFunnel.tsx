@@ -54,14 +54,19 @@ export default function ConversionFunnel({ funnel, warning }: Props) {
  How resumes built recruiter responses interviews offers, per company
  </p>
  </div>
- <p className="text-2xs text-fg-subtle">
- Source: <code className="text-fg-muted">v_company_conversion_funnel</code>
- </p>
  </div>
 
- {/* Aggregate stats — the big-picture funnel */}
+ {/* Aggregate stats — the big-picture funnel. Counts here deliberately
+     differ from /today and /applications: this counts resume builds
+     across all time (not just open jobs), so each tile has a hover-tip
+     explaining what it counts. BUG-010. */}
  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
- <FunnelStat label="Resumes built" value={totals.resumes_built} color="blue" />
+ <FunnelStat
+ label="Resumes built"
+ value={totals.resumes_built}
+ color="blue"
+ tip="Total G2 resume builds across every company you've targeted, all time. Differs from /today (open jobs only) and /applications (submitted only)."
+ />
  <FunnelStat
  label="Responses"
  value={totals.responses}
@@ -71,6 +76,7 @@ export default function ConversionFunnel({ funnel, warning }: Props) {
  ? Math.round((totals.responses / totals.resumes_built) * 100)
  : null
  }
+ tip="Recruiter or hiring-manager replies logged via the outcome logger. Includes acknowledgements and rejections."
  />
  <FunnelStat
  label="Interviews"
@@ -81,6 +87,7 @@ export default function ConversionFunnel({ funnel, warning }: Props) {
  ? Math.round((totals.interviews / totals.responses) * 100)
  : null
  }
+ tip="Distinct interview rounds reached, summed across companies."
  />
  <FunnelStat
  label="Offers"
@@ -91,6 +98,7 @@ export default function ConversionFunnel({ funnel, warning }: Props) {
  ? Math.round((totals.offers / totals.interviews) * 100)
  : null
  }
+ tip="Written offers received. Declined offers still count."
  />
  </div>
 
@@ -167,14 +175,19 @@ function FunnelStat({
  value,
  color,
  rate,
+ tip,
 }: {
  label: string
  value: number
  color: keyof typeof COLOR_CLS
  rate?: number | null
+ tip?: string
 }) {
  return (
- <div className={`border rounded-lg px-3 py-2 ${COLOR_CLS[color]}`}>
+ <div
+ className={`border rounded-lg px-3 py-2 ${COLOR_CLS[color]} ${tip ? 'cursor-help' : ''}`}
+ title={tip}
+ >
  <div className="text-2xs uppercase tracking-wider opacity-80">{label}</div>
  <div className="flex items-baseline gap-2 mt-0.5">
  <div className="text-xl font-bold">{value}</div>
