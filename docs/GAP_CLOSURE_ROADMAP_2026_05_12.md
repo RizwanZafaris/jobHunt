@@ -1018,6 +1018,29 @@ remain open — logged here as the canonical follow-up backlog.
   or remove from the TS interface so future authors can't accidentally gate
   on them. Column drops still deferred per repo convention.
 
+### BUG-037: G3 story_bank `retrieved_stories` schema not in db/schema.sql migration
+- **Discovered:** 2026-05-12 during Tier 2 §4.2 G3 story-bank integration |
+  Severity: MEDIUM | Status: OPEN
+- **Component:** `interview_agents/g3_io.py::finalize_interview_prep`,
+  `db/schema.sql` (interview_prep table)
+- **Symptom:** Tier 2 G3 writes three new JSONB columns —
+  `retrieved_stories`, `story_gaps`, `persona_critic_drops` — into the
+  `interview_prep` table via `finalize_interview_prep`. The writer adds
+  these to the UPDATE payload only when present, so existing rows survive;
+  but on first write the Postgres column must exist. A migration is needed
+  to add the columns before this code runs against live Supabase. Locally
+  the tests stub Supabase so this isn't surfaced; the row will simply fail
+  on the live UPDATE if the migration hasn't been applied.
+- **Fix (suggested):** add migration
+  `db/migrations/0XX_interview_prep_story_bank_fields.sql`:
+  `ALTER TABLE interview_prep ADD COLUMN retrieved_stories JSONB DEFAULT '{}'::jsonb,
+   ADD COLUMN story_gaps JSONB DEFAULT '[]'::jsonb,
+   ADD COLUMN persona_critic_drops JSONB DEFAULT '[]'::jsonb;`
+- **Workaround until migration lands:** the writer is defensive — it omits
+  fields from the payload when `None` was passed. Tier 2 §4.2 sets them
+  to empty containers, not None, so the UPDATE will fail on first run.
+  Apply the migration before deploying this branch.
+
 ### BUG-037+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is

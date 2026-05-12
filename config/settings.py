@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     g3_star_matcher_model: str = "claude-haiku-4-5"
     g3_mock_interviewer_model: str = "claude-opus-4-5-20251101"
     g3_mock_critic_model: str = "deepseek-reasoner"
+    # Tier 2 §4.2 — gap_analyzer Sonnet 4.6 (~$0.05/interview with prompt caching).
+    g3_gap_analyzer_model: str = "claude-sonnet-4-6"
+    # Tier 2 §4.2 — persona_critic on the prep pack (drops fabricated competencies).
+    g3_persona_critic_model: str = "claude-sonnet-4-6"
 
     # G3 graph control
     g3_max_iterations: int = 2              # Mock interviewer ↔ critic loops
