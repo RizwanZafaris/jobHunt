@@ -1183,7 +1183,20 @@ remain open — logged here as the canonical follow-up backlog.
   match live shape. Discovery pass worth doing once all open PRs land.
 - **Financial impact:** $0 — caught at migration time, no app spend.
 
-### BUG-043+ onward — reserved for future agent sweeps
+### BUG-043: /insights Conversion Funnel chart kept showing closed jobs + phantom company names
+- **Discovered:** 2026-05-12 by E2E verification agent (Chrome MCP) | Severity: MEDIUM | Status: FIX_SHIPPED on `fix/funnel-view-and-hydration` (migration 025 applied live)
+- **Symptom:** Even after BUG-002 closed OKX 1641 and BUG-013 filtered phantoms from /companies + /personas, /insights Conversion Funnel still showed "OKX", "Job in Dubai,UAE byFinkraft.ai", "Adyen Careers" on the x-axis.
+- **Root cause:** View `v_company_conversion_funnel` aggregated by `resume_builds.company_name` raw string with no JOIN to `jobs` (closed-posting filter missing) or `companies.is_phantom` (phantom filter missing).
+- **Fix:** Migration 025 — three layered filters: (1) LEFT JOIN jobs + filter `posting_closed_at IS NULL AND validation_failed IS NULL`, (2) LEFT JOIN companies on `lower(name)` + filter `is_phantom IS NOT TRUE`, (3) defensive name-pattern blocklist for legacy rows pre-dating `is_phantom` column.
+- **Verified live:** funnel went from 5 phantom-polluted rows → 2 clean rows (Adyen 4 builds + Marqeta 1).
+
+### BUG-044: Vercel auto-deploy stalled at PR #102; main has 8 unbuilt commits
+- **Discovered:** 2026-05-12 during E2E verification follow-up | Severity: HIGH (all FIX_SHIPPED frontend bugs from PRs #101 / #103 / #104 / #105 are invisible in production) | Status: PENDING USER (or resolved by next merge)
+- **Symptom:** Latest Vercel production deploy `dpl_EpCtubcwC6Dbpz9egmLfVE7hJoyr` is at SHA `b4cf342` (PR #102 Proof point); main is at `27f6dc5`. ~10 FIX_SHIPPED dashboard bugs (BUG-003, 011, 012, 015, 021, 031–034 + new G5 letter grades + G7 /assist + G11 voice routes + Proof-point routes) show pre-fix state.
+- **Hypothesis:** Vercel hobby-tier concurrent-build limit hit during rapid PR-merge batch; webhooks silently dropped.
+- **Fix paths:** (1) User clicks "Redeploy" in Vercel dashboard; (2) Any new merge to main retriggers the webhook (this PR's merge will do it); (3) Manual `vercel --prod`.
+
+### BUG-045+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.
