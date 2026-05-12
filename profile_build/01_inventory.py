@@ -1,6 +1,28 @@
 """
 Step 1: Walk all candidate dirs, classify each file, hash for dedup, write inventory JSON.
 Output: profile_build/output/inventory.json
+
+⚠️  DEPRECATED 2026-05-12 (Tier 1 follow-up to BUG-016)
+─────────────────────────────────────────────────────────
+This is the historical one-shot inventory + filename-based classifier from
+the initial profile build. **`classify()` in this file is NOT the canonical
+classifier.**
+
+The canonical classifier is `agents/document_classifier.py` — added in the
+BUG-016 sweep — which uses content-based heuristics (header detection,
+opening-word patterns, quarter headings, char/file-size thresholds) and
+recognises five new classes: `cover_letter`, `job_description`, `roadmap`,
+`interview_prep`, `misc_short`, plus a `needs_review` ambiguous tier.
+
+This file is kept ONLY for git history / reproducibility of the original
+seed run. Do not extend the `classify()` function here — extend
+`agents/document_classifier.py::classify_document()` instead, then re-run
+`scripts/reclassify_misc_profile_docs.py` if the change affects existing
+rows.
+
+If you find a path in production that still calls into this module's
+`classify()`, raise a follow-up bug (BUG-037+) so we can migrate it.
+─────────────────────────────────────────────────────────
 """
 from __future__ import annotations
 import hashlib
