@@ -753,11 +753,165 @@ repeat them in Phase 1-4 builds:
 | **Staleness blindness** | Discovery pipeline only checks structured metadata; misses staleness signals rendered as plain text by the source (LinkedIn "X year ago", Indeed "30+ days ago", etc.). | Layer regex scanning of body text as an additional Safeguard #4 hit. Always close (not just downscore) postings with explicit stale-age markers. |
 | **No wallet protection** | Money-burning endpoints (LLM-spending) execute without checking whether the input is even valid (closed posting, failed validation). | Every LLM-spending endpoint needs a pre-flight check on input quality. 409 with explicit `force=true` override gives the user agency. |
 
-### Parallel bug-hunt sprint dispatched 2026-05-12 (in flight)
+### Parallel bug-hunt sprint completed 2026-05-12
 
-Three agents running in background:
-- **Agent A (UI E2E):** Chrome MCP through every dashboard route, finds visual / interaction bugs.
-- **Agent B (Code audit):** Greps for more "dead-column gate" + "staleness blindness" patterns across `api/`, `agents/`, `dashboard/`.
-- **Agent C (Data integrity):** Supabase SQL audit across 32 tables for orphans, stale rows, FK violations, user_id NULLs, cost leaks.
+Agents A (UI E2E — Chrome MCP), B (static code audit), C (Supabase data audit) all
+returned. Combined: **35 findings**. BUG-004 through BUG-009 closed in PR
+`fix/wallet-protection-and-list-filter` (shipped 2026-05-12). BUG-010 onward
+remain open — logged here as the canonical follow-up backlog.
 
-Findings will be triaged and logged as BUG-004, BUG-005, … in this section.
+### BUG-004: `POST /jobs/{id}/generate-resume` legacy route bypassed wallet guard
+- Severity: CRITICAL (~$5 / call)
+- Status: FIX_SHIPPED — `fix/wallet-protection-and-list-filter`
+- Fix: route through new `api/_job_guards.py::load_open_job` helper. 409 with structured
+  `code=posting_closed | validation_failed` body. `force=true` override preserved.
+
+### BUG-005: `POST /jobs/{id}/prep-interview` legacy route bypassed wallet guard
+- Severity: CRITICAL (~$0.50 / call)
+- Status: FIX_SHIPPED — same helper, cost_label="G3 interview prep (~$0.50)".
+
+### BUG-006: `resume_agents/g2_io.py::load_job` had no staleness guard (G2 graph entrypoint)
+- Severity: HIGH (defense-in-depth — direct G2 invocation could burn $1-5)
+- Status: FIX_SHIPPED — inline check, raises `RuntimeError("Job N is stale ...")` unless `force=True`.
+
+### BUG-007: `GET /jobs` canonical list surfaced stale rows
+- Severity: HIGH (every downstream dashboard / integration sees stale rows by match_score)
+- Status: FIX_SHIPPED — `filter_open_jobs_query()` helper; new `?include_closed=true` debug param.
+
+### BUG-008: Boss-agent daily digest counted + recommended stale jobs
+- Severity: HIGH (daily email content)
+- Status: FIX_SHIPPED — `filter_open_jobs_query()` applied to top-jobs queries.
+
+### BUG-009: Staleness threshold too loose — 2 "1 month ago" jobs missed
+- Severity: HIGH
+- Status: PARTIAL — SQL backfill closed jobs 2982 (Thunes) and 5387 (Light Commercial Vehicle).
+  Code threshold tighten (months >= 1 instead of months >= 3) deferred to follow-up after
+  this freshness PR merges.
+
+### BUG-010: Counts contradict across /today, /applications, /insights
+- Severity: HIGH | Status: OPEN
+- /today says "1 Ready to apply, 3 Resumes to build" but renders 4 green "Ready" cards.
+  /applications "Total: 2" — neither of the 4 /today jobs appear. /insights Conversion
+  Funnel says "Resumes built: 8". Three sources of truth disagree.
+- Likely tied to BUG-017 (React hydration errors). Audit /today, /applications, /insights
+  filter logic; pick one source of truth (API) and force every counter through it.
+
+### BUG-011: Company knowledge News/Funding cards show stale LLM hardcoded text
+- Severity: HIGH (same archetype as BUG-002) | Status: OPEN
+- /companies/<id> News card literally contains: "As this analysis is based on general
+  knowledge without recent web research, specific news from the last 12 months is not
+  available." Funding: "As of early 2024, its market capitalization fluctuates...". No
+  "last updated" badge.
+- Fix: add `last_synthesized_at` Pill to every persona card; if > 30d show "stale"
+  badge + "Refresh" CTA; strip "based on general knowledge" disclaimers.
+
+### BUG-012: Rejected Score 52 (below threshold) + duplicate Mark-Applied CTA
+- Severity: HIGH | Status: OPEN
+- /applications shows Emirates NBD score 52 status=Rejected — but apply threshold is 85.
+  Workspace has TWO identical "Mark as applied" CTAs.
+- Fix: threshold-violation flag on `applications`; dedupe Mark-Applied CTAs.
+
+### BUG-013: Persona/Insights table polluted with 3+ phantom companies running LLM ops
+- Severity: HIGH (direct LLM spend on garbage) | Status: OPEN
+- Phantom rows in personas: "SuperApp", "Merchant Acquiring", "Adyen Careers",
+  "Job in Dubai,UAE by Finkraft.ai", "68 Vacancies Apr 2026", "Careem (Uber subsidiary)".
+  Each runs `persona.deep_research` (Agent C: $3.35 / 146 calls of which unknown fraction
+  is for phantoms). /companies has 68 but personas count is 71 → 3 phantoms.
+- Fix: company-name validator in persona-bootstrap path (reject "Job in", "Vacancies",
+  "Apr 2026", "Careers", parenthetical descriptors). Backfill: identify phantoms and
+  delete / flag `is_phantom=true`.
+
+### BUG-014: /insights Costs panel time-window math contradicts itself
+- Severity: HIGH (cost dashboard untrusted) | Status: OPEN
+- Header "Today $0.00 · 30d $30.20 · TODAY 0 calls" but Recent Calls shows calls
+  "13-18m ago today". "AVG / BUILD (0) $0.00" but Cost by Agent shows g2.writer 28 calls
+  / 7d. Daily chart x-axis skips 05-11. Footer "Total 1,092 · Last 7d 1,092 · Last 24h 15".
+- Fix: audit every time-window query; use same query for header + footer; pick UTC.
+
+### BUG-015: Internal DB column / view / file path names leaked to UI
+- Severity: MEDIUM | Status: OPEN
+- "emits one to resume_builds.cover_email_md" (Apply tab), "source: v_company_conversion_funnel"
+  (Insights), "Written by agents/llm_router.py" (Costs), etc.
+- Fix: hide behind `?debug=1` OR replace with capability language.
+
+### BUG-016: /profile/sources classifier dumps JDs / cover letters into "role_specific_resume"
+- Severity: HIGH (pollutes ATS keyword scoring → biases G2 prompts) | Status: OPEN
+- 174 docs tagged "role_specific_resume" include `Cover letter.pdf`, `Hiring Manager.docx`,
+  `Chief Product Officer (CPO) JD.pdf` (an actual JD!), `Roadmap Q3-Q4-2024.pdf`,
+  `mastercard_hr_question_bank.docx`, `Doc2.docx` (1.4KB junk), 707-char OCR garbage.
+  These feed Keyword Intelligence (26,756 occurrences / 310 keywords) — inflates scores.
+- Fix: improve classifier (JDs have "Job Description"/"Responsibilities" headers; covers
+  start "Dear"; roadmaps have quarter headings); re-run on 174 tagged rows; add
+  "needs review" tier for borderline cases.
+
+### BUG-017: React hydration errors fire on every page (#418 #423 #425)
+- Severity: MEDIUM (likely cause of BUG-010 count drift) | Status: OPEN
+- Server-rendered HTML doesn't match client first-render. Errors fire on initial render
+  and on tab switches.
+- Fix: reproduce locally with strict mode; identify divergence (usually `toLocaleDateString`
+  without explicit locale, or `Date.now()` in a component body); use
+  `suppressHydrationWarning` OR move to `useEffect`.
+
+### BUG-018: "Why you fit" / "Matched skills" right-rail show empty states with no remediation
+- Severity: MEDIUM (dead-column-gate archetype) | Status: OPEN
+- Fix: gate on actual content presence OR remove cards until data is wired up.
+
+### BUG-019: /linkedin "Scheduled this week 0" contradicts "Scheduled (1)" tab count
+- Severity: LOW | Status: OPEN
+- Fix: one query, used for both header card + tab badge.
+
+### BUG-020: /network shows synthetic demo-data names with no "demo" disclaimer
+- Severity: MEDIUM | Status: OPEN
+- "Sarah Lin", "Raj Mehta", "Alice Hwang", etc. — seed fixtures. Header "Top 5 of 5
+  target companies" but /targets has 68.
+- Fix: add "Demo data — import LinkedIn CSV to replace" Pill when seed fixtures detected.
+
+### BUG-021: /today renders truncated location string as category label
+- Severity: MEDIUM | Status: OPEN
+- "UK MAY 2026 IN GREATER LONDON ..." shown as category on Vestd card.
+- Fix: find the fallback in today-card renderer; replace with constant ("Other") OR hide chip.
+
+### BUG-022: "Open posting" link on stale jobs likely 404s
+- Severity: LOW (mostly mooted once BUG-007/008 filter staleness everywhere) | Status: OPEN
+
+### BUG-023: /targets URL silently redirects to /companies; page title generic
+- Severity: LOW | Status: OPEN
+
+### BUG-024: `agent_call_log.graph` 100% NULL — cost-by-graph telemetry broken
+- Severity: HIGH (operational blindness — $32.40 spend untraceable) | Status: OPEN
+- 1,092 / 1,092 rows have `graph` NULL. Only `agent_name` is populated (which has the
+  prefix info — `g2.writer`, `g3.coach`, etc.).
+- Fix: parse `agent_name` prefix at write time in `agents/llm_router.py::_with_log` shim;
+  backfill 1,092 rows via SQL using same parsing.
+
+### BUG-025: `jobs.confidence_score` populated for only 20 / 405 rows (95% drift)
+- Severity: HIGH (ranking integrity) | Status: OPEN
+- Migration 011 added the column but never backfilled for jobs discovered pre-v2 validator.
+- Fix: backfill via re-validation pass on 385 NULL rows OR `COALESCE(confidence_score, 50)`
+  in /today query.
+
+### BUG-026: `jobs.discovered_at` is overwritten by re-discovery → corrupts "true age"
+- Severity: HIGH | Status: OPEN
+- 3 jobs have `resume_generated_at < discovered_at` (causally impossible).
+- Fix: change upsert to `discovered_at = LEAST(EXCLUDED.discovered_at, jobs.discovered_at)`.
+  Backfill jobs 89, 103, 3109 (`SET discovered_at = resume_generated_at - INTERVAL '1 minute'`).
+
+### BUG-027: 2 applications stuck `status=rejected` with `applied_date IS NULL`
+- Severity: MEDIUM | Status: OPEN
+- Affected: `6469d8cd-...` (SuperApp), `7ce700f3-...` (Emirates NBD).
+- Fix: backfill `applied_date = created_at::date`; add CHECK constraint.
+
+### BUG-028: All 15 failed resume_builds have `cost_usd_total=0` AND zero `agent_call_log` rows
+- Severity: MEDIUM (investigate first — could be correct OR cost leak) | Status: OPEN
+- Fix: inspect one failed Stripe build's `error` + `agent_transcript`; if real, add
+  explicit zero-cost test; if leak, fix `_with_log` to log on exception paths.
+
+### BUG-029: `boss_audit_log` table has RLS DISABLED (security)
+- Severity: HIGH | Status: OPEN — DO NOT AUTO-FIX (would break writes)
+- Anon key can read/write 5 rows. Decision needed: enable RLS + service-role policy, OR
+  document as intentional debug-only.
+
+### BUG-030 onward — reserved for future agent sweeps
+
+The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
+verified fixed in production, update **Status** to `VERIFIED` with a date.
