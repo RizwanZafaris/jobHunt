@@ -137,6 +137,15 @@ class Settings(BaseSettings):
     # Hard cap per draft (Phase 2 — currently advisory; full pre-call cap in followup PR).
     g4_max_cost_usd: float = 0.15
 
+    # ── G6 Follow-up Cadence (Phase 1.3, 2026-05-12) ────────────────────────
+    # All three LLM nodes default to Sonnet 4.6. Surfaced so A/B model swaps
+    # don't require redeploying agents/g6_nodes.py.
+    g6_draft_model: str = "claude-sonnet-4-6"
+    g6_persona_critic_model: str = "claude-sonnet-4-6"
+    g6_tone_calibrator_model: str = "claude-sonnet-4-6"
+    # The daily cron runs at 09:00 in the user's timezone.
+    g6_cadence_time: str = "09:00"
+
     # Phase 1.10: cost alerts (daily check + weekly digest).
     #   Daily check fires after the boss audit at 22:00 GST. Compares
     #   today's cumulative spend (from agent_call_log) against

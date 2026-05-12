@@ -105,6 +105,7 @@ from api.workspace import router as workspace_router  # noqa: E402  /workspace/*
 from api.interview_studio import router as interview_studio_router  # noqa: E402  /interview-studio/* (Phase 3)
 from api.perplexity import router as perplexity_router  # noqa: E402  Perplexity persona recency
 from api.apollo import router as apollo_router  # noqa: E402  Apollo firmographic + hiring intel
+from api.follow_ups import router as follow_ups_router  # noqa: E402  /workspace/follow-ups/* (Phase 1.3, G6)
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
@@ -112,6 +113,7 @@ app.include_router(workspace_router)
 app.include_router(interview_studio_router)
 app.include_router(perplexity_router)
 app.include_router(apollo_router)
+app.include_router(follow_ups_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
