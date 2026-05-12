@@ -25,7 +25,7 @@ function isInsightTab(value: string | undefined): value is InsightTab {
 }
 
 interface InsightsPageProps {
-  searchParams?: { tab?: string | string[] }
+  searchParams?: Promise<{ tab?: string | string[] }>
 }
 
 const HEADERS: Record<InsightTab, { eyebrow: string; title: string; description: string }> = {
@@ -49,7 +49,8 @@ const HEADERS: Record<InsightTab, { eyebrow: string; title: string; description:
   },
 }
 
-export default async function InsightsPage({ searchParams }: InsightsPageProps) {
+export default async function InsightsPage(props: InsightsPageProps) {
+  const searchParams = await props.searchParams;
   const raw = Array.isArray(searchParams?.tab) ? searchParams?.tab[0] : searchParams?.tab
   const active: InsightTab = isInsightTab(raw) ? raw : 'personas'
   const header = HEADERS[active]

@@ -77,7 +77,8 @@ interface JobDetailData {
   artifacts: { resume_path?: Artifact; email_path?: Artifact; interview_path?: Artifact }
 }
 
-export default async function JobDetailPage({ params }: { params: { id: string } }) {
+export default async function JobDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   let data: JobDetailData | undefined
   let error: string | null = null
   try {

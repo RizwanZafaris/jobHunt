@@ -46,11 +46,12 @@ const QUALITY_TONE: Record<string, PillTone> = {
   unknown: 'neutral',
 }
 
-export default async function PersonaDetailPage({
-  params,
-}: {
-  params: { name: string }
-}) {
+export default async function PersonaDetailPage(
+  props: {
+    params: Promise<{ name: string }>
+  }
+) {
+  const params = await props.params;
   const decoded = decodeURIComponent(params.name)
   let persona: PersonaDetail | null = null
   let error: string | null = null
