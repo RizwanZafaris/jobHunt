@@ -398,7 +398,7 @@ async def post_tutor_chat(
 
 # ─── POST /interview-studio/{application_id}/log-outcome ──────────────────
 @router.post("/{application_id}/log-outcome", response_model=LogOutcomeResponse)
-def post_log_outcome(
+async def post_log_outcome(
     application_id: UUID,
     body: LogOutcomeRequest,
     user: User = Depends(get_current_user),
@@ -408,6 +408,9 @@ def post_log_outcome(
     Idempotency: interview_outcomes has UNIQUE(application_id, round_number).
     Re-posting the same round number returns 409 — the UI must explicitly
     delete + re-create or update via a different endpoint (out of scope).
+
+    Async since 2026-05-12: credit_outcome is now `async def` (see
+    docs/AGENT_REVIEW_2026_05_11.md §31).
     """
     application = _load_application(application_id, user.id)
     db = get_supabase()
@@ -446,7 +449,7 @@ def post_log_outcome(
     credit_summary: dict[str, Any] = {}
     try:
         from agents.outcome_to_persona import credit_outcome
-        credit_summary = credit_outcome(str(outcome_id), kind="interview")
+        credit_summary = await credit_outcome(str(outcome_id), kind="interview")
     except Exception as e:
         logger.warning(f"credit_outcome failed (non-fatal): {type(e).__name__}: {e}")
         credit_summary = {"error": f"credit_failed: {type(e).__name__}"}
