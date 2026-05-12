@@ -43,6 +43,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/network", tags=["network"])
 
 
+def _escape_ilike(s: str) -> str:
+    """Escape SQL LIKE/ILIKE wildcards so user input matches literally.
+
+    Order matters: escape backslash FIRST so we don't double-escape the
+    backslashes we add for ``%`` and ``_``.
+    """
+    if not s:
+        return ""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 # ── Request models ────────────────────────────────────────────────────────
 class CreatePersonBody(BaseModel):
     full_name: str = Field(min_length=1, max_length=200)
@@ -120,7 +131,7 @@ def search_people(
         .eq("user_id", str(user.id))
     )
     if q:
-        qb = qb.ilike("full_name", f"%{q}%")
+        qb = qb.ilike("full_name", f"%{_escape_ilike(q)}%")
     rows = (
         qb.order("created_at", desc=True)
           .limit(min(max(limit, 1), 100))
