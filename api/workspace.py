@@ -157,6 +157,7 @@ def _get_latest_resume_build(db, *, job_id: int, user_id: UUID) -> Optional[dict
         .select(
             "id, job_id, application_id, company_name, persona_version, status, "
             "iterations, resume_md, resume_pdf_url, resume_docx_url, "
+            "cover_email_md, "
             "user_edited_md, user_edited_at, cost_usd_total, latency_ms_total, "
             "created_at, finalized_at, error"
         )
@@ -312,6 +313,10 @@ def _serialize_resume_build(row: Optional[dict[str, Any]]) -> Optional[dict[str,
         "user_edited_at": row.get("user_edited_at"),
         "resume_pdf_url": row.get("resume_pdf_url"),
         "resume_docx_url": row.get("resume_docx_url"),
+        # BUG-033 (2026-05-12): expose `cover_email_md` so the Apply tab
+        # checklist can gate "Cover note ready" on the real source (G2
+        # writes here; `applications.cover_email` is never written).
+        "cover_email_md": row.get("cover_email_md"),
         "cost_usd_total": row.get("cost_usd_total"),
         "latency_ms_total": row.get("latency_ms_total"),
         "company_name": row.get("company_name"),

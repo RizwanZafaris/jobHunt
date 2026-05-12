@@ -70,6 +70,12 @@ export interface ResumeArtifact {
   user_edited_at?: string | null
   resume_pdf_url?: string | null
   resume_docx_url?: string | null
+  /**
+   * Cover-email markdown emitted by G2's `cover_email_node`. Source of
+   * truth for the Apply tab's "Cover note ready" checklist row — the
+   * legacy `applications.cover_email` column is never written.
+   */
+  cover_email_md?: string | null
   cost_usd_total?: number | null
   latency_ms_total?: number | null
   company_name?: string | null
