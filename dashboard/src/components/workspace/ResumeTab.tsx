@@ -233,19 +233,46 @@ export function ResumeTab({ jobId, resume, onResumeUpdated }: ResumeTabProps) {
             </span>
           )}
           <div className="ml-auto flex items-center gap-2 flex-wrap">
-            <DownloadLink href={downloadResumeHref(jobId, 'md')} label="Markdown" enabled />
-            <DownloadLink
-              href={downloadResumeHref(jobId, 'pdf')}
-              label="PDF"
-              enabled={!!localResume.resume_pdf_url}
-              hint={!localResume.resume_pdf_url ? 'PDF unavailable until next build' : undefined}
-            />
-            <DownloadLink
-              href={downloadResumeHref(jobId, 'docx')}
-              label="DOCX"
-              enabled={!!localResume.resume_docx_url}
-              hint={!localResume.resume_docx_url ? 'DOCX unavailable until next build' : undefined}
-            />
+            {(() => {
+              // 2026-05-12: gate the download buttons on actual resume content,
+              // not on resume_pdf_url / resume_docx_url. The PR-#64 on-demand
+              // render path (api/workspace.py:848-908) reads resume_md (or the
+              // user-edited override) and produces PDF/DOCX bytes synchronously;
+              // it does not need pre-rendered URLs in storage. The G2 export
+              // node hardcodes resume_pdf_url=None at g2_nodes.py:1148 because
+              // pandoc/LaTeX isn't available in the Railway slim image, so the
+              // old gate (`!!localResume.resume_pdf_url`) left PDF and DOCX
+              // disabled on every successful build — the user-visible symptom
+              // was "Resume build succeeded but download is not working".
+              const haveResumeContent = !!(
+                (localResume.user_edited_md ?? localResume.resume_md ?? '').trim()
+              )
+              const emptyHint = !haveResumeContent
+                ? 'Resume content is empty — rebuild to enable download'
+                : undefined
+              return (
+                <>
+                  <DownloadLink
+                    href={downloadResumeHref(jobId, 'md')}
+                    label="Markdown"
+                    enabled={haveResumeContent}
+                    hint={emptyHint}
+                  />
+                  <DownloadLink
+                    href={downloadResumeHref(jobId, 'pdf')}
+                    label="PDF"
+                    enabled={haveResumeContent}
+                    hint={emptyHint}
+                  />
+                  <DownloadLink
+                    href={downloadResumeHref(jobId, 'docx')}
+                    label="DOCX"
+                    enabled={haveResumeContent}
+                    hint={emptyHint}
+                  />
+                </>
+              )
+            })()}
             <Button variant="primary" size="sm" onClick={() => setEditing(true)}>
               <Icon name="pencil" size={12} />
               Edit with AI
