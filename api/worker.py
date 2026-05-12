@@ -351,6 +351,68 @@ def worker_run_g9(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+def worker_run_g5(jobs_run_id: str) -> dict[str, Any]:
+    """RQ job: run the G5 fit-score evaluation for one job.
+
+    Phase 2 §4.1 — scores a freshly-upserted job across 6 dimensions
+    (role_fit, growth, comp, culture, remote, trajectory) and writes the
+    result to `jobs.fit_score_breakdown` + `jobs.letter_grade`. The
+    agent itself idempotency-gates within a 7-day staleness window, so
+    the JobScout auto-trigger can fire on every persist without burning
+    extra LLM spend on already-scored rows.
+
+    payload shape: {"job_id": int, "force": bool}
+    """
+    from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
+
+    run = get_run(jobs_run_id)
+    if not run:
+        logger.error(f"worker_run_g5: jobs_runs row {jobs_run_id} not found; aborting")
+        return {"error": "row_not_found", "run_id": jobs_run_id}
+
+    mark_running(jobs_run_id)
+    payload = run.payload or {}
+    job_id = payload.get("job_id")
+    if job_id is None:
+        mark_failed(jobs_run_id, "payload.job_id missing", retry=False)
+        raise ValueError(f"worker_run_g5 payload missing job_id: {payload!r}")
+    force = bool(payload.get("force", False))
+
+    try:
+        from agents.scoring_agent import score_role
+        from uuid import UUID
+
+        breakdown = _run_async(score_role(
+            job_id=int(job_id),
+            user_id=UUID(str(run.user_id)),
+            force=force,
+        ))
+        result = {
+            "job_id": int(job_id),
+            "letter_grade": breakdown.get("letter_grade"),
+            "composite": breakdown.get("composite"),
+            "cost_usd": breakdown.get("cost_usd"),
+            "skipped": breakdown.get("skipped", False),
+            "scorer_version": breakdown.get("scorer_version"),
+        }
+        mark_succeeded(jobs_run_id, result)
+        return result
+    except Exception as exc:
+        attempt_n = (run.attempts or 0) + 1
+        retry = _is_retryable(exc) and attempt_n < MAX_ATTEMPTS
+        err = _truncate(
+            f"{type(exc).__name__}: {exc}\n\n"
+            f"attempt {attempt_n}/{MAX_ATTEMPTS} — retry={retry}\n\n"
+            f"{traceback.format_exc()}"
+        )
+        logger.exception(
+            f"worker_run_g5 failed run_id={jobs_run_id} job_id={job_id} "
+            f"attempt={attempt_n} retry={retry}"
+        )
+        mark_failed(jobs_run_id, err, retry=retry)
+        raise
+
+
 def worker_run_g11(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G11 voice-calibration graph for one user.
 
