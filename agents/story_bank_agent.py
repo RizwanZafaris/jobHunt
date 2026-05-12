@@ -15,12 +15,12 @@ Design choices
 3. RLS: every call passes the candidate's user_id. We never select across
    users — Phase 1.2 is single-user but the writer convention is already
    in place for multi-tenancy.
-4. `search_stories` uses pgvector cosine similarity via direct SQL
-   ordering on the embedding column. We could expose this as a Postgres
-   RPC (`search_story_bank_v2`) for consistency with company_knowledge,
-   but adding an RPC is a separate migration's worth of work — the
-   direct query is simpler to ship and the existing `search_story_bank`
-   RPC has a v1 shape we don't want to retrofit yet.
+4. `search_stories` calls the `search_story_bank_v2` Postgres RPC
+   (migration 017) which does pgvector cosine ranking inside the DB
+   where the ivfflat index can use it. Falls back to a Python
+   client-side sort (`_search_stories_clientside`) if the RPC fails,
+   so a transient DB issue degrades to slow-but-correct rather than
+   500. Fallbacks are logged so we know if it happens.
 
 cite:knowledge_id breadcrumbs
 -----------------------------
@@ -305,20 +305,24 @@ async def search_stories(
     k: int = 5,
     *,
     competency: Optional[str] = None,
+    archetype: Optional[str] = None,
 ) -> list[StoryBankMatch]:
     """Top-k semantic matches for `query`.
 
     Embeds the query with text-embedding-3-small (same model G9 uses on
-    write), then orders story_bank by `embedding <=> query_embedding`
-    (pgvector cosine distance). Returns at most `k` hits.
+    write), then calls the `search_story_bank_v2` Postgres RPC
+    (migration 018) which does pgvector cosine ranking inside the DB
+    where the ivfflat index can use it.
 
-    `competency`: optional GIN-indexed pre-filter so callers can ask for
-    "top-5 leadership stories about ambiguity" cheaply.
+    Falls back through two layers if anything along the path breaks:
+      1. RPC error or empty result → client-side cosine sort over the
+         user's embedded rows (`_search_stories_clientside`).
+      2. embedding call fails OR no rows have embeddings → chronological
+         `list_stories` so G3 / G7 can still ship something.
 
-    Falls back to a chronological-list result if the embedding call
-    fails or no stories have embeddings yet (cold start). This way G3
-    Phase 2 can ship before story_bank is fully embedded — search just
-    degrades to "most recent stories first" rather than 500ing.
+    `competency` / `archetype`: optional GIN-indexed pre-filters so
+    callers can ask for "top-5 leadership stories about ambiguity"
+    cheaply.
     """
     if not query or not query.strip():
         return []
@@ -329,16 +333,70 @@ async def search_stories(
     try:
         query_embedding = await embed(query)
     except Exception as e:
-        logger.warning(f"search_stories: embedding query failed: {e} — falling back")
+        logger.warning(f"search_stories: embedding query failed: {e} — falling back to chronological")
         rows = await list_stories(user_id, limit=k, competency=competency)
         return [StoryBankMatch(story=r, similarity=0.0) for r in rows]
 
-    # supabase-py doesn't expose pgvector <=> ordering natively, so we
-    # use rpc when one exists OR fall back to client-side sort over a
-    # pull of all-with-embedding rows. For now we do the latter — the
-    # story_bank row count is small (10-20 per user), so reading them
-    # all is fine. When this gets hot, we'll add a search_story_bank v2
-    # RPC similar to search_company_knowledge.
+    # ── Layer 1: pgvector RPC (preferred) ────────────────────────────
+    try:
+        rpc_args = {
+            "p_user_id": str(user_id),
+            "p_query_embedding": query_embedding,
+            "p_k": k,
+        }
+        if competency:
+            rpc_args["p_competency_filter"] = [competency]
+        if archetype:
+            rpc_args["p_archetype_filter"] = [archetype]
+        rpc_rows = db.rpc("search_story_bank_v2", rpc_args).execute().data or []
+        if rpc_rows:
+            matches: list[StoryBankMatch] = []
+            for row in rpc_rows:
+                # RPC returns similarity directly (1 - cosine_distance), already in [0, 1].
+                # We still apply the outcome_score boost client-side so we don't
+                # have to fold it into the SQL ORDER BY (the magnitude — capped
+                # at 0.05 — would be drowned out by raw cosine distance range).
+                story = _row_to_story(row)
+                base_sim = float(row.get("similarity") or 0.0)
+                boost = min(0.05, 0.005 * story.outcome_score)
+                matches.append(StoryBankMatch(story=story, similarity=base_sim + boost))
+            matches.sort(key=lambda m: m.similarity, reverse=True)
+            return matches[:k]
+        # RPC returned 0 rows — could be cold start OR RLS-filtered.
+        # Try client-side as a sanity check (in case the RPC is missing).
+        logger.debug("search_stories: RPC returned 0 rows, trying client-side fallback")
+    except Exception as e:
+        logger.warning(
+            f"search_stories: RPC search_story_bank_v2 failed ({type(e).__name__}: {e}) — "
+            f"falling back to client-side cosine sort. If this repeats, check that "
+            f"migration 018 is applied."
+        )
+
+    # ── Layer 2: client-side cosine (fallback) ───────────────────────
+    return await _search_stories_clientside(
+        db=db,
+        user_id=user_id,
+        query_embedding=query_embedding,
+        k=k,
+        competency=competency,
+    )
+
+
+async def _search_stories_clientside(
+    *,
+    db,
+    user_id: UUID | str,
+    query_embedding: list[float],
+    k: int,
+    competency: Optional[str] = None,
+) -> list[StoryBankMatch]:
+    """Fallback path: pull all-with-embedding rows, sort cosine in Python.
+
+    This is the original Phase 1.2 implementation, preserved as a fallback
+    for two cases:
+      1. RPC `search_story_bank_v2` (migration 018) isn't applied yet.
+      2. The RPC raised an unexpected error (network, RLS, etc.).
+    """
     q = (
         db.table("story_bank")
         .select(
@@ -354,16 +412,12 @@ async def search_stories(
         q = q.contains("competencies", [competency])
     rows = (q.execute().data) or []
     if not rows:
-        # Cold start — no embedded rows. Fall back to chronological.
         cold = await list_stories(user_id, limit=k, competency=competency)
         return [StoryBankMatch(story=r, similarity=0.0) for r in cold]
 
-    # Client-side cosine similarity. Cheap at small N.
     matches: list[StoryBankMatch] = []
     for row in rows:
         emb = row.get("embedding")
-        # Supabase returns vectors as either a list[float] (when pg-py
-        # auto-decodes) or a stringified "[a,b,c]" (when it doesn't).
         if isinstance(emb, str):
             try:
                 emb = json.loads(emb)
@@ -373,13 +427,8 @@ async def search_stories(
             continue
         sim = _cosine(emb, query_embedding)
         story = _row_to_story(row)
-        # Bayesian tiebreaker — boost stories with higher outcome_score
-        # by a tiny amount so ties get broken by past success. Capped at
-        # 0.05 so a high-similarity story always beats a low-similarity
-        # one even with 100+ credit.
         boost = min(0.05, 0.005 * story.outcome_score)
         matches.append(StoryBankMatch(story=story, similarity=sim + boost))
-
     matches.sort(key=lambda m: m.similarity, reverse=True)
     return matches[:k]
 

@@ -202,8 +202,23 @@ def _build_linkedin_post_due(user_id: UUID) -> Optional[dict[str, Any]]:
     )
 
 
-def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
-    """resume_ready + score_high_no_resume + score_below_threshold."""
+def _build_job_actions(
+    user_id: UUID,
+    *,
+    include_suspicious: bool = False,
+) -> list[dict[str, Any]]:
+    """resume_ready + score_high_no_resume + score_below_threshold.
+
+    Tier 2 §4.3: rows with `legitimacy_tier='suspicious'` are filtered out
+    by default. Pass `include_suspicious=True` (or `?include_suspicious=true`
+    on /actions/today) to surface them for debugging — they still rank
+    below legitimate/caution rows because match_score is unchanged.
+
+    The filter is application-side (not SQL) so a NULL `legitimacy_tier`
+    (job hasn't been scored yet — race window between scout insert and
+    queue worker pickup) keeps surfacing. Only an explicit 'suspicious'
+    verdict hides the row.
+    """
     db = get_supabase()
 
     # Pull candidate jobs once: open listings, score >= MIN, ordered by score.
@@ -215,9 +230,17 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
     # legacy rows on the same day, so this filter and the
     # posting_closed_at filter form defence-in-depth.
     # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §C.
+    #
+    # 2026-05-12 (Tier 2 §4.3): added legitimacy_tier + legitimacy_score
+    # to the select list. Filter `legitimacy_tier='suspicious'` is
+    # application-side so NULL (unscored) still renders.
     job_rows = (
         db.table("jobs")
-        .select("id, title, company, match_score, resume_generated_at, posting_closed_at, validation_status, confidence_score, validation_failed")
+        .select(
+            "id, title, company, match_score, resume_generated_at, "
+            "posting_closed_at, validation_status, confidence_score, "
+            "validation_failed, legitimacy_tier, legitimacy_score"
+        )
         .eq("user_id", str(user_id))
         .is_("posting_closed_at", None)
         .is_("validation_failed", None)
@@ -231,6 +254,20 @@ def _build_job_actions(user_id: UUID) -> list[dict[str, Any]]:
     ).data or []
     if not job_rows:
         return []
+
+    if not include_suspicious:
+        before = len(job_rows)
+        job_rows = [
+            r for r in job_rows
+            if (r.get("legitimacy_tier") or "").lower() != "suspicious"
+        ]
+        dropped = before - len(job_rows)
+        if dropped:
+            logger.info(
+                "actions: dropped %d suspicious job(s) from /today "
+                "(use ?include_suspicious=true to surface)",
+                dropped,
+            )
 
     job_ids = [int(r["id"]) for r in job_rows if r.get("id") is not None]
 
@@ -503,6 +540,13 @@ def _rank(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 @router.get("/today")
 def get_today_actions(
     limit: int = Query(default=DEFAULT_TOP_N, ge=1, le=20),
+    include_suspicious: bool = Query(
+        default=False,
+        description=(
+            "Tier 2 §4.3: include jobs where legitimacy_tier='suspicious'. "
+            "Default false (hidden) — useful for debugging the agent."
+        ),
+    ),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Return the ranked action queue for /today."""
@@ -526,7 +570,9 @@ def get_today_actions(
         logger.exception("follow_up builder failed")
 
     try:
-        actions.extend(_build_job_actions(user_id))
+        actions.extend(_build_job_actions(
+            user_id, include_suspicious=include_suspicious,
+        ))
     except Exception:
         logger.exception("job actions builder failed")
 
