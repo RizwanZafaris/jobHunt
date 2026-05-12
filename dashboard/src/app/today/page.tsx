@@ -13,7 +13,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { TodayActionCard } from '@/components/today/TodayActionCard'
 import { fetchTodayActions, type FetchTodayResponse } from '@/lib/api'
 import { MOCK_TODAY_ACTIONS } from '@/lib/mock/today'
-import type { TodayAction } from '@/lib/types/today'
+import type { TodayAction, TodayActionKind } from '@/lib/types/today'
 
 export const dynamic = 'force-dynamic'
 
@@ -64,27 +64,45 @@ async function loadTodayActions(): Promise<FetchOutcome> {
 }
 
 export default async function TodayPage() {
-  const { actions, total, counts, errorMessage, isMock } = await loadTodayActions()
+  const { actions, total, errorMessage, isMock } = await loadTodayActions()
   const visible = actions.slice(0, VISIBLE_LIMIT)
   const overflow = Math.max(0, total - visible.length)
 
-  const today = new Date().toLocaleDateString('en-GB', {
+  // BUG-010 fix: derive the strip counts from the VISIBLE cards, not from
+  // the API's `counts` summary. Previously the strip said e.g. "1 Ready to
+  // apply" while the page rendered 4 green Ready cards because the API
+  // counts queue-total but the page is truncated to VISIBLE_LIMIT and the
+  // user has no way to reconcile the two. Counting locally guarantees the
+  // strip is always the index of the list directly underneath it.
+  const visibleCounts = visible.reduce<Record<TodayActionKind, number>>(
+    (acc, a) => {
+      acc[a.kind] = (acc[a.kind] ?? 0) + 1
+      return acc
+    },
+    {} as Record<TodayActionKind, number>,
+  )
+
+  // Use Date in render but force UTC for deterministic SSR output —
+  // see BUG-017. The eyebrow ("Tuesday, 12 May") is purely informational
+  // so a fixed locale + timezone is safe.
+  const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
+    timeZone: 'UTC',
   })
 
-  // Tiny stat strip — what's queued behind the visible cards.
+  // Tiny stat strip — counts derived from the cards visible on this page.
   const interestingCounts = (
     [
-      ['linkedin_post_due',     'Visibility post'],
-      ['resume_ready',          'Ready to apply'],
-      ['score_high_no_resume',  'Resumes to build'],
-      ['stale_application',     'Stale apps'],
-      ['persona_stale',         'Stale personas'],
+      ['linkedin_post_due',     'Visibility post',  'Approved LinkedIn drafts scheduled for today'],
+      ['resume_ready',          'Ready to apply',    'Cards below with a tailored resume already built'],
+      ['score_high_no_resume',  'Resumes to build',  'Cards below where the score is ≥85 but no resume yet'],
+      ['stale_application',     'Stale apps',        'Cards below — applied 7+ days ago, no outcome logged'],
+      ['persona_stale',         'Stale personas',    'Cards below — persona not refreshed in 14+ days'],
     ] as const
   )
-    .map(([k, label]) => ({ k, label, n: counts[k] ?? 0 }))
+    .map(([k, label, tip]) => ({ k, label, tip, n: visibleCounts[k] ?? 0 }))
     .filter((row) => row.n > 0)
 
   return (
@@ -111,8 +129,12 @@ export default async function TodayPage() {
           className="flex flex-wrap gap-x-4 gap-y-1 text-2xs text-fg-subtle"
           aria-label="Today's queue counts"
         >
-          {interestingCounts.map(({ k, label, n }) => (
-            <li key={k} className="flex items-center gap-1">
+          {interestingCounts.map(({ k, label, tip, n }) => (
+            <li
+              key={k}
+              className="flex items-center gap-1"
+              title={tip}
+            >
               <span className="font-mono tabular-nums text-fg">{n}</span>
               <span>{label}</span>
             </li>

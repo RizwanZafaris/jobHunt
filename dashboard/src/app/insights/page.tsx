@@ -39,7 +39,7 @@ const HEADERS: Record<InsightTab, { eyebrow: string; title: string; description:
     eyebrow: 'Telemetry',
     title: 'LLM cost observability',
     description:
-      'Per-call cost and latency from agent_call_log. Written by agents/llm_router.py on every successful call.',
+      'Per-call cost and latency for every model invocation. Time windows are UTC.',
   },
   system: {
     eyebrow: 'Orchestration',

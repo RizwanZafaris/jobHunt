@@ -220,7 +220,7 @@ function ScheduledCalendar({
         {schedule.slots.map((s) => DAY_OF_WEEK_LABEL[s.dayOfWeek]).join(' / ')}
         {schedule.nextSlot && (
           <>
-            {' · '}Next slot: {new Date(schedule.nextSlot).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+            {' · '}Next slot: {new Date(schedule.nextSlot).toLocaleString('en-US', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false })}
           </>
         )}
       </p>
