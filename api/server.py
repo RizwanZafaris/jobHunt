@@ -459,10 +459,19 @@ async def get_job(job_id: int, _auth=Depends(verify_secret)):
 
 @app.get("/companies")
 async def list_companies(_auth=Depends(verify_secret)):
-    """List all tracked companies."""
+    """List all tracked companies.
+
+    BUG-013: filter out `is_phantom=true` rows (scraping artifacts).
+    """
     from db.client import get_supabase
     db = get_supabase()
-    result = db.table("companies").select("*").order("name").execute()
+    result = (
+        db.table("companies")
+        .select("*")
+        .eq("is_phantom", False)
+        .order("name")
+        .execute()
+    )
     return {"companies": result.data or []}
 
 
@@ -1324,10 +1333,21 @@ class TargetCompanyUpdate(BaseModel):
 
 @app.get("/companies/targets")
 async def list_target_companies(_auth=Depends(verify_secret)):
-    """List all target companies grouped by category."""
+    """List all target companies grouped by category.
+
+    BUG-013: exclude phantom rows.
+    """
     from db.client import get_supabase
     db = get_supabase()
-    result = db.table("companies").select("*").eq("is_target", True).order("priority", desc=False).order("name").execute()
+    result = (
+        db.table("companies")
+        .select("*")
+        .eq("is_target", True)
+        .eq("is_phantom", False)
+        .order("priority", desc=False)
+        .order("name")
+        .execute()
+    )
     companies = result.data or []
     by_cat: dict[str, list] = {}
     for c in companies:
@@ -2407,12 +2427,13 @@ async def trigger_refresh_news(
             "message": f"News refresh for {company} running in background.",
         }
 
-    # All targets
+    # All targets — BUG-013: exclude phantoms from the news-refresh roster.
     rows = (
         get_supabase()
         .table("companies")
         .select("name")
         .eq("is_target", True)
+        .eq("is_phantom", False)
         .execute()
         .data or []
     )
@@ -2460,9 +2481,13 @@ async def trigger_deep_research_batch(
     """
     from db.client import get_supabase
     db = get_supabase()
-    q = db.table("companies").select(
-        "name, priority"
-    ).eq("is_target", True)
+    # BUG-013: never run deep research on phantom rows.
+    q = (
+        db.table("companies")
+        .select("name, priority")
+        .eq("is_target", True)
+        .eq("is_phantom", False)
+    )
     if priority:
         q = q.eq("priority", priority)
     rows = q.execute().data or []
@@ -2506,11 +2531,17 @@ async def trigger_deep_research_batch(
 
 @app.get("/personas")
 async def list_personas(_auth=Depends(verify_secret)):
-    """List all company_personas with quality + version info."""
+    """List all company_personas with quality + version info.
+
+    BUG-013: drop personas whose `company_name` matches a phantom row in
+    `companies` (Adyen Careers, SuperApp, Merchant Acquiring ...). The
+    persona row still exists for audit, but the /insights table no longer
+    shows it.
+    """
     from db.client import get_supabase
+    db = get_supabase()
     result = (
-        get_supabase()
-        .table("company_personas")
+        db.table("company_personas")
         .select(
             "company_name, persona_version, n_examples_used, "
             "last_synthesized_at, metadata, ats_keyword_bank"
@@ -2519,6 +2550,18 @@ async def list_personas(_auth=Depends(verify_secret)):
         .execute()
     )
     rows = result.data or []
+    phantom_names = {
+        r["name"]
+        for r in (
+            db.table("companies")
+            .select("name")
+            .eq("is_phantom", True)
+            .execute()
+            .data
+            or []
+        )
+    }
+    rows = [r for r in rows if r.get("company_name") not in phantom_names]
     by_quality: dict[str, int] = {"high": 0, "medium": 0, "low": 0, "unknown": 0}
     for r in rows:
         q = (r.get("metadata") or {}).get("persona_quality", "unknown")

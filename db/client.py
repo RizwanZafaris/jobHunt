@@ -333,7 +333,24 @@ def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
     is NOT NULL but the writer here didn't pass it. Existing target rows
     have user_id set from prior backfills, but any first-discovery
     upsert (e.g. JobScout finding a brand-new company) crashed silently.
+
+    BUG-013 (2026-05-12): also gate against phantom names here. Any caller
+    passing a scraping-artifact name (e.g. "Adyen Careers",
+    "68 Vacancies Apr 2026", "Merchant Acquiring ...") gets a ValueError
+    instead of silently creating a row that would later be picked up by
+    persona deep-research and burn LLM spend.
     """
+    # Local import to avoid an import cycle (company_agent imports db.client).
+    from agents.company_agent import _is_phantom_company_name
+    name = (company_data or {}).get("name")
+    if _is_phantom_company_name(name):
+        raise ValueError(
+            f"upsert_company: refusing to insert phantom company name "
+            f"{name!r} (BUG-013 — looks like a job-listing fragment, date "
+            f"stamp, or pure title/function token). Caller should filter "
+            f"company names against agents.company_agent."
+            f"_is_phantom_company_name before reaching this point."
+        )
     db = get_supabase()
     if user_id is None:
         import os
