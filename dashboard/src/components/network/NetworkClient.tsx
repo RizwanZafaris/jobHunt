@@ -32,6 +32,30 @@ import type {
   TargetCoverage,
 } from '@/lib/types/network'
 
+// BUG-020: until /network/* endpoints are wired into api/server.py the
+// page renders the seeded mock fixture from dashboard/src/lib/mock/network.ts.
+// Showing those names with no disclaimer made the page look like it
+// reflected a real graph. We detect the seed by name overlap (cheap,
+// stable) and surface a warning pill near the warm-intros card so the
+// user knows what they're looking at.
+const SEED_FIXTURE_NAMES = new Set([
+  'Sarah Lin',
+  'Bob Patel',
+  'Alice Hwang',
+  'Raj Mehta',
+  'Imani Cole',
+  'José Ramírez',
+])
+
+function isDemoFixture(people: Person[]): boolean {
+  if (people.length === 0) return false
+  // Treat as demo if every loaded person is in the seed fixture set, OR
+  // if the total roster is suspiciously small (≤8) and contains seed
+  // names — real LinkedIn imports return hundreds of rows.
+  const seedHits = people.filter((p) => SEED_FIXTURE_NAMES.has(p.full_name)).length
+  return seedHits >= 3 && people.length <= 12
+}
+
 const KIND_LABEL: Record<string, string> = {
   me_first_degree: '1°',
   colleague: 'colleague',
@@ -60,6 +84,9 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
   const [search, setSearch] = useState('')
   const [activePath, setActivePath] = useState<ReferralPath | null>(null)
   const [importSummary, setImportSummary] = useState<ImportSummary | null>(null)
+  // BUG-020 — disclaim that the loaded names are demo data. Hidden once
+  // the user imports a real CSV (importSummary truthy).
+  const showDemoBanner = importSummary === null && isDemoFixture(people)
 
   const filteredPeople = useMemo(() => {
     if (!search.trim()) return people
@@ -120,6 +147,11 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
             Top {topPaths.length} of {coverage.length} target companies
           </p>
         </header>
+        {showDemoBanner && (
+          <Pill tone="warning" size="xs">
+            Demo data — import LinkedIn CSV to replace
+          </Pill>
+        )}
         {topPaths.length === 0 ? (
           <EmptyState
             icon="users"
