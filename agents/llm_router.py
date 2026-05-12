@@ -247,6 +247,7 @@ class LLMRouter:
         tools: Optional[list] = None,
         agent_name: Optional[str] = None,
         json_response: bool = False,
+        cache_system: Optional[bool] = None,
         **provider_kwargs: Any,
     ) -> LLMResult:
         """
@@ -255,12 +256,28 @@ class LLMRouter:
         messages: [{"role": "user"|"assistant", "content": "..."}]
         tools: provider-specific tool definitions (e.g. Anthropic web_search,
                Gemini google_search grounding, OpenAI function tools).
+        cache_system: Anthropic-only opt-in for prompt caching of the system
+               block. Three modes:
+                 None  (default) — auto: wrap when system >= ~1024 tokens
+                                   (chars/4 heuristic). Used by G2.
+                 True            — force-wrap regardless of size. Safe even
+                                   below Anthropic's 1024-token minimum
+                                   (the marker is silently ignored, costs
+                                   nothing). Used by G6 follow-up graph,
+                                   where the same system prompt fires every
+                                   cron run and even a sub-1024 prompt may
+                                   hit the threshold under real tokenization.
+                 False           — never wrap (used by tests).
+               Honoured only when provider="anthropic" AND
+               ANTHROPIC_PROMPT_CACHE_ENABLED is not "0".
         """
         start = time.perf_counter()
         try:
             if provider == "anthropic":
                 result = await self._call_anthropic(
-                    model, system, messages, max_tokens, temperature, tools, **provider_kwargs
+                    model, system, messages, max_tokens, temperature, tools,
+                    cache_system=cache_system,
+                    **provider_kwargs,
                 )
             elif provider == "openai":
                 result = await self._call_openai_compatible(
@@ -342,6 +359,7 @@ class LLMRouter:
         max_tokens: int,
         temperature: float,
         tools: Optional[list],
+        cache_system: Optional[bool] = None,
         **kwargs,
     ) -> LLMResult:
         client = self._get_client("anthropic")
@@ -353,19 +371,29 @@ class LLMRouter:
         # that the cache_control field is silently ignored, so we gate on a
         # chars/4 heuristic to skip the wrapping when it can't help.
         # Per https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching.
+        #
+        # Callers can override the heuristic via cache_system:
+        #   None  → auto (size-gated, default — G2 critic family relies on this)
+        #   True  → force-wrap. Used by G6 follow-up graph, where the same
+        #           system prompts fire every cron run; even sub-1024 prompts
+        #           may cross the threshold under real tokenization, and the
+        #           marker is a no-op below the minimum.
+        #   False → never wrap (tests; staged rollback at the call site).
         system_arg: Any = system
         if (
             isinstance(system, str)
-            and len(system) >= 1024 * 4  # ~1024 tokens, chars/4 heuristic
             and _anthropic_cache_enabled()
+            and cache_system is not False
         ):
-            system_arg = [
-                {
-                    "type": "text",
-                    "text": system,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ]
+            size_eligible = len(system) >= 1024 * 4  # chars/4 ≈ 1024 tokens
+            if cache_system is True or size_eligible:
+                system_arg = [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
 
         kw = dict(
             model=model,
