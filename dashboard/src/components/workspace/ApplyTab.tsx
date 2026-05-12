@@ -84,7 +84,7 @@ export function ApplyTab({
       state: coverDone ? 'done' : 'optional',
       detail: coverDone
         ? 'Cover email stored on the application.'
-        : 'Optional — many ATS flows don\'t require one. The G2 build emits one to resume_builds.cover_email_md if you want it.',
+        : 'Optional — many ATS flows don\'t require one. G2 generates a cover note alongside the resume if you want it.',
       jumpTo: 'resume',
       jumpLabel: coverDone ? 'View cover' : undefined,
     },
