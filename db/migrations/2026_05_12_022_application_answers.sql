@@ -53,10 +53,15 @@
 --   from the Railway worker.
 --
 -- FK types
---   Live DB: applications.id is UUID and user_id references users(id)
---   (the earlier "BIGINT" / "profiles" types described in migration 001
---   were rewritten by a later migration before this one landed). Both
---   FKs are NOT NULL because every row needs an owner + parent app.
+--   Live DB (canonical — see db/SCHEMA_LIVE_STATE.md):
+--     user_id        UUID NOT NULL REFERENCES users(id)
+--     application_id UUID NOT NULL REFERENCES applications(id)
+--   This file was originally authored against an imagined "profiles(id)"
+--   + "BIGINT application_id" shape that has never existed in this
+--   project — the original db/schema.sql declared applications.id UUID
+--   from day one, and migration 001 introduces users (not profiles).
+--   The FK types below are the live-correct shape; the BUG-042 fix
+--   patched them in-place after the first apply attempt failed.
 --
 -- Rollback
 --   DROP TABLE application_answers;
