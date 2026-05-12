@@ -1098,33 +1098,47 @@ remain open — logged here as the canonical follow-up backlog.
   hits ≥50. The static weights become a regression problem then —
   career-ops calibrates weights on outcome data; we'll do the same.
 
-### BUG-039 reserved for `tier4/g11-voice-calibration` (PR pending merge — fills this slot on land)
+### BUG-039: `jobs.match_score` is a single integer with no dimensional breakdown
+- **Discovered:** 2026-05-12 by Claude during Tier 2 §4.1 implementation
+- **Severity:** MEDIUM (limits decision quality; downstream blocker for G7)
+- **Status:** FIX_SHIPPED on `tier2/g5-evaluation-scoring` (PR #100, merged)
+- **Component:** `db/schema.sql` (jobs table), `dashboard/src/app/today/page.tsx`
+- **Symptom:** /today ranked jobs by `match_score` only (0-100 integer). User
+  couldn't see WHY a role was a fit (role vs comp vs growth vs culture),
+  and the upcoming G7 application assistant had no structured way to
+  prioritise A/B-grade jobs over C/D fits. Same archetype gap career-ops
+  closes with its A-F scoring, except career-ops is markdown files and we
+  needed Postgres.
+- **Fix:** Migration 019 adds `jobs.fit_score_breakdown JSONB` and
+  `jobs.letter_grade TEXT` (B-tree indexed). New `agents.scoring_agent`
+  scores six dimensions (role_fit 25, growth 20, comp 20, culture 15,
+  remote 10, trajectory 10) with persona-as-critic downgrade and
+  cite:knowledge_id breadcrumbs.
 
-### BUG-040: G7 cover-letter generation does not yet cite proof_points
+### BUG-040 reserved for `tier4/g11-voice-calibration` (PR pending merge — fills this slot on land)
+
+### BUG-041: G7 cover-letter generation does not yet cite proof_points
 - **Discovered:** 2026-05-12 during Tier 4 §6.4 proof-point agent build |
-  Severity: LOW (forward-looking — G7 isn't merged yet) | Status: OPEN
+  Severity: LOW (forward-looking — proof_points is the new substrate;
+  G7's cover-letter path predates it) | Status: OPEN
 - **Component:** `agents/proof_point_agent.py`, future
-  `resume_agents/g7_*.py` (not yet shipped)
+  `resume_agents/g7_*.py` cover-letter extension
 - **Symptom:** Tier 4 ships the proof_points table, search RPC, agent
   module, REST API, extractor, LinkedIn-post auto-seeding, and G3
-  story_retriever_node sidecar — but G7 (cover-letter graph) is still
-  on its own branch and does not yet pull `search_proof_points` when
-  drafting "why I'm a fit" paragraphs. When G7 lands, the
-  `insider_expert`-style node needs to call
-  `agents.proof_point_agent.search_proof_points(user_id, jd_topic_text,
-  k=5)` and surface the top matches as candidate facts the LLM can
-  weave in, with the proof_point.id captured in the agent_transcript so
-  outcome_to_persona can credit them.
-- **Fix (suggested):** in the follow-up PR after G7 merges, add
-  one node that runs alongside the JD-extractor and writes
+  story_retriever_node sidecar — but G7's existing cover-letter writer
+  doesn't yet pull `search_proof_points` when drafting "why I'm a fit"
+  paragraphs. The proof_point.id needs to flow into the agent_transcript
+  so outcome_to_persona can credit them on callbacks.
+- **Fix (suggested):** in a follow-up PR, add one node that runs
+  alongside G7's JD-extractor and writes
   `state.proof_point_hits: list[ProofPointMatch.asdict()]`. The
   finaliser embeds the IDs into cite:knowledge_id markers, same shape
   as story_bank.
-- **Workaround until G7 lands:** none required — the Tier 4 surface is
-  complete from G3 + LinkedIn + extractor sides; G7 integration is a
-  separate scope deliberately excluded per Tier 4 spec.
+- **Workaround until then:** none required — Tier 4 surface is complete
+  from G3 + LinkedIn + extractor sides; G7 cover-letter integration is
+  a deliberate follow-up.
 
-### BUG-041+ onward — reserved for future agent sweeps
+### BUG-042+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.

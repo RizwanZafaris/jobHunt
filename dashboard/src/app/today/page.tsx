@@ -10,7 +10,7 @@ import Link from 'next/link'
 import { AppShell } from '@/components/layout/AppShell'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { TodayActionCard } from '@/components/today/TodayActionCard'
+import { TodayActionList } from '@/components/today/TodayActionList'
 import { fetchTodayActions, type FetchTodayResponse } from '@/lib/api'
 import { MOCK_TODAY_ACTIONS } from '@/lib/mock/today'
 import type { TodayAction, TodayActionKind } from '@/lib/types/today'
@@ -157,13 +157,11 @@ export default async function TodayPage() {
           }
         />
       ) : (
-        <ol className="flex flex-col gap-3" aria-label="Today's ranked actions">
-          {visible.map((a) => (
-            <li key={a.id}>
-              <TodayActionCard action={a} />
-            </li>
-          ))}
-        </ol>
+        /* Phase 2 §4.1 — the action list is now a CLIENT component so it
+         * can host the A-F filter chip group without forcing the whole
+         * /today page into the client bundle. Chip selection is local
+         * (no URL persistence yet — that's a Phase 3 follow-up). */
+        <TodayActionList actions={visible} />
       )}
 
       {overflow > 0 && (

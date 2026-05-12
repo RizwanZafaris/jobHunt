@@ -426,6 +426,38 @@ def enqueue_g9_story_extract(
     )
 
 
+def enqueue_g5_score(
+    user_id: UUID | str,
+    job_id: int,
+    *,
+    force: bool = False,
+) -> str:
+    """Enqueue a G5 fit-score evaluation for one job.
+
+    Phase 2 §4.1: scoring is INFORMATIONAL (no auto-actions), so we never
+    block JobScout's persistence on this run. The auto-trigger inside
+    `JobScoutAgent.run` enqueues this for every freshly-upserted job and
+    forgets about it; the worker calls into `agents.scoring_agent.score_role`,
+    which idempotency-gates within a 7-day window.
+
+    `force=True` re-scores even if the job was scored < 7 days ago.
+
+    Returns the jobs_runs.id (UUID string). The G5 scoring call itself
+    costs ~$0.15 in LLM tokens.
+    """
+    payload: dict[str, Any] = {"job_id": int(job_id), "force": bool(force)}
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="g5_score",
+        payload=payload,
+        worker_func="api.worker.worker_run_g5",
+        # G5 is fixed-shape (no critic loop, no iteration). 5 min is more
+        # than enough; the four Sonnet calls + comp_cache + 2 RAG calls
+        # add up to ~12s.
+        job_timeout=300,
+    )
+
+
 def enqueue_g4_linkedin_post(
     user_id: UUID | str,
     *,
