@@ -587,6 +587,102 @@ ANTI-AI-TELL DISCIPLINE (these are why recruiters spot AI-written resumes):
 Output ONLY the resume markdown. No preamble, no commentary."""
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Direct persona injection helper (2026-05-12)
+#
+# The persona's ATS keyword bank + success/failure bullet shapes were
+# previously only reachable by the writer through `insider_expert_notes`
+# (two LLM hops: persona → insider_expert → writer). Even with the
+# persona_critic gate on the back end, the writer kept producing
+# non-persona-aligned bullets because the signal arrived diluted by an
+# intervening summarisation.
+#
+# This helper builds a short, structured persona block that gets spliced
+# DIRECTLY into the writer's user message — between the master CV
+# (source of truth, first) and the JD (shape signal, last). The writer
+# now anchors on:
+#   1) facts from master CV
+#   2) idiom from persona (this block)
+#   3) shape from JD
+# in that order.
+#
+# Returns "" when the persona is missing/empty so the f-string substitution
+# is a no-op on cold-start builds (no template errors).
+# ─────────────────────────────────────────────────────────────────────────
+def _build_writer_persona_block(persona: dict | None) -> str:
+    """Render the persona's ATS keyword bank + bullet-shape patterns as a
+    structured block the writer can anchor on directly.
+
+    Caps:
+      - banned / required / boost lists: 20 each (sanity guard)
+      - success / failure patterns:       6 each
+    Returns "" when there is nothing useful to inject — caller can safely
+    splice the return value into an f-string without conditional logic.
+    """
+    if not persona or not isinstance(persona, dict):
+        return ""
+
+    ats_bank = persona.get("ats_keyword_bank") or {}
+    if not isinstance(ats_bank, dict):
+        ats_bank = {}
+
+    def _clean_list(raw: Any, cap: int) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+            if len(out) >= cap:
+                break
+        return out
+
+    banned = _clean_list(ats_bank.get("banned"), 20)
+    required = _clean_list(ats_bank.get("required"), 20)
+    boost = _clean_list(ats_bank.get("boost"), 20)
+    success_patterns = _clean_list(persona.get("success_patterns"), 6)
+    failure_patterns = _clean_list(persona.get("failure_patterns"), 6)
+
+    # If literally none of the persona's keyword signals are populated,
+    # skip the whole block — no point in printing empty headers.
+    if not (banned or required or boost or success_patterns or failure_patterns):
+        return ""
+
+    lines: list[str] = [
+        "",
+        "────────────────────────────────────────────────────────────────────────",
+        "COMPANY PERSONA — ATS KEYWORD BANK (THIS COMPANY'S RECRUITER VOCABULARY):",
+        "────────────────────────────────────────────────────────────────────────",
+    ]
+    if banned:
+        lines.append(f"  banned:   {', '.join(banned)}")
+    if required:
+        lines.append(f"  required: {', '.join(required)}")
+    if boost:
+        lines.append(f"  boost:    {', '.join(boost)}")
+
+    if success_patterns:
+        lines.append("")
+        lines.append(
+            "SUCCESS-PATTERN BULLET SHAPES (mimic these in YOUR bullets where the"
+        )
+        lines.append("candidate's evidence supports the underlying claim):")
+        for p in success_patterns:
+            lines.append(f"  - {p}")
+
+    if failure_patterns:
+        lines.append("")
+        lines.append(
+            "FAILURE-PATTERN BULLET SHAPES (NEVER write a bullet that looks like this —"
+        )
+        lines.append("the company's recruiters skim past it in the 6-second triage):")
+        for p in failure_patterns:
+            lines.append(f"  - {p}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 async def writer_node(state: ResumeState) -> dict:
     settings = get_settings()
     iteration = state.get("iteration", 0)
@@ -626,10 +722,19 @@ async def writer_node(state: ResumeState) -> dict:
     # (UK phone fabricated, location swapped to match JD geo, employer
     # office cities changed, citizenship invented). Putting the source of
     # truth FIRST gives the writer something concrete to start from.
+    #
+    # 2026-05-12 (audit §4.6): persona's banned/required/boost vocabulary
+    # and success/failure bullet shapes were only reaching the writer
+    # indirectly through `expert_notes` (two LLM hops). Splice a structured
+    # persona block DIRECTLY into the user message between master CV and
+    # JD. Writer anchor order is now: (1) facts from master CV,
+    # (2) idiom from persona, (3) shape from JD.
+    persona_block = _build_writer_persona_block(state.get("company_persona"))
+
     user = f"""CANDIDATE MASTER RESUME (source of truth — every fact in your
 output must trace back to this):
 {state['master_resume_md']}{warm_start_block}{intent_block}
-
+{persona_block}
 ────────────────────────────────────────────────────────────────────────
 TARGET JOB (use to decide WHICH parts of the CV to emphasise — NOT to
 invent facts that fit the JD better):
