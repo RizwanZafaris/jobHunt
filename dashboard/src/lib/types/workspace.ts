@@ -58,8 +58,12 @@ export interface WorkspaceApplication {
   follow_up_due?: string | null
   notes?: string | null
   cover_email?: string | null
-  pdf_url?: string | null
-  report_url?: string | null
+  // BUG-036 (2026-05-12): `pdf_url` / `report_url` removed from this type.
+  // Both columns survive in `applications` (db/schema.sql) for backwards
+  // compatibility, but no Python writer has populated them since the
+  // refactor that moved artefacts onto `resume_builds.resume_pdf_url`.
+  // Re-introducing the fields would tempt a future card to read columns
+  // that are guaranteed to be NULL — see Bug Log §17 BUG-036.
   created_at?: string | null
   updated_at?: string | null
 }
