@@ -1018,7 +1018,23 @@ remain open — logged here as the canonical follow-up backlog.
   or remove from the TS interface so future authors can't accidentally gate
   on them. Column drops still deferred per repo convention.
 
-### BUG-037: Tier 2 §4.3 Legitimacy agent v1 — ghost-posting detector
+### BUG-037: G3 story_bank `retrieved_stories` schema not in db/schema.sql migration
+- **Discovered:** 2026-05-12 during Tier 2 §4.2 G3 story-bank integration |
+  Severity: MEDIUM | **Status: FIX_SHIPPED** (migration 021 applied via MCP + source file landed on `tier2/g3-story-bank-integration` follow-up commit `2aa9bbb`; PR #94 merged)
+- **Component:** `interview_agents/g3_io.py::finalize_interview_prep`,
+  `db/migrations/2026_05_12_021_interview_prep_g3_tier2_columns.sql` (NEW)
+- **Symptom (before fix):** Tier 2 G3 writes three new JSONB columns —
+  `retrieved_stories`, `story_gaps`, `persona_critic_drops` — into the
+  `interview_prep` table via `finalize_interview_prep`. The writer was
+  defensive (omits fields from payload when None), but Tier 2 sets them
+  to empty containers, not None, so the UPDATE would fail on first run.
+- **Fix shipped:** added migration 021 with `ALTER TABLE interview_prep
+  ADD COLUMN ... JSONB DEFAULT '{}'/'[]'::jsonb` for the three columns.
+  Applied live via Supabase MCP 2026-05-12; source file committed to the
+  same branch so future `APPLY.sh` runs against fresh clones / staging
+  re-create the same shape.
+
+### BUG-038: Tier 2 §4.3 Legitimacy agent v1 — ghost-posting detector
 - **Discovered:** 2026-05-12 (planned roadmap §4.3, not a regression)
 - **Severity:** N/A (feature ship) | **Status:** FIX_SHIPPED on `tier2/legitimacy-agent-v1`
 - **Component:** `agents/legitimacy_agent.py` (new), `api/workspace.py::check_legitimacy`,
@@ -1082,7 +1098,7 @@ remain open — logged here as the canonical follow-up backlog.
   hits ≥50. The static weights become a regression problem then —
   career-ops calibrates weights on outcome data; we'll do the same.
 
-### BUG-038+ onward — reserved for future agent sweeps
+### BUG-039+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.
