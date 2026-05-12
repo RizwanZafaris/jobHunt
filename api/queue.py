@@ -466,6 +466,39 @@ def enqueue_g4_linkedin_post(
     )
 
 
+def enqueue_legitimacy_check(
+    user_id: UUID | str,
+    job_id: int,
+    *,
+    force: bool = False,
+) -> str:
+    """Enqueue a Tier-2 legitimacy scoring run for one job.
+
+    Cheap (~$0.005 per run), so we don't apply a max_cost_usd cap — the
+    Perplexity signal is the only LLM call and it self-caps at one
+    sonar query. Caller (jobs_scout) enqueues this after the freshness
+    pipeline; the /workspace endpoint calls score_legitimacy directly
+    (no queue hop) because it's a user-facing button-press.
+
+    `force` flips the idempotency hash so a manual re-run after an
+    auto-scored row produces a fresh queued job rather than dedupping
+    to the existing terminal one.
+    """
+    payload: dict[str, Any] = {
+        "job_id": int(job_id),
+        "force": bool(force),
+    }
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="legitimacy_check",
+        payload=payload,
+        worker_func="api.worker.worker_run_legitimacy",
+        # Tight timeout — the heaviest call (Perplexity) has its own
+        # 30s timeout, plus the URL HEAD probe (5s). 90s is plenty.
+        job_timeout=120,
+    )
+
+
 # ─── Operations helpers ────────────────────────────────────────────────────
 def queue_health() -> dict[str, Any]:
     """Snapshot for /admin/queue-health endpoint and CLI debugging.
