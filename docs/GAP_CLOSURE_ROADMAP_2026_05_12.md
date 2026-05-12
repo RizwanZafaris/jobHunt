@@ -1101,7 +1101,7 @@ remain open — logged here as the canonical follow-up backlog.
 ### BUG-039: `jobs.match_score` is a single integer with no dimensional breakdown
 - **Discovered:** 2026-05-12 by Claude during Tier 2 §4.1 implementation
 - **Severity:** MEDIUM (limits decision quality; downstream blocker for G7)
-- **Status:** FIX_SHIPPED on `tier2/g5-evaluation-scoring`
+- **Status:** FIX_SHIPPED on `tier2/g5-evaluation-scoring` (PR #100, merged)
 - **Component:** `db/schema.sql` (jobs table), `dashboard/src/app/today/page.tsx`
 - **Symptom:** /today ranked jobs by `match_score` only (0-100 integer). User
   couldn't see WHY a role was a fit (role vs comp vs growth vs culture),
@@ -1109,29 +1109,36 @@ remain open — logged here as the canonical follow-up backlog.
   prioritise A/B-grade jobs over C/D fits. Same archetype gap career-ops
   closes with its A-F scoring, except career-ops is markdown files and we
   needed Postgres.
-- **Root cause:** Discovery scoring (`agents.job_scout_agent._score_jobs_batch`)
-  collapses six implicit signals into one score; nothing persisted the
-  per-dimension reasoning. No JSONB column existed for the breakdown, so
-  the UI couldn't render rationale even if we had it.
 - **Fix:** Migration 019 adds `jobs.fit_score_breakdown JSONB` and
   `jobs.letter_grade TEXT` (B-tree indexed). New `agents.scoring_agent`
   scores six dimensions (role_fit 25, growth 20, comp 20, culture 15,
   remote 10, trajectory 10) with persona-as-critic downgrade and
-  cite:knowledge_id breadcrumbs. Auto-triggers on every JobScout upsert
-  via `api.queue.enqueue_g5_score` (worker `worker_run_g5`,
-  idempotency-gated 7 days). Workspace endpoints `POST /workspace/:id/score`
-  and `GET /workspace/:id/score`. Wallet-guarded via `_job_guards.load_open_job`.
-  Dashboard renders an A-F badge on every action card and a chip filter
-  on /today via new `LetterGradeChips` + `TodayActionList` client wrappers.
-- **Financial impact:** $0 retrospective (additive). Per-role G5 cost
-  ~$0.15 ($0.03+$0.02+$0.05+$0.05 in Sonnet 4.6 + comp_cache hit + code-
-  only remote). Within Phase 2 budget of $8/mo (§13).
-- **Tests:** 46 unit tests in `tests/test_scoring_agent.py` covering
-  composite math, letter-grade thresholds, persona_critic downgrade
-  trigger, wallet guard refusal of stale jobs, 7-day idempotency
-  short-circuit, all six dimensions in isolation. Full suite: 349/349 pass.
+  cite:knowledge_id breadcrumbs.
 
-### BUG-040+ onward — reserved for future agent sweeps
+### BUG-040 reserved for `tier4/g11-voice-calibration` (PR pending merge — fills this slot on land)
+
+### BUG-041: G7 cover-letter generation does not yet cite proof_points
+- **Discovered:** 2026-05-12 during Tier 4 §6.4 proof-point agent build |
+  Severity: LOW (forward-looking — proof_points is the new substrate;
+  G7's cover-letter path predates it) | Status: OPEN
+- **Component:** `agents/proof_point_agent.py`, future
+  `resume_agents/g7_*.py` cover-letter extension
+- **Symptom:** Tier 4 ships the proof_points table, search RPC, agent
+  module, REST API, extractor, LinkedIn-post auto-seeding, and G3
+  story_retriever_node sidecar — but G7's existing cover-letter writer
+  doesn't yet pull `search_proof_points` when drafting "why I'm a fit"
+  paragraphs. The proof_point.id needs to flow into the agent_transcript
+  so outcome_to_persona can credit them on callbacks.
+- **Fix (suggested):** in a follow-up PR, add one node that runs
+  alongside G7's JD-extractor and writes
+  `state.proof_point_hits: list[ProofPointMatch.asdict()]`. The
+  finaliser embeds the IDs into cite:knowledge_id markers, same shape
+  as story_bank.
+- **Workaround until then:** none required — Tier 4 surface is complete
+  from G3 + LinkedIn + extractor sides; G7 cover-letter integration is
+  a deliberate follow-up.
+
+### BUG-042+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.
