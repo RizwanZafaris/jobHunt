@@ -233,15 +233,76 @@ def _has_jd_fingerprint(body: str) -> bool:
     return matches >= 2
 
 
-def _has_expiry_phrase(body: str) -> Optional[str]:
-    """Safeguard #4 — expiry phrase scan.
+def _detect_stale_age_marker(body: str) -> Optional[str]:
+    """Detect LinkedIn-style 'X year/months ago' staleness markers in body text.
 
-    Returns the matched phrase, or None.
+    LinkedIn renders posting age as plain text in the rendered HTML, near the
+    top of the listing (after the title + company line). It is NOT in a
+    structured `<meta>` tag or in Apify's `postedAt` field for the listings
+    we scrape, so `_compute_freshness` cannot see it.
+
+    Returns the matched marker string if found AND the implied age is "stale":
+      - any "X year(s) ago"            → always stale
+      - "X month(s) ago" with X >= 3   → stale
+      - otherwise (< 3 months ago)     → None (still considered recent)
+
+    Scoped to the first 500 chars of body to avoid false positives from
+    in-content phrases like "we launched our payments product 2 years ago".
+    LinkedIn always renders the timestamp in the listing header, well within
+    the first 500 chars.
+
+    Surfaced in production 2026-05-12: a 1-year-old OKX "Senior Product
+    Manager, Payment" listing (jobs.id=1641, LinkedIn URL ending
+    4024890576) was scored 95/100 and recommended on /today because the
+    LinkedIn rendering only puts "1 year ago" in plain text, not metadata.
+    The user paid ~$1 in LLM tokens to build a resume against it before
+    noticing the staleness — a pure-waste outcome this scanner prevents.
     """
+    if not body:
+        return None
+    head = body[:500]
+    # Require the age marker to be followed within ~80 chars by a phrase
+    # that's specific to LinkedIn (and a few other ATS) job-listing pages.
+    # This prevents false positives from JD body content that legitimately
+    # references past events ("we shipped X 3 years ago", "founded 5 years
+    # ago"). Verified against the 3 known production stale rows (OKX 1641,
+    # Nium 2714, Wise 7335) — all match; the false-positive control case
+    # ("...shipped our flagship product 3 years ago. Today we are hiring...")
+    # does not.
+    m = re.search(
+        r"(\d+)\s+(year|years|yr|yrs|month|months|mo)\s+ago"
+        r"[\s\S]{0,80}?"
+        r"(be\s+among\s+the\s+first|applicant|apply\s+now|posted\s+\d+|view\s+job)",
+        head,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    n = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit.startswith("y"):
+        return m.group(0).split("\n")[0][:80]  # any "X year(s) ago" is stale
+    if unit.startswith("m") and n >= 3:
+        return m.group(0).split("\n")[0][:80]
+    return None
+
+
+def _has_expiry_phrase(body: str) -> Optional[str]:
+    """Safeguard #4 — expiry phrase scan PLUS stale-age marker scan.
+
+    Returns the matched phrase or stale-age marker, or None. Either type
+    of hit triggers `closed=True` in `validate_candidate`, which causes
+    the caller to set `posting_closed_at`.
+    """
+    if not body:
+        return None
     lowered = body.lower()
     for phrase in EXPIRY_PHRASES:
         if phrase in lowered:
             return phrase
+    stale_marker = _detect_stale_age_marker(body)
+    if stale_marker:
+        return f"posting age marker: {stale_marker}"
     return None
 
 
@@ -295,6 +356,15 @@ def _compute_freshness(
                 pass
 
     if parsed is None:
+        # 2026-05-12: defense-in-depth — even if structured metadata is
+        # missing, scan the rendered body for LinkedIn-style "X year/months
+        # ago" markers. _has_expiry_phrase already does this and closes the
+        # posting, but a stale marker should still bias freshness to "stale"
+        # in case the validation pipeline is bypassed (re-validation,
+        # backfills, or future code paths that call _compute_freshness
+        # directly without going through _has_expiry_phrase).
+        if _detect_stale_age_marker(body) is not None:
+            return "stale"
         return "recent"  # unknown → assume recent, downscore later if needed
 
     age = (now - parsed).days

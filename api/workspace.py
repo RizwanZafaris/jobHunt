@@ -430,7 +430,63 @@ def build_resume(
     shipped in api/jobs_runs.py) every ~8s until status is terminal.
     """
     db = get_supabase()
-    _get_job_for_user(db, job_id=job_id, user_id=user.id)  # 404 if not theirs
+    job = _get_job_for_user(db, job_id=job_id, user_id=user.id)  # 404 if not theirs
+
+    # 2026-05-12: pre-flight staleness guardrail.
+    #
+    # G2 costs ~$0.50-$1.50 in LLM tokens per build (5 models, 3 iterations,
+    # ATS critics A/B, persona critic, polisher). Building a resume against
+    # a job posting that is closed, expired, or failed validation is
+    # **direct financial waste** — the user cannot apply to it anyway.
+    #
+    # Production incident (2026-05-12): OKX job 1641 "Senior Product Manager,
+    # Payment" was scraped from LinkedIn 1 year after its original posting
+    # date. The freshness pipeline didn't catch it because LinkedIn renders
+    # post age as plain text ("1 year ago") not as metadata. The user built
+    # a resume against it before noticing — pure waste of LLM spend.
+    #
+    # The validation_failed='stale_per_description' guard now closes such
+    # listings at discovery time (see agents/job_validation.py
+    # _detect_stale_age_marker), but jobs already in the DB before that fix
+    # remain stuck open. This is the layer that protects the user's wallet.
+    #
+    # Override: pass force=true to build against a closed posting (e.g. the
+    # user has insider knowledge that the role is actually still active).
+    if not force:
+        if job.get("posting_closed_at") is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "posting_closed",
+                    "message": (
+                        "This job posting is marked closed"
+                        + (
+                            f" ({job['validation_failed']})"
+                            if job.get("validation_failed")
+                            else ""
+                        )
+                        + ". Building a resume costs ~$1 in LLM tokens and "
+                        "you cannot apply to a closed posting. Pass "
+                        "force=true to override."
+                    ),
+                    "posting_closed_at": job.get("posting_closed_at"),
+                    "validation_failed": job.get("validation_failed"),
+                },
+            )
+        if job.get("validation_failed"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "validation_failed",
+                    "message": (
+                        f"This job failed validation "
+                        f"({job['validation_failed']}). Building a resume is "
+                        "likely wasted spend. Pass force=true to override."
+                    ),
+                    "validation_failed": job["validation_failed"],
+                },
+            )
+
     try:
         run_id = enqueue_g2_build(
             user_id=user.id,
