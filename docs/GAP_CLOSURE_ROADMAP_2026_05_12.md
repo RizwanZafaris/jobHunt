@@ -1018,7 +1018,27 @@ remain open — logged here as the canonical follow-up backlog.
   or remove from the TS interface so future authors can't accidentally gate
   on them. Column drops still deferred per repo convention.
 
-### BUG-037+ onward — reserved for future agent sweeps
+### BUG-037: Migration 022 file declared `profiles(id)` + `BIGINT application_id`; live DB diverged to `users(id)` + UUID
+- **Discovered:** 2026-05-12 during Tier 3 G7 ship | Severity: LOW | Status: FIX_SHIPPED
+- **Component:** `db/migrations/2026_05_12_022_application_answers.sql` (intended FK targets) vs the live Supabase schema (actual FK targets)
+- **Symptom:** First `mcp__supabase__apply_migration` attempt for 022
+  failed with `relation "profiles" does not exist`. After switching to
+  `users(id)`, the second attempt failed with `incompatible types:
+  bigint and uuid` on the application_id FK. The on-disk migration file
+  was authored against the documented schema in migration 001
+  (`profiles` table + BIGINT applications.id) but the live DB has been
+  rewritten by a later migration not represented in `db/migrations/`.
+- **Fix:** Updated migration 022 in-place to `users(id)` + `UUID
+  application_id`, applied successfully via Supabase MCP. The G7 state
+  TypedDict was also retyped from `int` to `str` for `application_id`
+  so the Python side matches the live FK shape.
+- **Follow-up:** Worth a discovery pass to find the missing rewrite
+  migration and either backfill it into `db/migrations/` or document
+  the discrepancy as "live DB shape ≠ documented migration shape" at
+  the top of migration 001.
+- **Financial impact:** $0 — caught at migration time, no app spend.
+
+### BUG-038+ onward — reserved for future agent sweeps
 
 The Bug Log is append-only. New findings add entries with monotonic IDs. When a bug is
 verified fixed in production, update **Status** to `VERIFIED` with a date.

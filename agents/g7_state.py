@@ -118,8 +118,8 @@ class G7Question(TypedDict, total=False):
 class ApplicationFormState(TypedDict, total=False):
     # ─── Inputs (hydrated by g7_io.run_g7_for_application) ──────────────
     application_answer_id: str              # uuid; thread_id for checkpointer
-    application_id: int                     # public.applications.id (BIGINT)
-    user_id: str                            # rls owner; profiles(id)
+    application_id: str                     # public.applications.id (UUID in live DB; str here)
+    user_id: str                            # rls owner; users(id)
     form_url: str
     ats_type: str                           # 'greenhouse' (v1)
     application_row: dict                   # full applications row
