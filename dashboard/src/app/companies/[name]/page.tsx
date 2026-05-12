@@ -49,7 +49,8 @@ interface CompanyData {
   knowledge?: Array<{ section: string; content: string; source_url: string | null }>
 }
 
-export default async function CompanyDetailPage({ params }: { params: { name: string } }) {
+export default async function CompanyDetailPage(props: { params: Promise<{ name: string }> }) {
+  const params = await props.params;
   const name = decodeURIComponent(params.name)
   let data: CompanyData | undefined
   let error: string | null = null

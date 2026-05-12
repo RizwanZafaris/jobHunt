@@ -17,15 +17,17 @@ export const viewport: Viewport = {
   ],
 }
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+export default async function RootLayout(
+  {
+    children,
+  }: {
+    children: React.ReactNode
+  }
+) {
   // Read theme cookie server-side so SSR ships HTML with the correct
   // `data-theme` attribute. No flash, no client-side rewrite for users
   // who have already toggled.
-  const cookieTheme = cookies().get('theme')?.value
+  const cookieTheme = (await cookies()).get('theme')?.value
   const theme = cookieTheme === 'light' || cookieTheme === 'dark' ? cookieTheme : undefined
 
   return (

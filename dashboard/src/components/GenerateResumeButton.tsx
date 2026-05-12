@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
   generateResumeForJob,
@@ -107,9 +108,9 @@ export default function GenerateResumeButton({ jobId, score, alreadyGenerated, a
           </div>
           <p className="text-2xs text-fg-subtle mt-2">
             Tip: regenerate the persona on{' '}
-            <a href="/personas" className="text-info underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded">
+            <Link href="/personas" className="text-info underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded">
               /personas
-            </a>{' '}
+            </Link>{' '}
             after logging more outcomes.
           </p>
         </Card>

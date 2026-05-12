@@ -5,8 +5,10 @@ const SECRET_KEY = process.env.API_SECRET_KEY || ''
 
 export const dynamic = 'force-dynamic'
 
-async function handler(req: NextRequest, ctx: { params: { path: string[] } }) {
-  const path = ctx.params.path.join('/')
+async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
+  // Next 15: route handler `params` is async.
+  const { path: pathSegments } = await ctx.params
+  const path = pathSegments.join('/')
   const search = req.nextUrl.search
   const target = `${API_URL}/${path}${search}`
 
