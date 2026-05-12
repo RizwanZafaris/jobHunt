@@ -53,9 +53,10 @@
 --   from the Railway worker.
 --
 -- FK types
---   applications.id is BIGINT (see migrations/001_multi_tenancy and the
---   applications schema). user_id matches profiles(id) which is UUID.
---   Both FKs are NOT NULL because every row needs an owner + parent app.
+--   Live DB: applications.id is UUID and user_id references users(id)
+--   (the earlier "BIGINT" / "profiles" types described in migration 001
+--   were rewritten by a later migration before this one landed). Both
+--   FKs are NOT NULL because every row needs an owner + parent app.
 --
 -- Rollback
 --   DROP TABLE application_answers;
@@ -67,8 +68,8 @@ CREATE TABLE IF NOT EXISTS application_answers (
     id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     -- Owner + parent application. Both required for RLS + cascade safety.
-    user_id                     UUID REFERENCES profiles(id) NOT NULL,
-    application_id              BIGINT REFERENCES applications(id) NOT NULL,
+    user_id                     UUID REFERENCES users(id) NOT NULL,
+    application_id              UUID REFERENCES applications(id) NOT NULL,
 
     -- Form metadata captured by form_scanner. form_url is the canonical
     -- URL we drove Playwright against; ats_type lets us pick the right
