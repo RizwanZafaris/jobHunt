@@ -11,7 +11,7 @@
  *      target company isn't relevant yet because there's nothing to
  *      match against.
  *   2. User has people but no target_companies row for this company →
- *      "This company isn't in your target list yet" — link to /targets.
+ *      "This company isn't in your target list yet" — link to /companies.
  *   3. Target resolved but no paths → "No warm intros yet — N contacts
  *      on file" with the import button so the user can add more.
  */
@@ -106,7 +106,7 @@ export function NetworkTab({
           description={`Add ${companyName} to your targets so we can map your network onto it.`}
           action={
             <Link
-              href="/targets"
+              href="/companies"
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-2xs font-semibold bg-accent text-accent-fg hover:bg-accent-hover transition-colors min-h-9"
             >
               Open targets

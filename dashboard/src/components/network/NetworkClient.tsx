@@ -176,7 +176,7 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
             Target coverage
           </h2>
           <Link
-            href="/targets"
+            href="/companies"
             className="text-2xs font-medium text-fg-muted hover:text-fg underline-offset-2 hover:underline"
           >
             Manage targets
