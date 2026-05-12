@@ -1,0 +1,113 @@
+# agents/ats_patterns/greenhouse.yml
+# Greenhouse-specific selectors + question patterns for the G7 form_scanner
+# and form_filler. ~70% of our target companies host their job applications
+# on boards.greenhouse.io or *.greenhouse.io — this pack alone covers the
+# v1 ship surface per roadmap §5.
+#
+# Selectors mirror what's used by the career-ops apply.md crown jewel, with
+# the field_id derived from Greenhouse's stable `name="job_application[...]"`
+# pattern (works across all GH-hosted boards we've tested).
+#
+# Field-pattern regexes use Python's re.IGNORECASE. The classifier-side
+# heuristic (g7_nodes.question_classifier_node) ALSO consults these
+# patterns to bias the LLM towards the right category — a cheap signal
+# that costs $0 and dramatically improves classification accuracy on
+# canonical Greenhouse labels.
+
+ats_type: greenhouse
+
+# ── Selectors used by form_scanner.scan() ──────────────────────────────
+# The scanner runs `await page.locator(selector).all()` and emits one
+# question per matched node. CSS used; xpath fallback can be added later.
+selectors:
+  field_root: "div.application--field"
+  field_label: "label, .label"
+  field_input_text: "input[type='text'], input[type='email'], input[type='url'], input[type='tel']"
+  field_textarea: "textarea"
+  field_select: "select"
+  field_radio_group: "fieldset"
+  field_checkbox_group: "fieldset[id^='custom_fields_']"
+  field_attachment: "input[type='file']"
+  form_root: "form#new_job_application, form.application"
+  submit_button: "input[type='submit'], button[type='submit']"
+
+# ── Field-name → classification hints ───────────────────────────────────
+# Greenhouse stores field names in a stable `job_application[...]` shape.
+# When a field name OR label matches any regex below, we add a strong
+# prior in the question_classifier_node. The LLM still casts the final
+# vote, but this list catches the >90% canonical cases in zero tokens.
+classification_hints:
+  basic_info:
+    - "first_name|firstName"
+    - "last_name|lastName"
+    - "email|e-mail"
+    - "phone|telephone"
+    - "current company|current employer"
+    - "work authorization|sponsorship|require visa"
+    - "city|location|where are you based"
+  cover_letter:
+    - "cover ?letter"
+    - "why are you applying"
+  why_this_company:
+    - "why .* interested in .*"
+    - "what excites you about (us|our)"
+    - "why .* (?:company|team)"
+  why_this_role:
+    - "why .* (this |the )?role"
+    - "what excites you about this position"
+    - "why this team"
+  salary:
+    - "salary expectations?"
+    - "expected compensation"
+    - "desired (?:annual )?salary"
+    - "compensation range"
+  behavioral:
+    - "tell us about a time"
+    - "describe a (situation|time|challenge)"
+    - "give us? an example of"
+    - "walk us through .* you (led|owned|shipped)"
+  technical:
+    - "describe your experience with"
+    - "(years|exp) (?:of )?experience"
+    - "rate your proficiency"
+    - "what tools? do you use"
+  dei_values:
+    - "diversity, equity"
+    - "inclusion"
+    - "belonging"
+    - "what does .* mean to you"
+    - "underrepresented"
+  portfolio_url:
+    - "portfolio"
+    - "website|url|homepage"
+    - "github"
+    - "linkedin url"
+
+# ── Per-category fill strategies (used by form_filler) ──────────────────
+# When a classification maps cleanly to a profile field (name, email, etc.)
+# the filler can SKIP the LLM-generated answer and use the profile value
+# directly. Saves ~$0.02/field on basic_info.
+profile_field_map:
+  first_name: "profile.full_name"          # split on first space; first half
+  last_name: "profile.full_name"           # split on first space; second half
+  email: "profile.email"
+  phone: "profile.phone"
+  linkedin: "profile.linkedin_url"
+  github: "profile.github_url"
+  portfolio: "profile.website_url"
+  location: "profile.location"
+
+# ── Submit-button safety guard ──────────────────────────────────────────
+# form_filler MUST verify the submit button matches this selector AND set
+# the page.on("dialog") interceptor to dismiss any auto-submit modal.
+# Stop-before-submit is the entire HITL premise — if we ever accidentally
+# clicked submit, that's a P0 incident.
+safety:
+  submit_selector_allowlist:
+    - "input[type='submit']"
+    - "button[type='submit']"
+  refuse_if_url_contains:
+    # Forms that ALREADY shipped (e.g. the URL contains a /completed step)
+    - "/completed"
+    - "/thank_you"
+    - "/thanks"
