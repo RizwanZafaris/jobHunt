@@ -1297,18 +1297,95 @@ Certifications: PMP, PMI-ACP, CSPO, CSM
         return any(kw in title_lower for kw in positive)
 
     def _extract_company_from_title(self, title: str) -> Optional[str]:
-        """Extract company name from search result title string."""
-        # Pattern: "Job Title - Company | Portal" or "Job Title at Company"
+        """Extract company name from search result title string.
+
+        BUG-051 fix (2026-05-13): production examples that the prior naive
+        split() got wrong:
+          "Fintech/Payments — Ventula Consulting hiring Group Product
+           Manager – Fintech/Payments"
+              prior result: "Fintech/Payments"  (WRONG — this is the topic)
+              correct:      "Ventula Consulting"
+          "Emirates NBD hiring Senior Product Manager – Merchant Acquiring
+           at Emirates NBD"
+              prior result: "Merchant Acquiring …"  (WRONG — phantom)
+              correct:      "Emirates NBD"
+
+        Strategy — try preference-ordered patterns:
+          1. "<TOPIC> — <COMPANY> hiring <ROLE>"   (LinkedIn modern format)
+          2. "<COMPANY> hiring <ROLE> [at <COMPANY>]"  (LinkedIn old format,
+             also Indeed). Prefer the "at" suffix when present — it's the
+             ground-truth employer.
+          3. "<ROLE> - <COMPANY> | <PORTAL>"        (Indeed/Bayt/etc)
+          4. "<ROLE> at <COMPANY>"                  (generic)
+
+        Each candidate is post-filtered against:
+          - portal names (linkedin, indeed, etc) → skip
+          - phantom patterns (handled by _is_phantom_company_name elsewhere
+            but checked here for "Careers" / "Hiring" / "Vacancies" so they
+            never even enter the candidate pool).
+        """
+        if not title or not isinstance(title, str):
+            return None
+
+        non_companies = {
+            "linkedin", "indeed", "glassdoor", "bayt", "naukrigulf",
+            "gulftalent", "greenhouse", "lever", "ashby", "jobs",
+            "workday", "smartrecruiters", "myworkdayjobs",
+        }
+
+        def _clean(s: str) -> str:
+            s = s.strip().rstrip(",.;:")
+            s = re.sub(r"\s*[|].*$", "", s).strip()
+            return s
+
+        def _is_phantom_candidate(c: str) -> bool:
+            if not c or len(c) < 2:
+                return True
+            cl = c.lower()
+            if cl in non_companies:
+                return True
+            # Reject job-listing chrome that survived the split
+            chrome = ("careers", "hiring", "vacancies", "vacancy", "job in",
+                      "jobs in", "job board")
+            for w in chrome:
+                if w in cl:
+                    return True
+            return False
+
+        # ── Pattern 1: "<TOPIC> — <COMPANY> hiring <ROLE>"
+        # The em-dash splits topic from the actual listing. Try em-dash
+        # first because LinkedIn now uses it heavily.
+        m = re.search(
+            r"^(?P<topic>[^—]{1,80})\s+—\s+(?P<rest>.+?)\s+hiring\s+",
+            title,
+        )
+        if m:
+            candidate = _clean(m.group("rest"))
+            if not _is_phantom_candidate(candidate):
+                return candidate
+
+        # ── Pattern 2: "<COMPANY> hiring <ROLE> [at <COMPANY>]"
+        # Prefer the "at <COMPANY>" suffix when present (more reliable
+        # employer ground-truth than the prefix on multi-employer
+        # platform titles).
+        m_at = re.search(r"\s+at\s+(?P<co>[^|·\-–—]+?)\s*$", title, re.IGNORECASE)
+        if m_at:
+            candidate = _clean(m_at.group("co"))
+            if not _is_phantom_candidate(candidate):
+                return candidate
+        m_pre = re.search(r"^(?P<co>[A-Z][^|]+?)\s+hiring\s+", title)
+        if m_pre:
+            candidate = _clean(m_pre.group("co"))
+            if not _is_phantom_candidate(candidate):
+                return candidate
+
+        # ── Pattern 3 (legacy): "<ROLE> - <COMPANY> | <PORTAL>" or "<ROLE> at <COMPANY>"
         parts = re.split(r"\s+[-–|]\s+|\s+[Aa]t\s+", title)
         if len(parts) >= 2:
-            company = parts[1].strip()
-            company = re.sub(r"\s*[|].*", "", company).strip()
-            # Filter out portal names masquerading as companies
-            non_companies = {"linkedin", "indeed", "glassdoor", "bayt", "naukrigulf",
-                             "gulftalent", "greenhouse", "lever", "ashby", "jobs"}
-            if company.lower() in non_companies:
-                return None
-            return company if len(company) > 1 else None
+            candidate = _clean(parts[1])
+            if not _is_phantom_candidate(candidate):
+                return candidate
+
         return None
 
     def _detect_source(self, url: str) -> str:

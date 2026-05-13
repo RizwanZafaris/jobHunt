@@ -91,14 +91,29 @@ export function LinkedInClient({ initialDrafts, schedule }: LinkedInClientProps)
         throw new Error(text || `HTTP ${res.status}`)
       }
       const data = await res.json()
-      setFeedback(`Queued ${data.queued ?? args.count} draft(s). Refreshing…`)
+      // BUG-Generate-UX fix (2026-05-13): The user reported clicking
+      // Generate and seeing "loaded for a few minutes but no result on
+      // screen". Two reasons:
+      //   1. G4 draft generation takes ~30-60s (Anthropic + research)
+      //      so reload-after-2s shows an empty list (worker still running)
+      //   2. The page was reading MOCK_DRAFTS so refresh wouldn't show
+      //      anything new anyway (fixed by BUG-LinkedIn-Mock).
+      // Set explicit expectation in the banner and refresh later.
+      const queued = data.queued ?? args.count
+      setFeedback(
+        `Queued ${queued} draft${queued === 1 ? '' : 's'}. ` +
+        `Generation takes ~30-60s — the new draft will appear here when ready.`,
+      )
+      // Reload after 45s so the draft typically lands BEFORE refresh,
+      // not the other way around. The user can also refresh manually
+      // earlier if they're impatient.
       setTimeout(() => {
         if (typeof window !== 'undefined') window.location.reload()
-      }, 2000)
+      }, 45_000)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       setFeedback(`Failed: ${msg}`)
-      setTimeout(() => setFeedback(null), 5000)
+      setTimeout(() => setFeedback(null), 8000)
     }
   }
 
