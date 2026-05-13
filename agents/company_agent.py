@@ -171,14 +171,48 @@ class CompanyAgent(BaseAgent):
     """
 
     def __init__(self, company_name: str):
-        # BUG-013: refuse to instantiate the agent for phantom names. Doing
-        # the check here (rather than only at write time) means callers can't
-        # accidentally trigger a Serper / Apollo / Apify chain on garbage.
+        # BUG-013: regex-based phantom guard. Refuses on name patterns
+        # that look like job-listing chrome / date stamps / title fragments.
         if _is_phantom_company_name(company_name):
             raise PhantomCompanyError(
                 f"Refusing to build CompanyAgent for phantom company name "
                 f"{company_name!r} (matches BUG-013 phantom patterns: "
                 f"job-listing chrome, date stamp, or function/title fragment)."
+            )
+        # Stream B (2026-05-13): belt-and-suspenders DB check. Even if the
+        # regex misses (e.g. "SuperApp" looks legitimate), an existing
+        # company_personas row flagged is_phantom=TRUE blocks the agent.
+        # Production audit found ~$1 spent on CompanyAgent[SuperApp] +
+        # CompanyAgent[Adyen Careers] + CompanyAgent[68 Vacancies Apr 2026]
+        # because the regex didn't flag them but the DB had already marked
+        # them as phantoms. This closes that loop. Defensive — DB errors
+        # don't block (logged + continue) so a transient Supabase issue
+        # doesn't take the whole pipeline down.
+        try:
+            from db.client import get_supabase
+            phantom_rows = (
+                get_supabase()
+                .table("company_personas")
+                .select("id")
+                .ilike("company_name", company_name)
+                .eq("is_phantom", True)
+                .limit(1)
+                .execute()
+                .data
+            ) or []
+            if phantom_rows:
+                raise PhantomCompanyError(
+                    f"Refusing to build CompanyAgent for {company_name!r}: "
+                    f"company_personas row flagged is_phantom=TRUE."
+                )
+        except PhantomCompanyError:
+            raise
+        except Exception as e:
+            # Don't crash the agent if the DB lookup fails — the regex
+            # guard above is the primary defense and remains active.
+            import logging
+            logging.getLogger(__name__).warning(
+                "CompanyAgent phantom DB-check failed (non-fatal): %s", e
             )
         settings = get_settings()
         super().__init__(
