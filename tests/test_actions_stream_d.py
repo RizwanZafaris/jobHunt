@@ -160,7 +160,10 @@ def test_incoming_returns_high_score_jobs_without_applications(client, monkeypat
 
 
 def test_incoming_excludes_phantom_companies(client, monkeypatch):
-    """Phantom company in company_personas → job filtered out."""
+    """Phantom company in `companies` table → job filtered out.
+
+    Schema: is_phantom lives on companies (per BUG-013), not company_personas.
+    """
     from api import actions
 
     db = _stub_db({
@@ -179,8 +182,8 @@ def test_incoming_excludes_phantom_companies(client, monkeypatch):
             },
         ],
         "applications": [],
-        "company_personas": [
-            {"company_name": "Adyen Careers", "is_phantom": True},
+        "companies": [
+            {"name": "Adyen Careers", "is_phantom": True},
         ],
     })
     monkeypatch.setattr(actions, "get_supabase", lambda: db, raising=False)
