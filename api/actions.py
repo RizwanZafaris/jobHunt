@@ -72,6 +72,36 @@ def _today_local() -> date:
     return _utcnow().date()
 
 
+def _phantom_company_names(user_id: UUID) -> frozenset[str]:
+    """Return lowercase company_name strings flagged as phantoms.
+
+    Used to filter /today + /applications surfaces so the user never
+    sees fabricated companies (e.g. "Adyen Careers", "SuperApp",
+    "Merchant Acquiring ...") on action cards even before the cleanup
+    migration 028 runs.
+
+    Returns frozenset for fast `lower(company) in <frozenset>` membership.
+    Defensive — DB error returns empty (no filter applied).
+    """
+    try:
+        rows = (
+            get_supabase()
+            .table("company_personas")
+            .select("company_name")
+            .eq("user_id", str(user_id))
+            .eq("is_phantom", True)
+            .execute()
+            .data
+        ) or []
+        return frozenset((r.get("company_name") or "").strip().lower() for r in rows)
+    except Exception as e:  # pragma: no cover — defensive
+        import logging
+        logging.getLogger(__name__).warning(
+            "_phantom_company_names lookup failed (no filter applied): %s", e
+        )
+        return frozenset()
+
+
 def _days_ago(n: int) -> str:
     return (_utcnow() - timedelta(days=n)).isoformat()
 
@@ -278,6 +308,26 @@ def _build_job_actions(
                 "actions: dropped %d suspicious job(s) from /today "
                 "(use ?include_suspicious=true to surface)",
                 dropped,
+            )
+
+    # Stream B (2026-05-13): filter phantom-company rows so /today never
+    # surfaces fabricated names ("Adyen Careers", "SuperApp", "Merchant
+    # Acquiring …", "68 Vacancies Apr 2026"). The is_phantom flag was
+    # added by BUG-013; this consumes it. Migration 028 cleans the rows
+    # out completely — this filter remains as runtime defense against
+    # future phantom inserts that beat the scraper guards.
+    phantoms = _phantom_company_names(user_id)
+    if phantoms:
+        before = len(job_rows)
+        job_rows = [
+            r for r in job_rows
+            if (r.get("company") or "").strip().lower() not in phantoms
+        ]
+        dropped = before - len(job_rows)
+        if dropped:
+            logger.info(
+                "actions: dropped %d phantom-company job(s) from /today "
+                "(phantoms=%s)", dropped, sorted(phantoms),
             )
 
     job_ids = [int(r["id"]) for r in job_rows if r.get("id") is not None]
