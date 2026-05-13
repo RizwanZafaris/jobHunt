@@ -172,7 +172,7 @@ try:
     OPUS_MODEL   = _g4_s.g4_opus_model
 except Exception:
     SONNET_MODEL = "claude-sonnet-4-6"
-    OPUS_MODEL   = "claude-opus-4-7"
+    OPUS_MODEL   = "claude-opus-4-5-20251101"  # 2026-05-14: see settings.py
 
 
 # ═════════════════════════════════════════════════════════════════════════
