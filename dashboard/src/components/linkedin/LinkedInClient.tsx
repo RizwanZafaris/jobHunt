@@ -16,7 +16,7 @@ import { useMemo, useState } from 'react'
 import { clsx } from 'clsx'
 import { Button, Icon } from '@/components/ui'
 import { DraftCard } from './DraftCard'
-import { GenerateModal } from './GenerateModal'
+import { GenerateModal, type CompanyOption } from './GenerateModal'
 import {
   ANGLE_LABEL,
   DAY_OF_WEEK_LABEL,
@@ -37,9 +37,11 @@ const TABS: { id: TabId; label: string; matches: LinkedInDraftStatus[] }[] = [
 export interface LinkedInClientProps {
   initialDrafts: LinkedInDraft[]
   schedule: LinkedInPostingSchedule
+  /** Target companies to populate the Generate modal dropdown. */
+  companies?: CompanyOption[]
 }
 
-export function LinkedInClient({ initialDrafts, schedule }: LinkedInClientProps) {
+export function LinkedInClient({ initialDrafts, schedule, companies }: LinkedInClientProps) {
   const [drafts, setDrafts] = useState<LinkedInDraft[]>(initialDrafts)
   const [tab, setTab] = useState<TabId>('drafts')
   const [generateOpen, setGenerateOpen] = useState(false)
@@ -208,6 +210,7 @@ export function LinkedInClient({ initialDrafts, schedule }: LinkedInClientProps)
         <GenerateModal
           onClose={() => setGenerateOpen(false)}
           onSubmit={handleGenerate}
+          companies={companies}
         />
       )}
     </div>
