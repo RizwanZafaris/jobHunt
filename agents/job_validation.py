@@ -269,30 +269,80 @@ def _detect_stale_age_marker(body: str) -> Optional[str]:
     # Nium 2714, Wise 7335) — all match; the false-positive control case
     # ("...shipped our flagship product 3 years ago. Today we are hiring...")
     # does not.
-    m = re.search(
-        r"(\d+)\s+(year|years|yr|yrs|month|months|mo)\s+ago"
-        r"[\s\S]{0,80}?"
-        r"(be\s+among\s+the\s+first|applicant|apply\s+now|posted\s+\d+|view\s+job)",
-        head,
-        re.IGNORECASE,
+    # BUG-048 (2026-05-13): broadened the marker-detection layer beyond the
+    # original "(\d+) (year|month) ago" pattern. Production audit surfaced
+    # 4 LinkedIn stale-stage variants that slipped through:
+    #   1. "Posted over a month ago"
+    #   2. "Posted over 2 months ago"
+    #   3. "Posted about 3 months ago" / "~3 months ago" / "approximately
+    #      6 months ago"
+    #   4. "Posted 4 weeks ago" (≈ 1 month — same financial-leak archetype)
+    #
+    # Each branch reuses the SAME 80-char disambiguator window check (a
+    # LinkedIn/ATS-specific phrase like "Be among the first", "applicant",
+    # "Apply now", "Posted N", "View job"). Without the disambiguator
+    # nearby, the match is treated as JD body content (e.g. "we shipped
+    # our flagship product 3 years ago. Today we are hiring...") and
+    # discarded — false-positive control.
+    branches: list[tuple[str, Any]] = [
+        # "over a month ago" (singular) → treat as ≥1 month
+        (r"over\s+a\s+(month|months)\s+ago", lambda m: (1, "month")),
+        # "over N months/years/mo ago"
+        (
+            r"over\s+(\d+)\s+(month|months|year|years|mo)\s+ago",
+            lambda m: (int(m.group(1)), m.group(2).lower()),
+        ),
+        # "about | ~ | approximately N months/years/weeks ago"
+        (
+            r"(?:about|~|approximately)\s+(\d+)\s+(month|months|year|years|mo|weeks?)\s+ago",
+            lambda m: (int(m.group(1)), m.group(2).lower()),
+        ),
+        # "N months/years/mo ago" — original pattern, restored
+        (
+            r"(\d+)\s+(year|years|yr|yrs|month|months|mo)\s+ago",
+            lambda m: (int(m.group(1)), m.group(2).lower()),
+        ),
+        # "N weeks ago" — flag at >=4 weeks (~1 month)
+        (
+            r"(\d+)\s+(weeks?)\s+ago",
+            lambda m: (int(m.group(1)), m.group(2).lower()),
+        ),
+    ]
+
+    disambig = (
+        "be among the first",
+        "applicant",
+        "apply now",
+        "posted",
+        "view job",
     )
-    if not m:
-        return None
-    n = int(m.group(1))
-    unit = m.group(2).lower()
-    if unit.startswith("y"):
-        return m.group(0).split("\n")[0][:80]  # any "X year(s) ago" is stale
-    if unit.startswith("m") and n >= 1:
-        # BUG-009 Tier 1 tightening (2026-05-12): Agent C data audit found
-        # 2 more "1 month ago" listings (Thunes 2982, Light Commercial
-        # Vehicle 5387) slipping through the previous `n >= 3` threshold.
-        # User context: "I invested money to make resume if its expired
-        # then I lose money despite of using AI system." False-positive
-        # cost is bounded (force=true override at build time);
-        # false-negative cost is unbounded (~$1-5 burned per stale build).
-        # ANY month-ago hit with the LinkedIn-context disambiguator
-        # anchored nearby is now flagged stale.
-        return m.group(0).split("\n")[0][:80]
+
+    for pat, extractor in branches:
+        for m in re.finditer(pat, head, re.IGNORECASE):
+            # 80-char disambiguator window (40 chars on each side of the
+            # match) — confirms this is a LinkedIn/ATS listing header, not
+            # JD body content.
+            wstart = max(0, m.start() - 40)
+            wend = min(len(head), m.end() + 40)
+            window = head[wstart:wend].lower()
+            if not any(p in window for p in disambig):
+                continue
+
+            n, unit = extractor(m)
+            if unit.startswith("y"):
+                return m.group(0).split("\n")[0][:80]
+            if unit.startswith("m") and n >= 1:
+                # BUG-009 Tier 1 tightening: ANY month-ago hit with the
+                # LinkedIn-context disambiguator anchored nearby is stale.
+                # False-positive cost bounded (force=true override at
+                # build time); false-negative cost unbounded (~$1-5
+                # burned per stale build).
+                return m.group(0).split("\n")[0][:80]
+            if unit.startswith("w") and n >= 4:
+                # BUG-048: 4+ weeks ≈ 1 month — same archetype.
+                return m.group(0).split("\n")[0][:80]
+            # otherwise fresh — continue searching for a later, staler hit
+
     return None
 
 
