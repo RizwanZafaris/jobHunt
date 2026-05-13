@@ -34,6 +34,12 @@ import {
   type LinkedInDraft,
   type LinkedInDraftStatus,
 } from '@/lib/types/linkedin'
+import {
+  approveLinkedInDraft,
+  patchLinkedInDraft,
+  recordCopyLinkedInDraft,
+  rejectLinkedInDraft,
+} from '@/lib/api'
 
 const ANGLE_TONE: Record<LinkedInAngle, PillTone> = {
   news_commentary: 'info',
@@ -102,14 +108,34 @@ export function DraftCard({ draft, onChange }: DraftCardProps) {
   const statusTone: PillTone = STATUS_TONE[draft.status]
   const scheduled = formatScheduled(draft.scheduledFor)
 
-  const handleEditSave = () => {
-    // TODO: PATCH /linkedin/drafts/:id with { hook, body }
+  // 2026-05-14 harden: all four handlers were mocks (TODO comments).
+  // Now wired to real backend with validation + error handling.
+
+  const handleEditSave = async () => {
+    if (!hook.trim()) {
+      setFeedback('Hook cannot be empty.')
+      setTimeout(() => setFeedback(null), 3000)
+      return
+    }
+    if (!body.trim()) {
+      setFeedback('Body cannot be empty.')
+      setTimeout(() => setFeedback(null), 3000)
+      return
+    }
     setBusy('save')
-    setFeedback('Saved (mock)')
-    onChange?.({ ...draft, hook, body, updatedAt: new Date().toISOString() })
-    setEditing(false)
-    setBusy(null)
-    setTimeout(() => setFeedback(null), 2000)
+    setFeedback('Saving…')
+    try {
+      const updated = await patchLinkedInDraft(draft.id, { hook, body })
+      onChange?.(updated)
+      setFeedback('Saved')
+      setEditing(false)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Save failed'
+      setFeedback(msg.slice(0, 140))
+    } finally {
+      setBusy(null)
+      setTimeout(() => setFeedback(null), 3500)
+    }
   }
 
   const handleCopy = async () => {
@@ -118,46 +144,72 @@ export function DraftCard({ draft, onChange }: DraftCardProps) {
       .filter(Boolean)
       .join('\n')
     try {
-      // Local clipboard write — this is the actual publish in V1.
       if (typeof navigator !== 'undefined' && navigator.clipboard) {
         await navigator.clipboard.writeText(text)
+      } else {
+        throw new Error('clipboard API unavailable')
       }
-      // TODO: POST /linkedin/drafts/:id/copy — records manual_copy_at
+      // Server-side telemetry — non-fatal if it fails.
+      const updated = await recordCopyLinkedInDraft(draft.id)
+      if (updated) {
+        onChange?.(updated)
+      } else {
+        // 2026-05-14 fix: was auto-setting status='posted' on any copy of
+        // an approved/scheduled draft. Drafts can be copied multiple times
+        // before actually posting — leave status alone, only update the
+        // manualCopyAt timestamp locally.
+        onChange?.({ ...draft, manualCopyAt: new Date().toISOString() })
+      }
       setFeedback('Copied. Open LinkedIn and paste.')
-      onChange?.({
-        ...draft,
-        manualCopyAt: new Date().toISOString(),
-        status: draft.status === 'draft' ? draft.status : 'posted',
-      })
-    } catch {
-      setFeedback('Copy failed — paste manually.')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Copy failed'
+      setFeedback(`Copy failed — ${msg.slice(0, 120)}`)
     } finally {
       setBusy(null)
-      setTimeout(() => setFeedback(null), 3000)
+      setTimeout(() => setFeedback(null), 3500)
     }
   }
 
-  const handleApprove = () => {
-    // TODO: POST /linkedin/drafts/:id/approve
+  const handleApprove = async () => {
+    if (!hook.trim() || !body.trim()) {
+      setFeedback('Cannot approve an empty draft — edit it first.')
+      setTimeout(() => setFeedback(null), 3500)
+      return
+    }
     setBusy('approve')
-    setFeedback('Scheduled (mock)')
-    onChange?.({
-      ...draft,
-      status: 'scheduled',
-      scheduledFor: draft.scheduledFor ?? new Date(Date.now() + 86_400_000).toISOString(),
-    })
-    setBusy(null)
-    setTimeout(() => setFeedback(null), 2000)
+    setFeedback('Approving…')
+    try {
+      const updated = await approveLinkedInDraft(draft.id)
+      onChange?.(updated)
+      setFeedback(
+        updated.scheduledFor
+          ? `Scheduled for ${formatScheduled(updated.scheduledFor) ?? 'soon'}`
+          : 'Approved',
+      )
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Approve failed'
+      setFeedback(msg.slice(0, 140))
+    } finally {
+      setBusy(null)
+      setTimeout(() => setFeedback(null), 4000)
+    }
   }
 
-  const handleReject = () => {
-    // TODO: POST /linkedin/drafts/:id/reject
+  const handleReject = async () => {
     if (typeof window !== 'undefined' && !window.confirm('Reject this draft?')) return
     setBusy('reject')
-    setFeedback('Rejected (mock)')
-    onChange?.({ ...draft, status: 'rejected' })
-    setBusy(null)
-    setTimeout(() => setFeedback(null), 2000)
+    setFeedback('Rejecting…')
+    try {
+      const updated = await rejectLinkedInDraft(draft.id)
+      onChange?.(updated)
+      setFeedback('Rejected')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Reject failed'
+      setFeedback(msg.slice(0, 140))
+    } finally {
+      setBusy(null)
+      setTimeout(() => setFeedback(null), 3500)
+    }
   }
 
   const liveBody = editing ? body : draft.body
@@ -402,7 +454,11 @@ function ImageBriefPanel({
   brief: ImageBrief
   onCopy: (label: string, text: string) => void
 }) {
-  const [open, setOpen] = useState(false)
+  // 2026-05-14 fix: was useState(false) — panel started collapsed so users
+  // couldn't find the image-generation prompt. Now open by default so the
+  // prompt + reference URL + alt text are immediately visible. User can
+  // still click the summary to collapse.
+  const [open, setOpen] = useState(true)
   const isReference = brief.kind === 'reference_news_image' || brief.recommendedProvider === 'screenshot_only'
   const kindLabel = IMAGE_BRIEF_KIND_LABEL[brief.kind] ?? brief.kind
 
