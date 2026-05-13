@@ -200,3 +200,71 @@ export async function regenerateOfferEvaluation(
   }
   return res.json()
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Pattern Analytics (Audit Gap §4.3) — see api/analytics.py
+// ──────────────────────────────────────────────────────────────────────
+import type {
+  FunnelResponse,
+  PartitionedFunnelResponse,
+  RejectionPatternsResponse,
+  CostEfficiencyResponse,
+} from './types/analytics'
+
+export async function fetchFunnel(): Promise<FunnelResponse> {
+  const res = await fetch(`${baseUrl}/analytics/funnel`, {
+    headers,
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) throw new Error(`fetchFunnel failed (${res.status})`)
+  return res.json()
+}
+
+export async function fetchFunnelByGrade(): Promise<PartitionedFunnelResponse> {
+  const res = await fetch(`${baseUrl}/analytics/funnel-by-grade`, {
+    headers,
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) throw new Error(`fetchFunnelByGrade failed (${res.status})`)
+  return res.json()
+}
+
+export async function fetchFunnelByArchetype(): Promise<PartitionedFunnelResponse> {
+  const res = await fetch(`${baseUrl}/analytics/funnel-by-archetype`, {
+    headers,
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) throw new Error(`fetchFunnelByArchetype failed (${res.status})`)
+  return res.json()
+}
+
+export async function fetchFunnelBySize(): Promise<PartitionedFunnelResponse> {
+  const res = await fetch(`${baseUrl}/analytics/funnel-by-size`, {
+    headers,
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) throw new Error(`fetchFunnelBySize failed (${res.status})`)
+  return res.json()
+}
+
+export async function fetchRejectionPatterns(
+  minSample = 5,
+): Promise<RejectionPatternsResponse> {
+  const res = await fetch(
+    `${baseUrl}/analytics/rejection-patterns?min_sample=${minSample}`,
+    { headers, next: { revalidate: 60 } },
+  )
+  if (!res.ok) throw new Error(`fetchRejectionPatterns failed (${res.status})`)
+  return res.json()
+}
+
+export async function fetchCostEfficiency(
+  minOutcomes = 1,
+): Promise<CostEfficiencyResponse> {
+  const res = await fetch(
+    `${baseUrl}/analytics/cost-efficiency?min_outcomes=${minOutcomes}`,
+    { headers, next: { revalidate: 60 } },
+  )
+  if (!res.ok) throw new Error(`fetchCostEfficiency failed (${res.status})`)
+  return res.json()
+}

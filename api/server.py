@@ -112,6 +112,7 @@ from api.g7 import router as g7_router  # noqa: E402  /workspace/{job_id}/apply 
 from api.proof_points import router as proof_points_router  # noqa: E402  /profile/proof-points/* (Tier 4 §6.4)
 from api.profile import router as profile_router  # noqa: E402  /profile/* (Tier 4 G11 voice calibration)
 from api.offers import router as offers_router  # noqa: E402  /offers/* (Tier 4 G8 offer evaluation)
+from api.analytics import router as analytics_router  # noqa: E402  /analytics/* (Audit Gap §4.3 pattern analytics)
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
@@ -125,6 +126,7 @@ app.include_router(g7_router)
 app.include_router(proof_points_router)
 app.include_router(profile_router)
 app.include_router(offers_router)
+app.include_router(analytics_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
