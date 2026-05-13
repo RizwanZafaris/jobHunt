@@ -88,21 +88,37 @@ export function LinkedInClient({ initialDrafts, schedule }: LinkedInClientProps)
       })
       if (!res.ok) {
         const text = await res.text()
+        // eslint-disable-next-line no-console
+        console.error('[linkedin.generate] non-2xx', res.status, text)
         throw new Error(text || `HTTP ${res.status}`)
       }
-      const data = await res.json()
-      // BUG-Generate-UX fix (2026-05-13): The user reported clicking
-      // Generate and seeing "loaded for a few minutes but no result on
-      // screen". Two reasons:
-      //   1. G4 draft generation takes ~30-60s (Anthropic + research)
-      //      so reload-after-2s shows an empty list (worker still running)
-      //   2. The page was reading MOCK_DRAFTS so refresh wouldn't show
-      //      anything new anyway (fixed by BUG-LinkedIn-Mock).
-      // Set explicit expectation in the banner and refresh later.
-      const queued = data.queued ?? args.count
+      const data = await res.json().catch(() => ({}))
+      // BUG-Generate-shape fix (2026-05-13): read the ACTUAL queued
+      // count from the backend response (api/linkedin.py returns
+      // {queued, run_ids}). The earlier fallback `?? args.count` could
+      // mask a silent backend failure where queued=0 — banner would
+      // still say "Queued 1 draft" even when nothing actually queued.
+      // Now: show the real number + the actual run_ids so the user can
+      // verify in /admin or by polling.
+      const queued = typeof data.queued === 'number' ? data.queued : 0
+      const runIds: string[] = Array.isArray(data.run_ids) ? data.run_ids : []
+      // eslint-disable-next-line no-console
+      console.info('[linkedin.generate] response', { queued, runIds })
+
+      if (queued === 0) {
+        setFeedback(
+          'Request accepted but backend reported queued=0. ' +
+          'Check Railway logs — the worker may be down or the ' +
+          'enqueue silently failed. (See browser console for details.)',
+        )
+        setTimeout(() => setFeedback(null), 12_000)
+        return
+      }
+
       setFeedback(
         `Queued ${queued} draft${queued === 1 ? '' : 's'}. ` +
-        `Generation takes ~30-60s — the new draft will appear here when ready.`,
+        `Generation takes ~30-60s — the new draft will appear here when ready. ` +
+        `(Run ID: ${runIds[0]?.slice(0, 8) ?? '—'}…)`,
       )
       // Reload after 45s so the draft typically lands BEFORE refresh,
       // not the other way around. The user can also refresh manually

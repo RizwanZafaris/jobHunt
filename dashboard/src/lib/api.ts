@@ -283,7 +283,12 @@ export async function fetchLinkedInDrafts(): Promise<LinkedInDraft[]> {
   })
   if (!res.ok) throw new Error(`fetchLinkedInDrafts failed (${res.status})`)
   const data = await res.json()
-  return Array.isArray(data) ? data : (data.drafts ?? [])
+  // Backend (api/linkedin.py::list_drafts) returns
+  // { items, total, limit, offset }. Earlier draft of this fetcher read
+  // `data.drafts` which is undefined → page rendered Drafts (0) even when
+  // the DB had real rows. Accept the actual shape + a few common variants.
+  if (Array.isArray(data)) return data
+  return (data.items ?? data.drafts ?? []) as LinkedInDraft[]
 }
 
 export async function fetchLinkedInSchedule(): Promise<
@@ -294,7 +299,16 @@ export async function fetchLinkedInSchedule(): Promise<
     next: { revalidate: 300 },
   })
   if (!res.ok) throw new Error(`fetchLinkedInSchedule failed (${res.status})`)
-  return res.json()
+  // Backend returns snake_case: { slots, posts_per_week, next_slot }
+  // Map to the camelCase shape the dashboard expects. Earlier draft
+  // returned the raw response which made stats show
+  // "Cadence target: undefined/week".
+  const raw = await res.json()
+  return {
+    slots: raw.slots ?? [],
+    postsPerWeek: raw.postsPerWeek ?? raw.posts_per_week ?? 0,
+    nextSlot: raw.nextSlot ?? raw.next_slot ?? null,
+  }
 }
 
 // LangGraph traces (Stream C) — see api/traces.py
