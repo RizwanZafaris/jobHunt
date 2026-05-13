@@ -296,3 +296,42 @@ export async function fetchLinkedInSchedule(): Promise<
   if (!res.ok) throw new Error(`fetchLinkedInSchedule failed (${res.status})`)
   return res.json()
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// LangGraph traces (Stream C) — see api/traces.py
+// ──────────────────────────────────────────────────────────────────────
+import type {
+  RecentRunsResponse,
+  TraceDetailResponse,
+  ErrorsResponse,
+} from './types/traces'
+
+export async function fetchRecentRuns(limit = 50): Promise<RecentRunsResponse> {
+  const res = await fetch(`${baseUrl}/traces/recent?limit=${limit}`, {
+    headers,
+    next: { revalidate: 15 },
+  })
+  if (!res.ok) throw new Error(`fetchRecentRuns failed (${res.status})`)
+  return res.json()
+}
+
+export async function fetchTraceDetail(
+  graph: string,
+  runKey: string,
+): Promise<TraceDetailResponse> {
+  const res = await fetch(
+    `${baseUrl}/traces/${encodeURIComponent(graph)}/${encodeURIComponent(runKey)}`,
+    { headers, next: { revalidate: 15 } },
+  )
+  if (!res.ok) throw new Error(`fetchTraceDetail failed (${res.status})`)
+  return res.json()
+}
+
+export async function fetchTraceErrors(limit = 20): Promise<ErrorsResponse> {
+  const res = await fetch(`${baseUrl}/traces/errors?limit=${limit}`, {
+    headers,
+    next: { revalidate: 15 },
+  })
+  if (!res.ok) throw new Error(`fetchTraceErrors failed (${res.status})`)
+  return res.json()
+}

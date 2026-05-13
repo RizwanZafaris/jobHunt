@@ -150,6 +150,8 @@ app.include_router(proof_points_router)
 app.include_router(profile_router)
 app.include_router(offers_router)
 app.include_router(analytics_router)
+from api.traces import router as traces_router  # noqa: E402  Stream C
+app.include_router(traces_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
