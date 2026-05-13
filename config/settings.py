@@ -137,7 +137,13 @@ class Settings(BaseSettings):
     # so A/B model swaps don't require a redeploy.
     # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §G4-3.
     g4_sonnet_model: str = "claude-sonnet-4-6"
-    g4_opus_model: str = "claude-opus-4-7"
+    # 2026-05-14 fix: was "claude-opus-4-7" — that model name returns 0
+    # successful calls vs 173 successes for claude-opus-4-5-20251101 over
+    # the same 7-day window. Result: G4 draft_v1 silently failed every
+    # time, so user-generated LinkedIn drafts persisted with empty
+    # hook + body. The 2 existing empty drafts in linkedin_drafts
+    # confirm this was the actual bug (not the dashboard or queue).
+    g4_opus_model: str = "claude-opus-4-5-20251101"
     # Hard cap per draft (Phase 2 — currently advisory; full pre-call cap in followup PR).
     g4_max_cost_usd: float = 0.15
 
