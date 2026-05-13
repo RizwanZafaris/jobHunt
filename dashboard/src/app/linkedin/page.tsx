@@ -21,7 +21,8 @@ import {
   MOCK_LINKEDIN_STATS,
   MOCK_POSTING_SCHEDULE,
 } from '@/lib/mock/linkedin'
-import { fetchLinkedInDrafts, fetchLinkedInSchedule } from '@/lib/api'
+import { fetchLinkedInDrafts, fetchLinkedInSchedule, fetchCompanies } from '@/lib/api'
+import type { CompanyOption } from '@/components/linkedin/GenerateModal'
 import type { LinkedInDraft } from '@/lib/types/linkedin'
 
 export const dynamic = 'force-dynamic'
@@ -44,6 +45,7 @@ function countScheduled(drafts: LinkedInDraft[]): number {
 async function loadLinkedInData(): Promise<{
   drafts: LinkedInDraft[]
   schedule: typeof MOCK_POSTING_SCHEDULE
+  companies: CompanyOption[]
   usedMock: boolean
   error: string | null
 }> {
@@ -51,16 +53,30 @@ async function loadLinkedInData(): Promise<{
   // though the /linkedin/* router is wired in api/server.py. That's why
   // the user saw "3-day old post" — they were seeing the same mock data
   // every load. Now we hit the real backend and only fall back on error.
+  //
+  // 2026-05-14: also fetch companies for the Generate modal dropdown so
+  // the user can pick "Mastercard" by name instead of typing a UUID.
   try {
-    const [drafts, schedule] = await Promise.all([
+    const [drafts, schedule, companiesRes] = await Promise.all([
       fetchLinkedInDrafts(),
       fetchLinkedInSchedule().catch(() => MOCK_POSTING_SCHEDULE),
+      fetchCompanies().catch(() => ({ companies: [] })),
     ])
-    return { drafts, schedule, usedMock: false, error: null }
+    const rawCompanies = (companiesRes?.companies ?? []) as Array<{
+      id: string
+      name: string
+      priority?: string | null
+      is_target?: boolean
+    }>
+    const companies: CompanyOption[] = rawCompanies
+      .filter((c) => c?.id && c?.name && c.is_target !== false)
+      .map((c) => ({ id: c.id, name: c.name, priority: c.priority ?? null }))
+    return { drafts, schedule, companies, usedMock: false, error: null }
   } catch (err) {
     return {
       drafts: MOCK_DRAFTS,
       schedule: MOCK_POSTING_SCHEDULE,
+      companies: [],
       usedMock: true,
       error: err instanceof Error ? err.message : String(err),
     }
@@ -68,7 +84,7 @@ async function loadLinkedInData(): Promise<{
 }
 
 export default async function LinkedInPage() {
-  const { drafts, schedule, usedMock, error } = await loadLinkedInData()
+  const { drafts, schedule, companies, usedMock, error } = await loadLinkedInData()
   const baseStats = MOCK_LINKEDIN_STATS
   const stats = {
     ...baseStats,
@@ -109,7 +125,7 @@ export default async function LinkedInPage() {
         />
       </section>
 
-      <LinkedInClient initialDrafts={drafts} schedule={schedule} />
+      <LinkedInClient initialDrafts={drafts} schedule={schedule} companies={companies} />
     </AppShell>
   )
 }
