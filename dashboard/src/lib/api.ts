@@ -297,7 +297,6 @@ export async function fetchLinkedInSchedule(): Promise<
   return res.json()
 }
 
-// ──────────────────────────────────────────────────────────────────────
 // LangGraph traces (Stream C) — see api/traces.py
 // ──────────────────────────────────────────────────────────────────────
 import type {
@@ -334,4 +333,49 @@ export async function fetchTraceErrors(limit = 20): Promise<ErrorsResponse> {
   })
   if (!res.ok) throw new Error(`fetchTraceErrors failed (${res.status})`)
   return res.json()
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// /today post-of-the-day + /applications incoming (Stream D, 2026-05-13)
+// ──────────────────────────────────────────────────────────────────────
+
+export interface PostOfTheDay {
+  id: string
+  hook: string
+  body_excerpt: string
+  angle: string | null
+  company: string | null
+  status: string
+  scheduled_for: string | null
+  created_at: string | null
+}
+
+export interface IncomingJob {
+  job_id: number
+  title: string
+  company: string
+  score: number
+  letter_grade: string | null
+  archetype: string | null
+  created_at: string | null
+}
+
+export async function fetchPostOfTheDay(): Promise<PostOfTheDay | null> {
+  const res = await fetch(`${baseUrl}/actions/today/linkedin-post`, {
+    headers,
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) return null
+  const data = await res.json()
+  return data.post ?? null
+}
+
+export async function fetchIncomingJobs(limit = 10): Promise<IncomingJob[]> {
+  const res = await fetch(`${baseUrl}/actions/incoming?limit=${limit}`, {
+    headers,
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) return []
+  const data = await res.json()
+  return data.jobs ?? []
 }
