@@ -73,12 +73,17 @@ def _today_local() -> date:
 
 
 def _phantom_company_names(user_id: UUID) -> frozenset[str]:
-    """Return lowercase company_name strings flagged as phantoms.
+    """Return lowercase company name strings flagged as phantoms.
 
-    Used to filter /today + /applications surfaces so the user never
-    sees fabricated companies (e.g. "Adyen Careers", "SuperApp",
-    "Merchant Acquiring ...") on action cards even before the cleanup
-    migration 028 runs.
+    Schema correction (2026-05-13): `is_phantom` lives on the `companies`
+    table (added by BUG-013), NOT `company_personas`. Earlier draft of
+    this function targeted the wrong table and would have failed at
+    runtime with "column is_phantom does not exist".
+
+    Post migration 028 there should be zero rows with is_phantom=TRUE
+    (the migration deleted them), so this query returns an empty frozenset
+    in steady state. The filter remains as defence-in-depth against any
+    future bad scrape that inserts a phantom row.
 
     Returns frozenset for fast `lower(company) in <frozenset>` membership.
     Defensive — DB error returns empty (no filter applied).
@@ -86,14 +91,14 @@ def _phantom_company_names(user_id: UUID) -> frozenset[str]:
     try:
         rows = (
             get_supabase()
-            .table("company_personas")
-            .select("company_name")
+            .table("companies")
+            .select("name")
             .eq("user_id", str(user_id))
             .eq("is_phantom", True)
             .execute()
             .data
         ) or []
-        return frozenset((r.get("company_name") or "").strip().lower() for r in rows)
+        return frozenset((r.get("name") or "").strip().lower() for r in rows)
     except Exception as e:  # pragma: no cover — defensive
         import logging
         logging.getLogger(__name__).warning(

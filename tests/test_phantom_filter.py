@@ -74,7 +74,7 @@ def _mock_db(*, phantom_personas: list[dict] | None = None, job_rows: list[dict]
             return self
 
         def execute(self):
-            if self.table == "company_personas":
+            if self.table == "companies":
                 rows = phantom_personas or []
                 # Honor is_phantom filter
                 wants_phantom = any(f == ("eq", "is_phantom", True) for f in self._filters)
@@ -82,8 +82,8 @@ def _mock_db(*, phantom_personas: list[dict] | None = None, job_rows: list[dict]
                     rows = [r for r in rows if r.get("is_phantom") is True]
                 # Honor ilike(company_name, X) filter
                 for f in self._filters:
-                    if f[0] == "ilike" and f[1] == "company_name":
-                        rows = [r for r in rows if r.get("company_name", "").lower() == f[2].lower()]
+                    if f[0] == "ilike" and f[1] == "name":
+                        rows = [r for r in rows if r.get("name", "").lower() == f[2].lower()]
                 return MagicMock(data=list(rows))
             if self.table == "jobs":
                 return MagicMock(data=list(job_rows or []))
@@ -103,9 +103,9 @@ def test_phantom_company_names_returns_lowercased_frozenset(monkeypatch):
     from api import actions
 
     db = _mock_db(phantom_personas=[
-        {"company_name": "Adyen Careers", "is_phantom": True},
-        {"company_name": "SuperApp", "is_phantom": True},
-        {"company_name": "Real Co", "is_phantom": False},  # not flagged
+        {"name": "Adyen Careers", "is_phantom": True},
+        {"name": "SuperApp", "is_phantom": True},
+        {"name": "Real Co", "is_phantom": False},  # not flagged
     ])
     monkeypatch.setattr(actions, "get_supabase", lambda: db, raising=False)
 
@@ -152,7 +152,7 @@ def test_company_agent_refuses_phantom_via_db_flag(monkeypatch):
 
     # DB returns a phantom row for "SuperApp"
     db = _mock_db(phantom_personas=[
-        {"company_name": "SuperApp", "is_phantom": True},
+        {"name": "SuperApp", "is_phantom": True},
     ])
     # Patch the lazy get_supabase import inside CompanyAgent.__init__
     import db.client as dbc
