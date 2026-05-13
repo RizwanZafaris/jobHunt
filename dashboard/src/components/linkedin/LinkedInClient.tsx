@@ -43,6 +43,7 @@ export function LinkedInClient({ initialDrafts, schedule }: LinkedInClientProps)
   const [drafts, setDrafts] = useState<LinkedInDraft[]>(initialDrafts)
   const [tab, setTab] = useState<TabId>('drafts')
   const [generateOpen, setGenerateOpen] = useState(false)
+  const [feedback, setFeedback] = useState<string | null>(null)
 
   const visible = useMemo(() => {
     const tabDef = TABS.find((t) => t.id === tab)
@@ -65,18 +66,39 @@ export function LinkedInClient({ initialDrafts, schedule }: LinkedInClientProps)
     setDrafts((cur) => cur.map((d) => (d.id === next.id ? next : d)))
   }
 
-  const handleGenerate = async (_args: {
+  // A2/BUG-LinkedIn-Generate fix (2026-05-13): the old stub showed an
+  // alert(); user reported "click generate a new post it load with no
+  // results no working end to end". Now wired to the real backend.
+  const handleGenerate = async (args: {
     angle?: LinkedInAngle
     targetCompanyId?: string
     count: number
   }) => {
-    // TODO: replace with API → POST /linkedin/drafts/generate
     setGenerateOpen(false)
-    if (typeof window !== 'undefined') {
-      window.alert(
-        'Mocked: generate request would enqueue a G4 LinkedIn run.\n' +
-          'Wire to POST /linkedin/drafts/generate (see api/LINKEDIN.md).',
-      )
+    setFeedback('Generating draft…')
+    try {
+      const res = await fetch('/api/proxy/linkedin/drafts/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          angle: args.angle,
+          count: args.count,
+          company_id: args.targetCompanyId,
+        }),
+      })
+      if (!res.ok) {
+        const text = await res.text()
+        throw new Error(text || `HTTP ${res.status}`)
+      }
+      const data = await res.json()
+      setFeedback(`Queued ${data.queued ?? args.count} draft(s). Refreshing…`)
+      setTimeout(() => {
+        if (typeof window !== 'undefined') window.location.reload()
+      }, 2000)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setFeedback(`Failed: ${msg}`)
+      setTimeout(() => setFeedback(null), 5000)
     }
   }
 
@@ -96,6 +118,14 @@ export function LinkedInClient({ initialDrafts, schedule }: LinkedInClientProps)
 
   return (
     <div className="space-y-6">
+      {/* A2: Generate-request feedback banner (success / error / loading) */}
+      {feedback && (
+        <div className="rounded-lg border border-accent bg-surface-raised px-4 py-2.5 text-sm text-fg flex items-center gap-2">
+          <Icon name="info" size={14} aria-hidden />
+          {feedback}
+        </div>
+      )}
+
       {/* Tab bar + Generate CTA */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div role="tablist" aria-label="LinkedIn drafts" className="flex items-center gap-0.5 border-b border-border flex-1">

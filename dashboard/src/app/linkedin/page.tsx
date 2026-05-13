@@ -21,6 +21,7 @@ import {
   MOCK_LINKEDIN_STATS,
   MOCK_POSTING_SCHEDULE,
 } from '@/lib/mock/linkedin'
+import { fetchLinkedInDrafts, fetchLinkedInSchedule } from '@/lib/api'
 import type { LinkedInDraft } from '@/lib/types/linkedin'
 
 export const dynamic = 'force-dynamic'
@@ -40,13 +41,42 @@ function countScheduled(drafts: LinkedInDraft[]): number {
   return drafts.filter((d) => d.status === 'approved' || d.status === 'scheduled').length
 }
 
-export default function LinkedInPage() {
-  // TODO: replace with parallel fetch of /linkedin/drafts, /linkedin/posting-schedule
-  //       once api/linkedin.py is wired into api/server.py — see api/LINKEDIN.md.
-  const drafts = MOCK_DRAFTS
+async function loadLinkedInData(): Promise<{
+  drafts: LinkedInDraft[]
+  schedule: typeof MOCK_POSTING_SCHEDULE
+  usedMock: boolean
+  error: string | null
+}> {
+  // BUG-LinkedIn-Mock fix (2026-05-13): page was reading MOCK_DRAFTS even
+  // though the /linkedin/* router is wired in api/server.py. That's why
+  // the user saw "3-day old post" — they were seeing the same mock data
+  // every load. Now we hit the real backend and only fall back on error.
+  try {
+    const [drafts, schedule] = await Promise.all([
+      fetchLinkedInDrafts(),
+      fetchLinkedInSchedule().catch(() => MOCK_POSTING_SCHEDULE),
+    ])
+    return { drafts, schedule, usedMock: false, error: null }
+  } catch (err) {
+    return {
+      drafts: MOCK_DRAFTS,
+      schedule: MOCK_POSTING_SCHEDULE,
+      usedMock: true,
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+export default async function LinkedInPage() {
+  const { drafts, schedule, usedMock, error } = await loadLinkedInData()
   const baseStats = MOCK_LINKEDIN_STATS
-  const stats = { ...baseStats, scheduledThisWeek: countScheduled(drafts) }
-  const schedule = MOCK_POSTING_SCHEDULE
+  const stats = {
+    ...baseStats,
+    pendingReview: drafts.filter((d) => d.status === 'draft').length,
+    scheduledThisWeek: countScheduled(drafts),
+  }
+  void error
+  void usedMock
 
   return (
     <AppShell wide>

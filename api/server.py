@@ -11,7 +11,7 @@ import re
 from typing import Optional
 from datetime import date, datetime, timezone
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel
@@ -33,6 +33,29 @@ app = FastAPI(
     description="Rizwan's multi-agent AI job hunt system",
     version="2.0.0",
 )
+
+
+# BUG-053 fix: APScheduler runs INSIDE this FastAPI process so a single
+# Railway service handles both API + cron. See main.start_scheduler_background.
+_scheduler_started = False
+
+
+@app.on_event("startup")
+async def _startup_scheduler():
+    """Embed the 6 cron jobs (job_scout, boss_agent, persona_synthesis,
+    cost_alert, cost_digest, g6_followup) inside the API lifespan."""
+    global _scheduler_started
+    if _scheduler_started:
+        return
+    try:
+        from main import start_scheduler_background
+        scheduler = start_scheduler_background()
+        app.state.scheduler = scheduler
+        _scheduler_started = True
+        logger.info("[BUG-053] APScheduler started inside API process")
+    except Exception as e:
+        logger.error("[BUG-053] Failed to start scheduler: %s", e)
+
 
 # CORS for Vercel dashboard
 app.add_middleware(
@@ -3216,3 +3239,71 @@ async def costs_recent_calls(
     except Exception as e:
         logger.warning(f"recent-calls query failed: {e}")
         return {"calls": [], "warning": "agent_call_log not present yet"}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# BUG-053 / E3 — Admin + lookup endpoints added 2026-05-13
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/admin/scheduler-status")
+async def admin_scheduler_status(_auth=Depends(verify_secret)):
+    """BUG-053: Surface scheduler state + next-run times for the 6 cron jobs.
+
+    Returns:
+        {running: bool, job_count: int, jobs: [{id, name, next_run_time, trigger}]}
+    Gated by verify_secret. Used to verify Railway is running the cron after
+    the BUG-053 fix that embedded APScheduler inside the FastAPI process.
+    """
+    scheduler = getattr(app.state, "scheduler", None)
+    if scheduler is None:
+        return {
+            "running": False,
+            "message": "Scheduler not started — check startup logs",
+            "jobs": [],
+        }
+
+    jobs = []
+    for job in scheduler.get_jobs():
+        nrt = job.next_run_time
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run_time": nrt.isoformat() if nrt else None,
+            "trigger": str(job.trigger),
+        })
+
+    return {
+        "running": scheduler.state == 1,  # APScheduler STATE_RUNNING
+        "job_count": len(jobs),
+        "jobs": jobs,
+    }
+
+
+@app.get("/applications/by-job/{job_id}")
+async def get_application_by_job(
+    job_id: int = Path(..., ge=1),
+    _auth=Depends(verify_secret),
+):
+    """E3 (BUG-058): Resolve jobs.id (INTEGER) → applications.id (UUID).
+
+    Used by the G8 offer page where the URL param is jobs.id but the
+    evaluate-offer backend expects applications.id UUID. Returns the
+    latest applications row for (single-user-mode user, job_id) or 404.
+
+    In multi-tenant mode this should also filter by user_id from the
+    auth context; in single-user mode the verify_secret gate is the
+    boundary (Rizwan's one user).
+    """
+    db = get_supabase()
+    rows = (
+        db.table("applications")
+        .select("id, job_id, status, created_at")
+        .eq("job_id", job_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    ).data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="no_application_for_job")
+    return rows[0]

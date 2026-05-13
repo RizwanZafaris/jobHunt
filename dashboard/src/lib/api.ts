@@ -268,3 +268,31 @@ export async function fetchCostEfficiency(
   if (!res.ok) throw new Error(`fetchCostEfficiency failed (${res.status})`)
   return res.json()
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// LinkedIn (BUG-LinkedIn-Mock fix 2026-05-13)
+// Was previously mocked via @/lib/mock/linkedin — page now hits the
+// real /linkedin/* endpoints (already wired in api/server.py).
+// ──────────────────────────────────────────────────────────────────────
+import type { LinkedInDraft } from './types/linkedin'
+
+export async function fetchLinkedInDrafts(): Promise<LinkedInDraft[]> {
+  const res = await fetch(`${baseUrl}/linkedin/drafts`, {
+    headers,
+    next: { revalidate: 30 },
+  })
+  if (!res.ok) throw new Error(`fetchLinkedInDrafts failed (${res.status})`)
+  const data = await res.json()
+  return Array.isArray(data) ? data : (data.drafts ?? [])
+}
+
+export async function fetchLinkedInSchedule(): Promise<
+  import('./types/linkedin').LinkedInPostingSchedule
+> {
+  const res = await fetch(`${baseUrl}/linkedin/posting-schedule`, {
+    headers,
+    next: { revalidate: 300 },
+  })
+  if (!res.ok) throw new Error(`fetchLinkedInSchedule failed (${res.status})`)
+  return res.json()
+}

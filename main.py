@@ -274,6 +274,82 @@ def start_scheduler():
         console.print("\n[yellow]Scheduler stopped.[/yellow]")
 
 
+# ---------------------------------------------------------------------------
+# Background scheduler (non-blocking) for embedding in the FastAPI process.
+#
+# BUG-053 fix (2026-05-13): Production cost dashboard showed TODAY (UTC) =
+# $0.00, last LLM call 17h ago — the scheduler was never running. Root cause:
+# Railway only invokes `python main.py api` which starts uvicorn but never
+# touches start_scheduler(). This embeds the same 6 cron jobs inside the
+# FastAPI lifespan so a single Railway service does both.
+# ---------------------------------------------------------------------------
+_bg_scheduler: AsyncIOScheduler | None = None
+
+
+def start_scheduler_background() -> AsyncIOScheduler:
+    """Non-blocking variant of start_scheduler() for the API process."""
+    global _bg_scheduler
+    if _bg_scheduler is not None:
+        logger.warning("start_scheduler_background called twice — skipping")
+        return _bg_scheduler
+
+    from config.settings import get_settings
+    s = get_settings()
+    tz = pytz.timezone(s.timezone)
+    _bg_scheduler = AsyncIOScheduler(timezone=tz)
+    _bg_scheduler.configure(job_defaults={
+        "coalesce": True, "max_instances": 1, "misfire_grace_time": 300,
+    })
+    _bg_scheduler.add_listener(
+        lambda ev: logger.warning(
+            "scheduler_misfire: job_id=%s scheduled_run_time=%s",
+            ev.job_id, ev.scheduled_run_time,
+        ),
+        EVENT_JOB_MISSED,
+    )
+
+    scout_h, scout_m = map(int, s.job_scout_time.split(":"))
+    boss_h, boss_m = map(int, s.boss_agent_time.split(":"))
+    g6_h, g6_m = map(int, s.g6_cadence_time.split(":"))
+    daily_alert_h, daily_alert_m = map(int, s.daily_alert_time.split(":"))
+    weekly_digest_h, weekly_digest_m = map(int, s.weekly_digest_time.split(":"))
+
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_pipeline()),
+        CronTrigger(hour=scout_h, minute=scout_m, timezone=tz),
+        id="job_scout", name="Daily Job Scout", misfire_grace_time=300,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_boss_agent()),
+        CronTrigger(hour=boss_h, minute=boss_m, timezone=tz),
+        id="boss_agent", name="Nightly Boss Agent", misfire_grace_time=300,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_persona_synthesis()),
+        CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=tz),
+        id="persona_synthesis", name="Weekly Persona Synthesis", misfire_grace_time=3600,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_daily_cost_alert()),
+        CronTrigger(hour=daily_alert_h, minute=daily_alert_m, timezone=tz),
+        id="daily_cost_alert", name="Daily Cost Alert", misfire_grace_time=600,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_weekly_cost_digest()),
+        CronTrigger(day_of_week="sun", hour=weekly_digest_h, minute=weekly_digest_m, timezone=tz),
+        id="weekly_cost_digest", name="Weekly Cost Digest", misfire_grace_time=3600,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_g6_follow_up_cadence()),
+        CronTrigger(hour=g6_h, minute=g6_m, timezone=tz),
+        id="g6_followup_cadence", name="G6 Daily Follow-up Cadence", misfire_grace_time=3600,
+    )
+
+    _bg_scheduler.start()
+    logger.info("[bg-scheduler] started with %d cron jobs", len(_bg_scheduler.get_jobs()))
+    return _bg_scheduler
+
+
 def start_api():
     """Start the FastAPI server for Railway/Vercel deployment."""
     import uvicorn
