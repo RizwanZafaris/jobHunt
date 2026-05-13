@@ -39,7 +39,7 @@ from typing import Any, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.context import get_current_user
 from api.users import User
@@ -61,7 +61,17 @@ STATUS_VALUES = ("draft", "approved", "scheduled", "posted", "rejected", "expire
 
 
 class GenerateBody(BaseModel):
-    """Body for POST /linkedin/drafts/generate."""
+    """Body for POST /linkedin/drafts/generate.
+
+    extra='forbid' set 2026-05-14 after a silent field-name mismatch
+    bug (dashboard sent `company_id`, backend expects `target_company_id`).
+    Pydantic's default silently drops unknown fields, so the bug was
+    invisible — every Generate request produced a draft with no
+    target-company filter applied. Failing loudly with 422 on unknown
+    fields surfaces these mismatches immediately.
+    """
+    model_config = ConfigDict(extra="forbid")
+
     count: int = Field(default=1, ge=1, le=5)
     angle: Optional[str] = None
     target_company_id: Optional[UUID] = None

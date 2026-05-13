@@ -85,7 +85,12 @@ export function LinkedInClient({ initialDrafts, schedule, companies }: LinkedInC
         body: JSON.stringify({
           angle: args.angle,
           count: args.count,
-          company_id: args.targetCompanyId,
+          // 2026-05-14 BUG fix: was `company_id` (silently dropped by
+          // the backend's Pydantic model which expects `target_company_id`).
+          // Every Generate request lost the target so the graph fell
+          // back to all candidates and Marqeta won by data volume.
+          // See api/linkedin.py::GenerateBody — field is target_company_id.
+          target_company_id: args.targetCompanyId,
         }),
       })
       if (!res.ok) {
