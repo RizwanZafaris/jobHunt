@@ -619,17 +619,20 @@ def _build_incoming_jobs(user_id: UUID, limit: int = 10) -> list[dict[str, Any]]
     """
     db = get_supabase()
 
-    # Phantom names to exclude (inline lookup — independent of Stream B)
+    # Phantom names to exclude. Schema correction (2026-05-13):
+    # is_phantom lives on `companies` (added by BUG-013), NOT
+    # company_personas. Post migration 028 this returns empty in
+    # steady state; kept as defence-in-depth.
     try:
         ph_rows = (
-            db.table("company_personas")
-            .select("company_name")
+            db.table("companies")
+            .select("name")
             .eq("user_id", str(user_id))
             .eq("is_phantom", True)
             .execute()
             .data
         ) or []
-        phantoms = frozenset((r.get("company_name") or "").strip().lower() for r in ph_rows)
+        phantoms = frozenset((r.get("name") or "").strip().lower() for r in ph_rows)
     except Exception:
         phantoms = frozenset()
 

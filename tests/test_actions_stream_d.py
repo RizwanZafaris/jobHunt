@@ -145,7 +145,7 @@ def test_incoming_returns_high_score_jobs_without_applications(client, monkeypat
             },
         ],
         "applications": [],  # no applications row → job is "incoming"
-        "company_personas": [],  # no phantoms
+        "companies": [],  # no phantoms
     })
     monkeypatch.setattr(actions, "get_supabase", lambda: db, raising=False)
 
