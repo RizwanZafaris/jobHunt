@@ -11,7 +11,8 @@ import { AppShell } from '@/components/layout/AppShell'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { TodayActionList } from '@/components/today/TodayActionList'
-import { fetchTodayActions, type FetchTodayResponse } from '@/lib/api'
+import { fetchTodayActions, fetchPostOfTheDay, type FetchTodayResponse, type PostOfTheDay } from '@/lib/api'
+import { PostOfTheDayCard } from '@/components/linkedin/PostOfTheDayCard'
 import { MOCK_TODAY_ACTIONS } from '@/lib/mock/today'
 import type { TodayAction, TodayActionKind } from '@/lib/types/today'
 
@@ -64,7 +65,10 @@ async function loadTodayActions(): Promise<FetchOutcome> {
 }
 
 export default async function TodayPage() {
-  const { actions, total, errorMessage, isMock } = await loadTodayActions()
+  const [{ actions, total, errorMessage, isMock }, post] = await Promise.all([
+    loadTodayActions(),
+    fetchPostOfTheDay().catch(() => null as PostOfTheDay | null),
+  ])
   const visible = actions.slice(0, VISIBLE_LIMIT)
   const overflow = Math.max(0, total - visible.length)
 
@@ -123,6 +127,12 @@ export default async function TodayPage() {
           <span className="block text-fg-subtle/80 mt-0.5">{errorMessage}</span>
         </div>
       )}
+
+      {/* Stream D (2026-05-13): today's LinkedIn post anchored at the top
+       * of /today so it's the first thing visible. User feedback:
+       * "Today page shows section is just shows old job there is no
+       * today's linkedin post that should be there." */}
+      <PostOfTheDayCard post={post} emptyCta="generate" />
 
       {interestingCounts.length > 0 && (
         <ul

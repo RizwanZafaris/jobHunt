@@ -553,7 +553,168 @@ def _rank(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(actions, key=key)
 
 
-# ─── route ────────────────────────────────────────────────────────────────
+# ─── Stream D builders + routes (2026-05-13) ─────────────────────────────
+
+
+def _build_post_of_the_day(user_id: UUID) -> Optional[dict[str, Any]]:
+    """The single most-recent LinkedIn draft for the user.
+
+    User feedback: "Today page shows section is just shows old job
+    there is no today's linkedin post that should be there." The
+    existing `_build_linkedin_post_due` only fires when a draft is
+    BOTH status='approved' AND scheduled_for=today — too strict for
+    early-stage users. This new builder is permissive: it surfaces
+    the latest draft regardless of status so the user has something
+    visible to act on.
+
+    Preference order:
+      1. status IN ('approved','scheduled') AND scheduled_for=today
+         (the actual "due today" case — same as _build_linkedin_post_due)
+      2. status='draft' (latest, pending user review)
+      3. status='approved' but not scheduled yet
+    """
+    db = get_supabase()
+
+    # First try the strict "today" lookup
+    strict = _build_linkedin_post_due(user_id)
+    if strict:
+        return strict
+
+    # Otherwise fall back to the latest draft
+    try:
+        rows = (
+            db.table("linkedin_drafts")
+            .select("id, hook, body, angle, source_company_name, status, scheduled_for, created_at")
+            .eq("user_id", str(user_id))
+            .in_("status", ["draft", "pending_review", "approved"])
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+    except Exception:
+        logger.exception("post-of-the-day fallback lookup failed")
+        return None
+
+    if not rows:
+        return None
+    d = rows[0]
+    return {
+        "id": str(d["id"]),
+        "hook": d.get("hook") or "",
+        "body_excerpt": (d.get("body") or "")[:280],
+        "angle": d.get("angle"),
+        "company": d.get("source_company_name"),
+        "status": d.get("status") or "draft",
+        "scheduled_for": d.get("scheduled_for"),
+        "created_at": d.get("created_at"),
+    }
+
+
+def _build_incoming_jobs(user_id: UUID, limit: int = 10) -> list[dict[str, Any]]:
+    """Jobs with score >= 85 + no applications row + not closed/phantom.
+
+    Used by /applications "Incoming" lane so the user sees their highest-
+    quality discoveries inline on the pipeline board.
+    """
+    db = get_supabase()
+
+    # Phantom names to exclude (inline lookup — independent of Stream B)
+    try:
+        ph_rows = (
+            db.table("company_personas")
+            .select("company_name")
+            .eq("user_id", str(user_id))
+            .eq("is_phantom", True)
+            .execute()
+            .data
+        ) or []
+        phantoms = frozenset((r.get("company_name") or "").strip().lower() for r in ph_rows)
+    except Exception:
+        phantoms = frozenset()
+
+    try:
+        rows = (
+            db.table("jobs")
+            .select(
+                "id, title, company, match_score, letter_grade, archetype, "
+                "legitimacy_tier, created_at"
+            )
+            .eq("user_id", str(user_id))
+            .is_("posting_closed_at", None)
+            .is_("validation_failed", None)
+            .gte("match_score", HIGH_SCORE_THRESHOLD)
+            .order("match_score", desc=True)
+            .limit(limit * 3)  # over-fetch then post-filter
+            .execute()
+            .data
+        ) or []
+    except Exception:
+        logger.exception("incoming jobs query failed")
+        return []
+
+    job_ids = [int(r["id"]) for r in rows if r.get("id") is not None]
+    applied_ids: set[int] = set()
+    if job_ids:
+        try:
+            app_rows = (
+                db.table("applications")
+                .select("job_id")
+                .eq("user_id", str(user_id))
+                .in_("job_id", job_ids)
+                .execute()
+                .data
+            ) or []
+            for ar in app_rows:
+                if ar.get("job_id") is not None:
+                    applied_ids.add(int(ar["job_id"]))
+        except Exception:
+            logger.exception("incoming applications lookup failed")
+
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if r.get("id") in applied_ids or int(r["id"]) in applied_ids:
+            continue
+        company = (r.get("company") or "").strip()
+        if company.lower() in phantoms:
+            continue
+        if (r.get("legitimacy_tier") or "").lower() == "suspicious":
+            continue
+        out.append({
+            "job_id": int(r["id"]),
+            "title": r.get("title") or "",
+            "company": company,
+            "score": int(r.get("match_score") or 0),
+            "letter_grade": r.get("letter_grade"),
+            "archetype": r.get("archetype"),
+            "created_at": r.get("created_at"),
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+@router.get("/today/linkedin-post")
+def get_post_of_the_day(
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Latest LinkedIn draft for the user, regardless of status.
+    Surfaces on /today as the post-of-the-day card."""
+    post = _build_post_of_the_day(user.id)
+    return {"post": post}
+
+
+@router.get("/incoming")
+def get_incoming_jobs(
+    limit: int = Query(default=10, ge=1, le=50),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Jobs with score >= 85 that the user hasn't applied to yet.
+    Renders as the leftmost lane on /applications."""
+    return {"jobs": _build_incoming_jobs(user.id, limit=limit)}
+
+
+# ─── existing /today route ─────────────────────────────────────────────────
 @router.get("/today")
 def get_today_actions(
     limit: int = Query(default=DEFAULT_TOP_N, ge=1, le=20),
