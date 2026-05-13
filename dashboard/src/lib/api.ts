@@ -130,3 +130,73 @@ export function getScoreClass(score: number): string {
 export function getStatusClass(status: string): string {
   return `status-${status}` || 'status-new'
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// G8 Offer Evaluation (Tier 4) — see api/offers.py
+// ──────────────────────────────────────────────────────────────────────
+import type {
+  EvaluateOfferRequest,
+  OfferDecisionRequest,
+  OfferEvaluation,
+} from './types/offer'
+
+export async function evaluateOffer(
+  body: EvaluateOfferRequest,
+): Promise<OfferEvaluation> {
+  const res = await fetch(`${baseUrl}/offers/evaluate-offer`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const txt = await res.text()
+    throw new Error(`evaluateOffer failed (${res.status}): ${txt}`)
+  }
+  return res.json()
+}
+
+export async function fetchOfferEvaluation(
+  evaluationId: string,
+): Promise<OfferEvaluation> {
+  const res = await fetch(`${baseUrl}/offers/${evaluationId}`, {
+    headers,
+    next: { revalidate: 30 },
+  })
+  if (!res.ok) {
+    const txt = await res.text()
+    throw new Error(`fetchOfferEvaluation failed (${res.status}): ${txt}`)
+  }
+  return res.json()
+}
+
+export async function updateOfferDecision(
+  evaluationId: string,
+  body: OfferDecisionRequest,
+): Promise<{ id: string; user_decision: string; final_total_comp?: number }> {
+  const res = await fetch(`${baseUrl}/offers/${evaluationId}/decision`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const txt = await res.text()
+    throw new Error(`updateOfferDecision failed (${res.status}): ${txt}`)
+  }
+  return res.json()
+}
+
+export async function regenerateOfferEvaluation(
+  evaluationId: string,
+  force = false,
+): Promise<OfferEvaluation> {
+  const res = await fetch(`${baseUrl}/offers/${evaluationId}/regenerate`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ force }),
+  })
+  if (!res.ok) {
+    const txt = await res.text()
+    throw new Error(`regenerateOfferEvaluation failed (${res.status}): ${txt}`)
+  }
+  return res.json()
+}
