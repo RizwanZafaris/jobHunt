@@ -177,6 +177,22 @@ class Settings(BaseSettings):
     apify_token: Optional[str] = None
     serper_endpoint: str = "https://google.serper.dev/search"
 
+    # ── Firecrawl (BUG-049 pilot, 2026-05-13) ───────────────────────────────
+    # AI-powered scraper that returns clean markdown + structured JSON
+    # for JS-heavy enterprise career sites (Visa, Mastercard, etc.) that
+    # Apify's generic actors miss. Pilot scope: 5 companies, daily scrape,
+    # hard monthly budget cap.
+    # Get a key at https://firecrawl.dev/dashboard.
+    firecrawl_api_key: Optional[str] = None
+    firecrawl_base_url: str = "https://api.firecrawl.dev/v1"
+    # Hard cap — pilot pauses once we cross this in a calendar month.
+    # Hobby plan is $16/mo for 3K credits; we expect ~150 calls/mo for
+    # 5 companies × daily × 30 days, so $20 leaves headroom for retries.
+    firecrawl_monthly_budget_usd: float = 20.0
+    # Per-call cost estimate (Firecrawl bills per credit; 1 credit ≈ $0.005
+    # on the hobby plan). Updated 2026-05-13 from firecrawl.dev pricing.
+    firecrawl_cost_per_call_usd: float = 0.005
+
     # ── Email ───────────────────────────────────────────────────────────────
     sendgrid_api_key: Optional[str] = None
     digest_email_to: str = "rizwanzaffar.pk@gmail.com"
