@@ -276,6 +276,73 @@ export async function fetchCostEfficiency(
 // ──────────────────────────────────────────────────────────────────────
 import type { LinkedInDraft } from './types/linkedin'
 
+/**
+ * Map a snake_case linkedin_drafts row from PostgREST → the camelCase
+ * LinkedInDraft shape the dashboard components expect. Without this,
+ * fields like `draft.imageBrief`, `draft.sourceCompanyName`,
+ * `draft.scheduledFor`, `draft.whyItWorks` are undefined → the
+ * ImageBriefPanel never renders, the source pill shows blank, etc.
+ *
+ * Defensive against partial rows: every field that should be present
+ * gets a sensible default; unknown extras pass through.
+ */
+function mapDraftRow(row: Record<string, unknown>): LinkedInDraft {
+  const imageBriefRaw = (row.image_brief ?? row.imageBrief) as Record<string, unknown> | null | undefined
+  const imageBrief = imageBriefRaw
+    ? {
+        kind: (imageBriefRaw.kind ?? 'data_viz') as LinkedInDraft['imageBrief'] extends infer T
+          ? T extends null
+            ? never
+            : T extends { kind: infer K }
+              ? K
+              : never
+          : never,
+        prompt: String(imageBriefRaw.prompt ?? ''),
+        compositionNotes: String(
+          imageBriefRaw.composition_notes ?? imageBriefRaw.compositionNotes ?? '',
+        ),
+        dataAnchors: Array.isArray(imageBriefRaw.data_anchors ?? imageBriefRaw.dataAnchors)
+          ? (imageBriefRaw.data_anchors ?? imageBriefRaw.dataAnchors)
+          : [],
+        referenceUrl:
+          (imageBriefRaw.reference_url ?? imageBriefRaw.referenceUrl ?? null) as string | null,
+        altText: String(imageBriefRaw.alt_text ?? imageBriefRaw.altText ?? ''),
+        recommendedProvider: String(
+          imageBriefRaw.recommended_provider ?? imageBriefRaw.recommendedProvider ?? 'dall-e-3',
+        ),
+        aiDisclosureRecommended: Boolean(
+          imageBriefRaw.ai_disclosure_recommended ?? imageBriefRaw.aiDisclosureRecommended ?? false,
+        ),
+        rationale: String(imageBriefRaw.rationale ?? ''),
+      }
+    : null
+  return {
+    id: String(row.id ?? ''),
+    userId: String(row.user_id ?? row.userId ?? ''),
+    sourceCompanyId: (row.source_company_id ?? row.sourceCompanyId ?? null) as string | null,
+    sourceKnowledgeId: (row.source_knowledge_id ?? row.sourceKnowledgeId ?? null) as string | null,
+    sourceCompanyName: (row.source_company_name ?? row.sourceCompanyName ?? null) as string | null,
+    sourceUrl: (row.source_url ?? row.sourceUrl ?? null) as string | null,
+    angle: (row.angle ?? 'industry_analysis') as LinkedInDraft['angle'],
+    hook: String(row.hook ?? ''),
+    body: String(row.body ?? ''),
+    cta: (row.cta ?? null) as string | null,
+    hashtags: Array.isArray(row.hashtags) ? (row.hashtags as string[]) : [],
+    status: (row.status ?? 'draft') as LinkedInDraft['status'],
+    critique: (row.critique ?? null) as LinkedInDraft['critique'],
+    polishRound: Number(row.polish_round ?? row.polishRound ?? 0),
+    scheduledFor: (row.scheduled_for ?? row.scheduledFor ?? null) as string | null,
+    postedAt: (row.posted_at ?? row.postedAt ?? null) as string | null,
+    postedUrl: (row.posted_url ?? row.postedUrl ?? null) as string | null,
+    manualCopyAt: (row.manual_copy_at ?? row.manualCopyAt ?? null) as string | null,
+    engagementMetrics: (row.engagement_metrics ?? row.engagementMetrics ?? null) as LinkedInDraft['engagementMetrics'],
+    whyItWorks: (row.why_it_works ?? row.whyItWorks ?? null) as string | null,
+    imageBrief: imageBrief as LinkedInDraft['imageBrief'],
+    createdAt: String(row.created_at ?? row.createdAt ?? ''),
+    updatedAt: String(row.updated_at ?? row.updatedAt ?? ''),
+  }
+}
+
 export async function fetchLinkedInDrafts(): Promise<LinkedInDraft[]> {
   const res = await fetch(`${baseUrl}/linkedin/drafts`, {
     headers,
@@ -287,8 +354,71 @@ export async function fetchLinkedInDrafts(): Promise<LinkedInDraft[]> {
   // { items, total, limit, offset }. Earlier draft of this fetcher read
   // `data.drafts` which is undefined → page rendered Drafts (0) even when
   // the DB had real rows. Accept the actual shape + a few common variants.
-  if (Array.isArray(data)) return data
-  return (data.items ?? data.drafts ?? []) as LinkedInDraft[]
+  const rows = (Array.isArray(data) ? data : (data.items ?? data.drafts ?? [])) as Array<Record<string, unknown>>
+  return rows.map(mapDraftRow)
+}
+
+// ── Draft lifecycle fetchers (BUG: handlers were mocks until 2026-05-14) ─
+
+export async function patchLinkedInDraft(
+  draftId: string,
+  body: { hook?: string; body?: string; cta?: string | null; hashtags?: string[] },
+): Promise<LinkedInDraft> {
+  const res = await fetch(`${baseUrl}/linkedin/drafts/${draftId}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`patchLinkedInDraft failed (${res.status}): ${text}`)
+  }
+  return mapDraftRow(await res.json())
+}
+
+export async function approveLinkedInDraft(
+  draftId: string,
+  scheduledFor?: string | null,
+): Promise<LinkedInDraft> {
+  const res = await fetch(`${baseUrl}/linkedin/drafts/${draftId}/approve`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(scheduledFor ? { scheduled_for: scheduledFor } : {}),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`approveLinkedInDraft failed (${res.status}): ${text}`)
+  }
+  return mapDraftRow(await res.json())
+}
+
+export async function rejectLinkedInDraft(draftId: string, reason?: string): Promise<LinkedInDraft> {
+  const res = await fetch(`${baseUrl}/linkedin/drafts/${draftId}/reject`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(reason ? { reason } : {}),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`rejectLinkedInDraft failed (${res.status}): ${text}`)
+  }
+  return mapDraftRow(await res.json())
+}
+
+export async function recordCopyLinkedInDraft(draftId: string): Promise<LinkedInDraft | null> {
+  // Records manual_copy_at server-side. Non-fatal — clipboard already
+  // worked client-side, so failures here just lose the telemetry.
+  try {
+    const res = await fetch(`${baseUrl}/linkedin/drafts/${draftId}/copy`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    })
+    if (!res.ok) return null
+    return mapDraftRow(await res.json())
+  } catch {
+    return null
+  }
 }
 
 export async function fetchLinkedInSchedule(): Promise<
