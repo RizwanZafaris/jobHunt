@@ -3282,6 +3282,25 @@ async def admin_scheduler_status(_auth=Depends(verify_secret)):
     }
 
 
+@app.get("/admin/provider-health")
+async def admin_provider_health(_auth=Depends(verify_secret)):
+    """GAP-008: Surface per-provider LLM health + circuit-breaker state.
+
+    Returns rolling success_rate / avg_latency_ms / consecutive_failures
+    per provider plus the closed/open/half_open state of each circuit.
+    Lets ops see which provider is degraded before a user-visible failure.
+    Backed by the in-memory tracker in agents/llm_hardening.py — counters
+    reset on restart, which is fine for a single-process API.
+    """
+    from agents.llm_hardening import get_hardened_router
+
+    hardened = get_hardened_router()
+    return {
+        "health": hardened.health_snapshot(),
+        "circuits": hardened.circuit_snapshot(),
+    }
+
+
 @app.get("/applications/by-job/{job_id}")
 async def get_application_by_job(
     job_id: int = Path(..., ge=1),
