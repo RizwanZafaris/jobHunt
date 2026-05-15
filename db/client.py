@@ -406,9 +406,13 @@ def upload_artifact(local_path: str, remote_path: str, content_type: str = "appl
             if "Duplicate" not in str(upload_err) and "exists" not in str(upload_err).lower():
                 raise
 
-        # Return signed URL — supabase-py response shape varies by version
+        # Return signed URL — 7-day expiry (HARDEN-P0-5: was 365 days).
+        # 604800 seconds = 7 days.  After that the link is dead.
+        # Callers that need longer access should refresh via the
+        # /workspace/{id}/download endpoint which generates a fresh URL.
+        SEVEN_DAYS = 60 * 60 * 24 * 7  # 604800
         signed = db.storage.from_(ARTIFACTS_BUCKET).create_signed_url(
-            path=remote_path, expires_in=60 * 60 * 24 * 365
+            path=remote_path, expires_in=SEVEN_DAYS
         )
         # Try every known key
         if isinstance(signed, dict):
@@ -434,7 +438,7 @@ def upload_artifact(local_path: str, remote_path: str, content_type: str = "appl
                     "Authorization": f"Bearer {s.supabase_service_key}",
                     "Content-Type": "application/json",
                 },
-                json={"expiresIn": 60 * 60 * 24 * 365},
+                json={"expiresIn": 60 * 60 * 24 * 7},  # HARDEN-P0-5: 7 days
                 timeout=15,
             )
             if resp.status_code == 200:

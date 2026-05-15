@@ -45,6 +45,42 @@ DEFAULT_STALE_MINUTES = 15
 MAX_ATTEMPTS = 3
 
 
+def _sweep_stuck_resume_builds(stale_minutes: int = 30) -> int:
+    """HARDEN-BUG-402: Flip resume_builds stuck in 'running' >30 min to 'failed'.
+
+    The orphan_reaper handles jobs_runs; this handles resume_builds which
+    can also get stuck when the worker dies mid-graph.  Called from
+    reap_orphans() so both tables are swept in the same tick.
+
+    Returns count of rows swept.
+    """
+    try:
+        from db.client import get_supabase
+        from datetime import datetime, timezone, timedelta
+
+        db = get_supabase()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
+
+        stuck = db.table("resume_builds").select("id").eq("status", "running").lt("updated_at", cutoff).execute()
+        ids = [r["id"] for r in (stuck.data or [])]
+        if not ids:
+            return 0
+
+        db.table("resume_builds").update({
+            "status": "failed",
+            "error_message": "HARDEN-BUG-402: stuck-build sweep (30min timeout)",
+        }).in_("id", ids).execute()
+
+        logger.warning(
+            "HARDEN-BUG-402: swept %d stuck resume_builds (running >%dmin)",
+            len(ids), stale_minutes,
+        )
+        return len(ids)
+    except Exception:
+        logger.exception("HARDEN-BUG-402: resume_builds sweep failed")
+        return 0
+
+
 def reap_orphans(stale_minutes: int = DEFAULT_STALE_MINUTES) -> dict[str, Any]:
     """Find stale `running` rows and either requeue or mark failed.
 
@@ -61,10 +97,14 @@ def reap_orphans(stale_minutes: int = DEFAULT_STALE_MINUTES) -> dict[str, Any]:
     """
     from api.jobs_runs import find_orphans, mark_failed
 
+    # HARDEN-BUG-402: sweep stuck resume_builds in the same tick
+    swept_resume_builds = _sweep_stuck_resume_builds(stale_minutes=30)
+
     summary = {
         "scanned": 0,
         "requeued": 0,
         "marked_failed": 0,
+        "swept_resume_builds": swept_resume_builds,
         "errors": [],
     }
 
