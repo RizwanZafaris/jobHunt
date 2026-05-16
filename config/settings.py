@@ -21,11 +21,15 @@ class Settings(BaseSettings):
     # ── LLM Provider Keys ──────────────────────────────────────────────────
     # Phase 0: multi-LLM router supports 5 providers. Anthropic + OpenAI are
     # required (existing); the others are optional and only loaded when used.
+    # B-OR1: OpenRouter added as 6th provider — terminal fallback for all
+    # tiers when native keys are exhausted or failing. Optional; if not set,
+    # the hardening layer skips OR in fallback chains.
     anthropic_api_key: str
     openai_api_key: str
     google_api_key: Optional[str] = None       # Gemini
     deepseek_api_key: Optional[str] = None     # V3 + R1
     kimi_api_key: Optional[str] = None         # Moonshot K2
+    openrouter_api_key: Optional[str] = None   # OpenRouter terminal fallback
 
     # ── Agent model assignments (Phase 0: defaults preserve current behavior) ──
     # Each agent has (provider, model). Provider can be inferred from the

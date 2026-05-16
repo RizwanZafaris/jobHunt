@@ -48,6 +48,7 @@ from operator import add
 from typing import Annotated, Any, Optional, TypedDict
 
 from agents.llm_router import _parse_json_loose, get_router
+from agents.llm_hardening import get_hardened_router  # B-OR3: fallback resilience
 from db.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -451,11 +452,15 @@ async def draft_v1_node(state: LinkedInState) -> dict:
         news_block=_format_news_anchor(state),
     )
 
-    router = get_router()
+    # B-OR3: Use hardened router with OpenRouter fallback. If Anthropic
+    # is down/rate-limited, fall back to OR with the same Opus model.
+    # Fallback preserves the same quality tier; cost is ~5% higher.
+    router = get_hardened_router()
     try:
-        parsed, result = await router.ask_json(
-            provider="anthropic",
-            model=OPUS_MODEL,
+        parsed, result = await router.ask_json_with_fallback(
+            primary_provider="anthropic",
+            primary_model=OPUS_MODEL,
+            fallback_chain=[("openrouter", "anthropic/claude-opus-4-5")],
             system=DRAFT_V1_SYSTEM,
             messages=[{"role": "user", "content": user_msg}],
             max_tokens=2048,
@@ -463,7 +468,7 @@ async def draft_v1_node(state: LinkedInState) -> dict:
             agent_name="g4.draft_v1",
         )
     except Exception as e:
-        logger.exception("draft_v1 failed")
+        logger.exception("draft_v1 failed (all providers exhausted)")
         return {
             "transcript": [_make_turn(
                 "draft_v1", "anthropic", OPUS_MODEL,

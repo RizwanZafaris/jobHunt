@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from agents.llm_router import get_router, _parse_json_loose
+from agents.llm_hardening import get_hardened_router  # B-OR3: fallback resilience
 from config.settings import get_settings
 from resume_agents.g2_state import ResumeState, make_turn, truncate
 
@@ -1075,13 +1076,31 @@ exhaustively. Return strict JSON only.
     )
     max_tokens_budget = 8000 if is_reasoning_model else 2000
 
+    # B-OR3: Build provider-specific fallback chain. Each critic has a
+    # primary native provider + OpenRouter fallback with the same model.
+    # OR fallback only triggers when the native key is exhausted or the
+    # provider is unhealthy (circuit breaker open).
+    _or_fallbacks = {
+        "deepseek": ("openrouter", "deepseek/deepseek-reasoner"),
+        "moonshot": ("openrouter", "moonshot/kimi-k2.5"),
+        "anthropic": ("openrouter", "anthropic/claude-opus-4-5"),
+        "openai": ("openrouter", "openai/gpt-4.1"),
+        "google": ("openrouter", "google/gemini-2.5-pro"),
+    }
+    fallback_chain = [_or_fallbacks[provider]] if provider in _or_fallbacks else []
+
     async def _attempt_call(retry: bool) -> tuple[dict, float, int, str, str] | None:
         """Returns (parsed, cost, latency, model_used, raw_text) on parse success,
         or None to signal the caller should retry with a larger budget."""
         try:
-            result = await get_router().ask(
-                provider=provider,
-                model=model,
+            # B-OR3: Use hardened router with fallback. ask_with_fallback
+            # handles retry + circuit breaker per provider, then falls back
+            # to OR if the native provider is failing.
+            hrouter = get_hardened_router()
+            result = await hrouter.ask_with_fallback(
+                primary_provider=provider,
+                primary_model=model,
+                fallback_chain=fallback_chain,
                 system=ATS_CRITIC_SYSTEM,
                 messages=[{"role": "user", "content": user}],
                 max_tokens=max_tokens_budget * (2 if retry else 1),
