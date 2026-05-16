@@ -15,7 +15,6 @@
 import { ChangeEvent, useRef, useState } from 'react'
 import { Button } from '@/components/ui/Button'
 import { Icon } from '@/components/ui/Icon'
-import { MOCK_IMPORT_SUMMARY } from '@/lib/mock/network'
 import type { ImportSummary } from '@/lib/types/network'
 
 const ACCEPT = '.csv,text/csv'
@@ -39,12 +38,18 @@ export function LinkedInImportButton({ onSummary }: LinkedInImportButtonProps) {
     setBusy(true)
     setErrMsg(null)
     try {
-      // TODO: replace with real upload to /network/import/linkedin-csv.
-      // const fd = new FormData(); fd.append('file', file)
-      // const res = await fetch('/api/proxy/network/import/linkedin-csv', { method: 'POST', body: fd })
-      // const summary: ImportSummary = await res.json()
-      await new Promise((r) => setTimeout(r, 800))
-      onSummary(MOCK_IMPORT_SUMMARY)
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await fetch('/api/proxy/network/import/linkedin-csv', {
+        method: 'POST',
+        body: fd,
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Upload failed (${res.status})`)
+      }
+      const summary: ImportSummary = await res.json()
+      onSummary(summary)
     } catch (err) {
       setErrMsg(err instanceof Error ? err.message : 'Upload failed.')
     } finally {

@@ -23,7 +23,7 @@ import { TextInput } from '@/components/ui/Field'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { IntroDraftModal } from '@/components/network/IntroDraftModal'
 import { LinkedInImportButton } from '@/components/network/LinkedInImportButton'
-import { MOCK_INTRO_DRAFT } from '@/lib/mock/network'
+import { submitDraftIntro } from '@/lib/api'
 import type {
   ImportSummary,
   IntroDraft,
@@ -73,11 +73,12 @@ export interface NetworkClientProps {
   people: Person[]
 }
 
-// TODO: replace with POST /network/draft-intro once that endpoint ships.
-// Today the mock returns after a 600ms delay so the loading state is visible.
-async function stubDraftIntro(_path: ReferralPath): Promise<IntroDraft> {
-  await new Promise((r) => setTimeout(r, 600))
-  return MOCK_INTRO_DRAFT
+// B9: real draft intro via POST /network/draft-intro
+async function draftIntroForPath(path: ReferralPath): Promise<IntroDraft> {
+  return submitDraftIntro({
+    target_company_id: path.target_company_id,
+    introducer_person_id: path.path[1].id,
+  })
 }
 
 export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps) {
@@ -280,7 +281,7 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
       <IntroDraftModal
         open={activePath !== null}
         path={activePath}
-        draftIntro={stubDraftIntro}
+        draftIntro={draftIntroForPath}
         onClose={() => setActivePath(null)}
       />
     </>

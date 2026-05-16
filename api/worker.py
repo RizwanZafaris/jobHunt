@@ -40,8 +40,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import sys
 import traceback
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -597,6 +599,94 @@ def worker_run_legitimacy(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+# ─── SIGTERM guard (B7) ───────────────────────────────────────────────────
+#
+# Railway sends SIGTERM before SIGKILL during deploys. Without a handler,
+# in-flight resume_builds are abandoned in status='running' and the next
+# orphan_reaper sweep flips them to 'failed' with a NULL error (see
+# docs/INCIDENTS/2026_05_11_mass_fail.md). This handler gives us ~10s to
+# mark them cleanly before the process dies.
+
+_SIGTERM_HANDLED = False
+
+
+def _sweep_in_flight_on_shutdown() -> dict[str, int]:
+    """Flip all status='running' resume_builds + jobs_runs to failed.
+
+    Returns a dict with counts for telemetry. Never raises — the worker is
+    dying anyway; we log and continue.
+    """
+    counts = {"resume_builds_flipped": 0, "jobs_runs_flipped": 0}
+    try:
+        from db.client import get_supabase
+        db = get_supabase()
+
+        # 1. Resume builds — anything still running.
+        stuck_builds = (
+            db.table("resume_builds")
+            .select("id")
+            .eq("status", "running")
+            .execute()
+        ).data or []
+
+        for row in stuck_builds:
+            try:
+                db.table("resume_builds").update({
+                    "status": "failed",
+                    "error": "worker_sigterm_received",
+                    "finalized_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", row["id"]).execute()
+                counts["resume_builds_flipped"] += 1
+            except Exception:
+                pass  # best-effort; worker is dying
+
+        logger.warning(
+            f"SIGTERM sweep: flipped {counts['resume_builds_flipped']} "
+            "resume_build(s) to failed"
+        )
+
+        # 2. Jobs runs — anything started but not finished.
+        stuck_jobs = (
+            db.table("jobs_runs")
+            .select("id")
+            .eq("status", "running")
+            .execute()
+        ).data or []
+
+        for row in stuck_jobs:
+            try:
+                db.table("jobs_runs").update({
+                    "status": "failed",
+                    "last_error": "worker_sigterm_received",
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", row["id"]).execute()
+                counts["jobs_runs_flipped"] += 1
+            except Exception:
+                pass
+
+        if counts["jobs_runs_flipped"]:
+            logger.warning(
+                f"SIGTERM sweep: flipped {counts['jobs_runs_flipped']} "
+                "jobs_run(s) to failed"
+            )
+
+    except Exception:
+        logger.exception("SIGTERM sweep failed (continuing shutdown)")
+
+    return counts
+
+
+def _on_sigterm(signum: int, frame: Any) -> None:
+    """Handler for SIGTERM — sweep in-flight builds then exit cleanly."""
+    global _SIGTERM_HANDLED
+    if _SIGTERM_HANDLED:
+        return
+    _SIGTERM_HANDLED = True
+    logger.warning("worker received SIGTERM — sweeping in-flight builds")
+    _sweep_in_flight_on_shutdown()
+    sys.exit(0)
+
+
 # ─── Worker entrypoint ────────────────────────────────────────────────────
 
 
@@ -626,6 +716,13 @@ def _start_worker():
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    # B7: register SIGTERM handler so Railway deploys don't orphan
+    # in-flight resume_builds. Must happen before worker.work() blocks.
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except Exception:
+        pass  # Windows or restricted environments
 
     logger.info(
         f"jobHunt worker starting (queue={queue.name}, redis={redis_conn})"

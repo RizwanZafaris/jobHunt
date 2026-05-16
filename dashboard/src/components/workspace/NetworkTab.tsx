@@ -26,7 +26,7 @@ import { Pill } from '@/components/ui/Pill'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { IntroDraftModal } from '@/components/network/IntroDraftModal'
 import { LinkedInImportButton } from '@/components/network/LinkedInImportButton'
-import { MOCK_INTRO_DRAFT } from '@/lib/mock/network'
+import { submitDraftIntro } from '@/lib/api'
 import type { ImportSummary, IntroDraft, ReferralPath } from '@/lib/types/network'
 
 const KIND_LABEL: Record<string, string> = {
@@ -40,12 +40,13 @@ const KIND_LABEL: Record<string, string> = {
   referenced_in_outreach: 'outreach',
 }
 
-// TODO: replace with the real /network/draft-intro endpoint when it
-// lands in api/network.py. Today we use the same stub the /network
-// page uses (consistent UX across the two surfaces).
-async function stubDraftIntro(_path: ReferralPath): Promise<IntroDraft> {
-  await new Promise((r) => setTimeout(r, 600))
-  return MOCK_INTRO_DRAFT
+// B9: real draft intro via POST /network/draft-intro. Mirrors the wiring
+// in NetworkClient — same shape, same backend call, same UX on both surfaces.
+async function draftIntroForPath(path: ReferralPath): Promise<IntroDraft> {
+  return submitDraftIntro({
+    target_company_id: path.target_company_id,
+    introducer_person_id: path.path[1].id,
+  })
 }
 
 export interface NetworkTabProps {
@@ -162,7 +163,7 @@ export function NetworkTab({
       <IntroDraftModal
         open={activePath !== null}
         path={activePath}
-        draftIntro={stubDraftIntro}
+        draftIntro={draftIntroForPath}
         onClose={() => setActivePath(null)}
       />
     </>
