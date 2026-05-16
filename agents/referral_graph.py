@@ -371,19 +371,23 @@ class ReferralGraph:
         return results[:limit]
 
     def _target_company_name(self, target_company_id: str) -> Optional[str]:
-        """Best-effort lookup of the target company's display name."""
+        """Best-effort lookup of the target company's display name.
+
+        B11: was querying a non-existent `target_companies` table. The
+        real schema marks targets on the `companies` table via `is_target`.
+        target_company_id here is `companies.id`.
+        """
         try:
             res = (
-                self._db.table("target_companies")
-                .select("name, company_name, company_id")
+                self._db.table("companies")
+                .select("name")
                 .eq("id", target_company_id)
                 .limit(1)
                 .execute()
             )
             rows = res.data or []
             if rows:
-                row = rows[0]
-                return row.get("name") or row.get("company_name")
+                return rows[0].get("name")
         except Exception:
             return None
         return None
@@ -687,11 +691,15 @@ class ReferralGraph:
         """
         run_started = _utcnow_iso()
 
-        # Pull this user's targets. Schema: at minimum (id, name|company_name).
+        # B11: was querying non-existent `target_companies`. Real schema:
+        # targets are `companies` rows with is_target=true for this user.
+        # target_company_id elsewhere is companies.id.
         targets = (
-            self._db.table("target_companies")
-            .select("id, name, company_name, company_id")
+            self._db.table("companies")
+            .select("id, name")
             .eq("user_id", str(self.user_id))
+            .eq("is_target", True)
+            .neq("is_phantom", True)
             .execute()
         ).data or []
 
@@ -701,7 +709,7 @@ class ReferralGraph:
 
         for tgt in targets:
             tgt_id = str(tgt["id"])
-            tgt_name = tgt.get("name") or tgt.get("company_name") or ""
+            tgt_name = tgt.get("name") or ""
             if not tgt_name:
                 continue
 

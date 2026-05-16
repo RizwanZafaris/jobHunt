@@ -13,7 +13,6 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { TodayActionList } from '@/components/today/TodayActionList'
 import { fetchTodayActions, fetchPostOfTheDay, type FetchTodayResponse, type PostOfTheDay } from '@/lib/api'
 import { PostOfTheDayCard } from '@/components/linkedin/PostOfTheDayCard'
-import { MOCK_TODAY_ACTIONS } from '@/lib/mock/today'
 import type { TodayAction, TodayActionKind } from '@/lib/types/today'
 
 export const dynamic = 'force-dynamic'
@@ -35,7 +34,6 @@ interface FetchOutcome {
   total: number
   counts: Record<string, number>
   errorMessage: string | null
-  isMock: boolean
 }
 
 async function loadTodayActions(): Promise<FetchOutcome> {
@@ -47,28 +45,28 @@ async function loadTodayActions(): Promise<FetchOutcome> {
       total: data.total ?? 0,
       counts: data.counts ?? {},
       errorMessage: null,
-      isMock: false,
     }
   } catch (err) {
-    // Backend unreachable in dev / first deploy — render the mock so the page
-    // is still useful, but surface a small banner so the user knows.
+    // B10: previously fell back to MOCK_TODAY_ACTIONS which hid the B1
+    // worker outage for 5 days. Now surface the failure honestly so the
+    // user knows the backend is unreachable.
     const message = err instanceof Error ? err.message : String(err)
     return {
       ok: false,
-      actions: MOCK_TODAY_ACTIONS,
-      total: MOCK_TODAY_ACTIONS.length,
+      actions: [],
+      total: 0,
       counts: {},
       errorMessage: message,
-      isMock: true,
     }
   }
 }
 
 export default async function TodayPage() {
-  const [{ actions, total, errorMessage, isMock }, post] = await Promise.all([
+  const [{ actions, total, errorMessage, ok }, post] = await Promise.all([
     loadTodayActions(),
     fetchPostOfTheDay().catch(() => null as PostOfTheDay | null),
   ])
+  const showError = !ok && errorMessage !== null
   const visible = actions.slice(0, VISIBLE_LIMIT)
   const overflow = Math.max(0, total - visible.length)
 
@@ -117,13 +115,13 @@ export default async function TodayPage() {
         description="The shortest list of moves the agent thinks will move the needle. Top of the stack first."
       />
 
-      {isMock && errorMessage && (
+      {showError && (
         <div
           role="alert"
-          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-2xs text-fg-muted"
+          className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-2xs text-fg-muted"
         >
-          <span className="font-medium text-fg">Live data unavailable</span>
-          <span className="text-fg-subtle"> — showing example actions.</span>
+          <span className="font-medium text-fg">Couldn&rsquo;t reach the backend</span>
+          <span className="text-fg-subtle"> — refresh to retry.</span>
           <span className="block text-fg-subtle/80 mt-0.5">{errorMessage}</span>
         </div>
       )}
