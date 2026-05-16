@@ -95,6 +95,44 @@ export async function triggerBossAudit() {
   return res.json()
 }
 
+export async function fetchNetworkPeople() {
+  const res = await fetch(`${baseUrl}/network/people`, { headers, next: { revalidate: 60 } })
+  if (!res.ok) throw new Error(`Failed to fetch network people (${res.status})`)
+  return res.json()
+}
+
+export async function fetchTargetCoverage() {
+  const res = await fetch(`${baseUrl}/network/target-coverage`, { headers, next: { revalidate: 60 } })
+  if (!res.ok) throw new Error(`Failed to fetch target coverage (${res.status})`)
+  return res.json()
+}
+
+export async function fetchNetworkPathsForTarget(targetCompanyId: string) {
+  const res = await fetch(
+    `${baseUrl}/network/paths?target_company_id=${encodeURIComponent(targetCompanyId)}`,
+    { headers, next: { revalidate: 60 } },
+  )
+  if (!res.ok) throw new Error(`Failed to fetch network paths (${res.status})`)
+  return res.json()
+}
+
+export async function submitDraftIntro(data: {
+  target_company_id: string
+  introducer_person_id: string
+  target_role_summary?: string
+}) {
+  const res = await fetch(`${baseUrl}/network/draft-intro`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(data),
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Failed to draft intro (${res.status})`)
+  }
+  return res.json()
+}
+
 export async function evaluateJob(data: {
   jd_text: string
   company: string
