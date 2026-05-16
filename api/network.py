@@ -266,19 +266,28 @@ def create_edge(
 def target_coverage(
     user: User = Depends(get_current_user),
 ) -> list[TargetCoverageRow]:
-    """Per target_company: how many 1-hop / 2-hop intro paths exist + top path.
+    """Per target company: how many 1-hop / 2-hop intro paths exist + top path.
 
     This is the headline number on the /network surface. Pulls every
-    target_company for the user, runs find_paths(max_hops=2) for each,
-    aggregates counts.
+    company the user has marked is_target=true and not a phantom, runs
+    find_paths(max_hops=2) for each, aggregates counts.
+
+    B11: was querying a non-existent `target_companies` table → 500 on
+    every request. The real schema marks targets via `companies.is_target`;
+    `target_company_employees` joins by `target_company_id = companies.id`.
     """
     db = get_supabase()
     targets = (
-        db.table("target_companies")
-        .select("id, name, company_name")
+        db.table("companies")
+        .select("id, name")
         .eq("user_id", str(user.id))
+        .eq("is_target", True)
+        .neq("is_phantom", True)
         .execute()
     ).data or []
+
+    if not targets:
+        return []  # empty state, not 500
 
     rg = ReferralGraph(user.id)
     out: list[TargetCoverageRow] = []
@@ -297,7 +306,7 @@ def target_coverage(
         c2 = sum(1 for p in paths if p.hop_count == 2)
         out.append(TargetCoverageRow(
             target_company_id=UUID(str(t["id"])),
-            name=t.get("name") or t.get("company_name"),
+            name=t.get("name"),
             paths_count_1hop=c1,
             paths_count_2hop=c2,
             top_path=paths[0] if paths else None,

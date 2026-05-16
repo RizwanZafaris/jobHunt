@@ -315,6 +315,28 @@ async def pick_angle_node(state: LinkedInState) -> dict:
     chosen_kid = parsed.get("chosen_knowledge_id")
     chosen_company = parsed.get("chosen_company_name")
 
+    # B14: When the LLM omits chosen_company_name from its JSON reply but
+    # still picked a knowledge row, look up the company from that row so
+    # persist_node never writes NULL into linkedin_drafts.source_company_name.
+    # First try the in-memory candidate_knowledge list (avoids a DB round trip
+    # in the common case), then fall back to a company_knowledge query.
+    if not chosen_company and chosen_kid:
+        for k in state.get("candidate_knowledge") or []:
+            if k.get("id") == chosen_kid and k.get("company_name"):
+                chosen_company = k["company_name"]
+                break
+        if not chosen_company:
+            try:
+                rs = (
+                    get_supabase().table("company_knowledge")
+                    .select("company_name")
+                    .eq("id", chosen_kid).limit(1).execute()
+                )
+                row = (rs.data or [{}])[0]
+                chosen_company = row.get("company_name") or chosen_company
+            except Exception:
+                pass
+
     # Resolve chosen_company_id from name if possible.
     chosen_company_id: Optional[str] = None
     if chosen_company:
