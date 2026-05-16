@@ -209,6 +209,16 @@ class Settings(BaseSettings):
     environment: str = "development"
     secret_key: str = "change-me-in-production"
 
+    # B3: CORS origins — comma-separated list of allowed frontend domains.
+    # Defaults to the production Vercel dashboard. In dev (localhost:3000)
+    # set CORS_ALLOWED_ORIGINS=http://localhost:3000.
+    # NEVER leave as wildcard ("*") in production — that's a credential-exfil
+    # vector when combined with allow_credentials=True.
+    cors_allowed_origins: str = (
+        "https://dashboard-eight-theta-t11irr7qdu.vercel.app,"
+        "https://dashboard-rizwanzaffarpk-3779s-projects.vercel.app"
+    )
+
     # ── Scheduling ──────────────────────────────────────────────────────────
     job_scout_time: str = "09:00"
     boss_agent_time: str = "21:00"
