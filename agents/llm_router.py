@@ -42,7 +42,9 @@ Provider = Literal["anthropic", "openai", "google", "deepseek", "moonshot", "ope
 # Used only for cost telemetry. Don't gate logic on these numbers.
 PRICING_PER_1M: dict[str, tuple[float, float]] = {
     # Anthropic
-    "claude-opus-4-7":            (15.0, 75.0),
+    # 2026-05-17: removed "claude-opus-4-7" entry — that id 404s at the
+    # API and keeping it in the price table let dead callers look healthy
+    # in cost telemetry while every request silently failed.
     "claude-opus-4-5-20251101":   (15.0, 75.0),
     "claude-opus-4-5":            (15.0, 75.0),
     "claude-sonnet-4-6":          (3.0, 15.0),
