@@ -40,11 +40,13 @@ export default function KeywordExplorer({ keywords, categoryColors }: Props) {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search keyword..."
+            aria-label="Filter keywords by text"
             className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg placeholder:text-fg-subtle focus:outline-none focus:ring-1 focus:ring-blue-500 w-48"
           />
           <select
             value={category}
             onChange={(e) => setCategory(e.target.value)}
+            aria-label="Filter by keyword category"
             className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
           >
             <option value="all">All categories</option>
@@ -57,6 +59,7 @@ export default function KeywordExplorer({ keywords, categoryColors }: Props) {
           <select
             value={minStrength}
             onChange={(e) => setMinStrength(Number(e.target.value))}
+            aria-label="Filter by minimum keyword strength"
             className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
           >
             <option value={0}>Any strength</option>

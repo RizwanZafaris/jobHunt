@@ -76,6 +76,7 @@ export default function RecentCallsTable({ initial, warning: initialWarning }: P
  reload({ provider: e.target.value })
  }}
  disabled={loading}
+ aria-label="Filter recent calls by LLM provider"
  className="text-xs bg-surface-raised border border-border-strong rounded-lg px-2 py-1.5 text-fg"
  >
  <option value="all">All providers</option>
@@ -106,6 +107,7 @@ export default function RecentCallsTable({ initial, warning: initialWarning }: P
  reload({ limit: n })
  }}
  disabled={loading}
+ aria-label="Number of recent calls to display"
  className="text-xs bg-surface-raised border border-border-strong rounded-lg px-2 py-1.5 text-fg"
  >
  <option value={50}>50</option>
