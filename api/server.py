@@ -9,7 +9,7 @@ import asyncio
 import logging
 import re
 from typing import Optional
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,10 +57,22 @@ async def _startup_scheduler():
         logger.error("[BUG-053] Failed to start scheduler: %s", e)
 
 
-# CORS for Vercel dashboard
+# B3: CORS — read allowed origins from env (never wildcard in production).
+# The cors_allowed_origins setting is a comma-separated string.
+# Browsers reject credentialed requests when ACAO="*", so we MUST use
+# explicit origins + allow_credentials together.
+from config.settings import get_settings as _get_settings
+_cors_origins = [o.strip() for o in _get_settings().cors_allowed_origins.split(",") if o.strip()]
+# Dev fallback: if RIZWAN_SINGLE_USER_MODE=1 and no explicit origins, allow localhost.
+# Settings doesn't expose this as a field, so we read it from the env directly.
+_single_user_mode = os.getenv("RIZWAN_SINGLE_USER_MODE", "1") == "1"
+if not _cors_origins and _single_user_mode:
+    _cors_origins = ["http://localhost:3000"]
+logger.info("B3: CORS allowed origins: %s", _cors_origins)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Restrict to your Vercel domain in production
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -3299,6 +3311,121 @@ async def admin_provider_health(_auth=Depends(verify_secret)):
         "health": hardened.health_snapshot(),
         "circuits": hardened.circuit_snapshot(),
     }
+
+
+# ── B1: Worker queue diagnostics ──────────────────────────────────────────
+
+@app.get("/admin/worker-status")
+async def admin_worker_status(_auth=Depends(verify_secret)):
+    """B1: Diagnostic endpoint for the RQ worker queue.
+
+    Returns:
+      - redis_ping: bool — can we reach Redis?
+      - queue_name: str — the RQ queue name
+      - queue_depth: int — how many jobs are waiting
+      - last_dequeued_at: str|None — most recent started_at in jobs_runs
+      - running_jobs: list — rows with status='running'
+      - old_queued_count: int — queued rows >60 min old (orphan-reaper target)
+    """
+    from api.queue import _get_redis  # local import: avoids module-load cycle with worker
+    from db.client import get_supabase
+    try:
+        redis_conn = _get_redis()
+        redis_ping = redis_conn.ping()
+    except Exception as e:
+        logger.error("B1: Redis ping failed: %s", e)
+        redis_conn = None
+        redis_ping = False
+
+    queue_name = os.environ.get("RQ_QUEUE_NAME", "jobhunt")
+    queue_depth = 0
+    try:
+        if redis_ping and redis_conn is not None:
+            queue_depth = redis_conn.llen(f"rq:queue:{queue_name}")
+    except Exception:
+        pass
+
+    db = get_supabase()
+
+    # Last dequeued job
+    last_dequeued = (db.table("jobs_runs")
+        .select("started_at")
+        .not_.is_("started_at", "null")
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute())
+    last_dequeued_at = last_dequeued.data[0]["started_at"] if last_dequeued.data else None
+
+    # Currently running jobs
+    running = (db.table("jobs_runs")
+        .select("id, kind, started_at, attempts, status")
+        .eq("status", "running")
+        .execute())
+
+    # Queued jobs older than 60 min
+    cutoff_60 = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
+    old_queued = (db.table("jobs_runs")
+        .select("count", head=True)
+        .eq("status", "queued")
+        .is_("started_at", "null")
+        .lt("created_at", cutoff_60)
+        .execute())
+
+    return {
+        "redis_ping": redis_ping,
+        "queue_name": queue_name,
+        "queue_depth": queue_depth,
+        "last_dequeued_at": last_dequeued_at,
+        "running_jobs": running.data or [],
+        "old_queued_count": old_queued.data[0]["count"] if old_queued.data else 0,
+    }
+
+
+@app.post("/admin/requeue-stuck")
+async def admin_requeue_stuck(_auth=Depends(verify_secret)):
+    """B1: Idempotent one-shot to re-enqueue stale queued rows.
+
+    Re-enqueues every jobs_runs row with:
+      - status='queued'
+      - started_at IS NULL
+      - created_at < NOW() - 30 min
+      - attempts < 3
+
+    Safe to call multiple times. Returns {"requeued": N}.
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+
+    rows = (db.table("jobs_runs")
+        .select("id, kind, payload, attempts, user_id")
+        .eq("status", "queued")
+        .is_("started_at", "null")
+        .lt("created_at", cutoff)
+        .lt("attempts", 3)
+        .execute())
+
+    from api.queue import _get_queue  # local: avoids module-load cycle
+    from api.orphan_reaper import _KIND_TO_WORKER
+
+    requeued = 0
+    for row in (rows.data or []):
+        worker_func = _KIND_TO_WORKER.get(row.get("kind"))
+        if not worker_func:
+            logger.error("B1: unknown kind=%s for run %s — skipping", row.get("kind"), row["id"])
+            continue
+        try:
+            q = _get_queue()
+            q.enqueue(worker_func, row["id"])
+            db.table("jobs_runs").update({
+                "attempts": (row.get("attempts") or 0) + 1,
+            }).eq("id", row["id"]).execute()
+            requeued += 1
+        except Exception as e:
+            logger.error("B1: failed to requeue jobs_run %s: %s", row["id"], e)
+
+    logger.info("B1: requeue-stuck requeued %d rows", requeued)
+    return {"requeued": requeued}
 
 
 @app.get("/applications/by-job/{job_id}")
