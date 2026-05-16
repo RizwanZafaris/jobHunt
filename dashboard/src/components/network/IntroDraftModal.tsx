@@ -207,7 +207,7 @@ export function IntroDraftModal({ open, path, draftIntro, onClose }: IntroDraftM
               )}
               {typeof draft.cost_usd === 'number' && (
                 <p className="text-2xs text-fg-subtle tnum">
-                  Drafted with {draft.model ?? 'claude-opus-4-7'} ·{' '}
+                  Drafted with {draft.model ?? 'claude-opus-4-5'} ·{' '}
                   ${draft.cost_usd.toFixed(4)}
                 </p>
               )}
