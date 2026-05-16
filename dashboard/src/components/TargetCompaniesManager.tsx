@@ -151,11 +151,13 @@ export default function TargetCompaniesManager({ initial }: Props) {
  value={filter}
  onChange={(e) => setFilter(e.target.value)}
  placeholder="Search company..."
+ aria-label="Filter target companies by name"
  className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg w-48"
  />
  <select
  value={filterCat}
  onChange={(e) => setFilterCat(e.target.value)}
+ aria-label="Filter target companies by category"
  className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
  >
  <option value="all">All categories</option>
@@ -219,17 +221,20 @@ export default function TargetCompaniesManager({ initial }: Props) {
  value={newName}
  onChange={(e) => setNewName(e.target.value)}
  placeholder="Company name"
+ aria-label="New target company name"
  className="text-xs bg-surface-raised border border-border-strong rounded px-2 py-1.5 text-fg"
  />
  <input
  value={newCategory}
  onChange={(e) => setNewCategory(e.target.value)}
  placeholder="Category"
+ aria-label="New target company category"
  className="text-xs bg-surface-raised border border-border-strong rounded px-2 py-1.5 text-fg"
  />
  <select
  value={newPriority}
  onChange={(e) => setNewPriority(e.target.value)}
+ aria-label="New target company priority"
  className="text-xs bg-surface-raised border border-border-strong rounded px-2 py-1.5 text-fg"
  >
  <option value="high">High</option>
@@ -240,6 +245,7 @@ export default function TargetCompaniesManager({ initial }: Props) {
  value={newCareersUrl}
  onChange={(e) => setNewCareersUrl(e.target.value)}
  placeholder="Careers URL"
+ aria-label="New target company careers URL"
  className="text-xs bg-surface-raised border border-border-strong rounded px-2 py-1.5 text-fg"
  />
  </div>
@@ -295,6 +301,7 @@ export default function TargetCompaniesManager({ initial }: Props) {
  <select
  value={c.priority}
  onChange={(e) => changePriority(c, e.target.value)}
+ aria-label={`Priority for ${c.name}`}
  className={`text-2xs border px-1.5 py-0 rounded ${PRIORITY_COLOR[c.priority] || PRIORITY_COLOR.medium}`}
  >
  <option value="high">high</option>

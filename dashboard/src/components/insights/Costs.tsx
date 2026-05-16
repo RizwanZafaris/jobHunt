@@ -180,7 +180,7 @@ export async function Costs() {
             ) : logStats ? (
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
                 <dt className="text-fg-subtle">Total rows</dt>
-                <dd className="text-fg font-mono tnum">{logStats.total_rows.toLocaleString()}</dd>
+                <dd className="text-fg font-mono tnum">{(logStats.total_rows ?? 0).toLocaleString()}</dd>
                 {logStats.rows_last_24h !== undefined && (
                   <>
                     <dt className="text-fg-subtle">Last 24 h</dt>

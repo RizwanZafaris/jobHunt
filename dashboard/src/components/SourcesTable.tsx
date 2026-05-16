@@ -37,11 +37,13 @@ export default function SourcesTable({ documents }: Props) {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search filename..."
+            aria-label="Filter source documents by filename"
             className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg w-48"
           />
           <select
             value={classFilter}
             onChange={(e) => setClassFilter(e.target.value)}
+            aria-label="Filter source documents by document class"
             className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
           >
             <option value="all">All classes</option>
