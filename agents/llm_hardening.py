@@ -122,7 +122,7 @@ class ProviderHealthTracker:
     def __init__(self):
         self._health: dict[Provider, ProviderHealth] = {
             p: ProviderHealth(provider=p)
-            for p in ("anthropic", "openai", "google", "deepseek", "moonshot")
+            for p in ("anthropic", "openai", "google", "deepseek", "moonshot", "openrouter")
         }
 
     def get(self, provider: Provider) -> ProviderHealth:
@@ -230,7 +230,7 @@ class HardenedLLMRouter:
         self._health = ProviderHealthTracker()
         self._circuits: dict[Provider, CircuitBreaker] = {
             p: CircuitBreaker(provider=p) for p in (
-                "anthropic", "openai", "google", "deepseek", "moonshot"
+                "anthropic", "openai", "google", "deepseek", "moonshot", "openrouter"
             )
         }
 
@@ -344,7 +344,20 @@ class HardenedLLMRouter:
         attempts: list[dict] = []
         all_providers = [(primary_provider, primary_model)] + list(fallback_chain)
 
-        for prov, mdl in all_providers:
+        # B-OR2: Skip providers that have no API key configured. This avoids
+        # wasting retries on providers that can never succeed, and ensures
+        # the fallback chain only contains viable candidates.
+        keyed_providers = [
+            (prov, mdl) for prov, mdl in all_providers
+            if self._router.has_key(prov)
+        ]
+        if not keyed_providers:
+            raise HardenedLLMError(
+                "No providers in fallback chain have API keys configured",
+                health=self._health.snapshot(),
+            )
+
+        for prov, mdl in keyed_providers:
             try:
                 result = await self.ask_safe(
                     provider=prov,
@@ -379,22 +392,32 @@ class HardenedLLMRouter:
 
     # ─── Feature: auto-select best available provider ────────────────────
     # Tier mapping: quality level → (preferred provider, model, fallbacks)
+    # B-OR2: OpenRouter is the terminal fallback for every tier. When all
+    # native keys fail (exhausted, rate-limited, or misconfigured), OR
+    # provides a safety net. The OR entry uses the routed model id format
+    # ("anthropic/claude-opus-4-5") so OR knows which native provider to
+    # target. If the OR key is not configured, the entry is silently
+    # skipped at call time (ask_safe catches the RuntimeError and moves on).
     _TIER_MAP: dict[str, tuple[tuple[Provider, str], list[tuple[Provider, str]]]] = {
         "high": (
             ("anthropic", "claude-opus-4-5"),
-            [("openai", "gpt-4.1"), ("google", "gemini-2.5-pro")],
+            [("openai", "gpt-4.1"), ("google", "gemini-2.5-pro"),
+             ("openrouter", "anthropic/claude-opus-4-5")],
         ),
         "medium": (
             ("openai", "gpt-4.1"),
-            [("anthropic", "claude-sonnet-4-6"), ("google", "gemini-2.5-pro")],
+            [("anthropic", "claude-sonnet-4-6"), ("google", "gemini-2.5-pro"),
+             ("openrouter", "openai/gpt-4.1")],
         ),
         "low": (
             ("deepseek", "deepseek-chat"),
-            [("moonshot", "kimi-k2.5"), ("openai", "gpt-4o")],
+            [("moonshot", "kimi-k2.5"), ("openai", "gpt-4o"),
+             ("openrouter", "deepseek/deepseek-chat")],
         ),
         "json": (  # optimized for JSON-mode reliability
             ("openai", "gpt-4.1"),
-            [("deepseek", "deepseek-chat"), ("moonshot", "kimi-k2.5")],
+            [("deepseek", "deepseek-chat"), ("moonshot", "kimi-k2.5"),
+             ("openrouter", "openai/gpt-4.1")],
         ),
     }
 

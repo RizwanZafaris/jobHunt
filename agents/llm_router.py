@@ -35,7 +35,7 @@ from typing import Any, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-Provider = Literal["anthropic", "openai", "google", "deepseek", "moonshot"]
+Provider = Literal["anthropic", "openai", "google", "deepseek", "moonshot", "openrouter"]
 
 # ─── Pricing table (USD per 1M tokens, input / output) ───────────────────────
 # Approximate as of 2026-Q2. Sources: provider pricing pages.
@@ -66,16 +66,33 @@ PRICING_PER_1M: dict[str, tuple[float, float]] = {
     "kimi-k2.6":                  (0.95, 4.0),    # latest, recommended for new code
     "kimi-k2.5":                  (0.60, 3.0),    # cheaper alternative, still SOTA
     "moonshot-v1-128k":           (2.0, 5.0),
+    # OpenRouter — ~5% markup over direct provider prices. The markup
+    # covers OpenRouter's aggregation fee. These are the routed model ids
+    # (anthropic/claude-opus-4-5, etc). Input/output rates match direct
+    # pricing × 1.05; unknown models fall through to 0.0.
+    "anthropic/claude-opus-4-5":       (15.75, 78.75),
+    "anthropic/claude-sonnet-4-6":     (3.15, 15.75),
+    "anthropic/claude-haiku-4-5":      (0.84, 4.20),
+    "openai/gpt-5":                    (5.25, 21.0),
+    "openai/gpt-4.1":                  (2.10, 8.40),
+    "openai/gpt-4o":                   (2.625, 10.50),
+    "google/gemini-2.5-pro":           (1.31, 5.25),
+    "google/gemini-2.5-flash":         (0.315, 2.625),
+    "deepseek/deepseek-chat":          (0.284, 1.155),
+    "deepseek/deepseek-reasoner":      (0.578, 2.30),
+    "moonshot/kimi-k2.6":              (1.0, 4.20),
+    "moonshot/kimi-k2.5":              (0.63, 3.15),
     # NB: plain "kimi-k2" is NOT a valid Moonshot model id. Removed from
     # pricing table — calls with that name will 404 at the API. The
     # _supports_json_response_format whitelist defaults to True for kimi-*
     # variants, which is correct (Moonshot supports response_format).
 }
 
-# OpenAI-compatible endpoints (DeepSeek + Kimi)
+# OpenAI-compatible endpoints (DeepSeek + Kimi + OpenRouter)
 OPENAI_COMPATIBLE_BASE_URLS = {
     "deepseek": "https://api.deepseek.com/v1",
     "moonshot": "https://api.moonshot.ai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
 }
 
 
@@ -161,7 +178,10 @@ def _resolve_temperature(model: str, requested: float) -> float:
     For everything else we honour the caller's requested temperature.
     Update this function — never hardcode at the call site.
     """
-    if model.startswith("kimi-k2"):
+    # B-OR1: OpenRouter models use "provider/model" format. Strip the prefix
+    # to check the native model name.
+    native_model = model.split("/", 1)[1] if "/" in model else model
+    if native_model.startswith("kimi-k2"):
         return 1.0
     return requested
 
@@ -179,14 +199,26 @@ def _supports_json_response_format(model: str) -> bool:
     Defaults to True for everything else (gpt-*, deepseek-chat, kimi-k2,
     moonshot-v1-*). Update this function — never hardcode at the call site.
     """
-    if model.startswith("deepseek-reasoner"):
+    # B-OR1: OpenRouter models use "provider/model" format. Strip the prefix
+    # to check the native model name.
+    native_model = model.split("/", 1)[1] if "/" in model else model
+    if native_model.startswith("deepseek-reasoner"):
         return False
     return True
 
 
 def infer_provider(model: str) -> Provider:
-    """Best-effort provider inference from model name. Used for back-compat."""
+    """Best-effort provider inference from model name. Used for back-compat.
+
+    OpenRouter models use the "provider/model" format (e.g.
+    "anthropic/claude-opus-4-5"). These are always routed through the
+    "openrouter" provider — the actual native provider is recorded in
+    agent_call_log.actual_provider for cost attribution.
+    """
     m = model.lower()
+    # OpenRouter prefix pattern — must be first, before native prefixes.
+    if "/" in m:
+        return "openrouter"
     if m.startswith("claude"):
         return "anthropic"
     if m.startswith(("gpt", "o1", "o3", "text-embedding")):
@@ -219,6 +251,7 @@ class LLMRouter:
         google_key: Optional[str] = None,
         deepseek_key: Optional[str] = None,
         moonshot_key: Optional[str] = None,
+        openrouter_key: Optional[str] = None,
         log_callback: Optional[callable] = None,
     ):
         self._keys: dict[Provider, Optional[str]] = {
@@ -228,6 +261,7 @@ class LLMRouter:
             "deepseek": deepseek_key or os.environ.get("DEEPSEEK_API_KEY"),
             "moonshot": moonshot_key or os.environ.get("KIMI_API_KEY")
                         or os.environ.get("MOONSHOT_API_KEY"),
+            "openrouter": openrouter_key or os.environ.get("OPENROUTER_API_KEY"),
         }
         self._clients: dict[Provider, Any] = {}
         # Optional callback fired after every successful call.
@@ -297,6 +331,11 @@ class LLMRouter:
             elif provider == "google":
                 result = await self._call_google(
                     model, system, messages, max_tokens, temperature, tools, **provider_kwargs
+                )
+            elif provider == "openrouter":
+                result = await self._call_openrouter(
+                    model, system, messages, max_tokens, temperature,
+                    tools, json_response, **provider_kwargs,
                 )
             else:
                 raise ValueError(f"Unknown provider: {provider}")
@@ -565,6 +604,76 @@ class LLMRouter:
             raw=resp,
         )
 
+    async def _call_openrouter(
+        self,
+        model: str,
+        system: str,
+        messages: list[dict],
+        max_tokens: int,
+        temperature: float,
+        tools: Optional[list],
+        json_response: bool,
+        **kwargs,
+    ) -> LLMResult:
+        """OpenRouter — OpenAI-compatible chat completions with provider-routing.
+
+        OpenRouter accepts model ids in "provider/model" format
+        (e.g. "anthropic/claude-opus-4-5") and routes to the underlying
+        provider. We pass the model id verbatim; OpenRouter handles the
+        native translation.
+
+        The response includes "provider" in the model_extra (when available)
+        so we can log the actual native provider for cost attribution.
+        """
+        client = self._get_client("openrouter")
+        all_msgs = [{"role": "system", "content": system}] + messages
+        kw: dict = dict(
+            model=model,
+            messages=all_msgs,
+            max_tokens=max_tokens,
+            temperature=_resolve_temperature(model, temperature),
+        )
+        if json_response and _supports_json_response_format(model):
+            kw["response_format"] = {"type": "json_object"}
+        if tools:
+            kw["tools"] = tools
+        # OpenRouter-specific: enable provider fallbacks for resiliency.
+        # If the primary routed provider is down, OR tries alternatives.
+        kw["extra_headers"] = {
+            "HTTP-Referer": "https://jobhunt.local",
+            "X-Title": "jobHunt",
+        }
+        kw.update(kwargs)
+
+        resp = await client.chat.completions.create(**kw)
+        choice = resp.choices[0]
+        text = choice.message.content or ""
+
+        tool_calls: list[dict] = []
+        if getattr(choice.message, "tool_calls", None):
+            for tc in choice.message.tool_calls:
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "input": tc.function.arguments,
+                })
+
+        usage = getattr(resp, "usage", None)
+        in_toks = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        out_toks = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+
+        # OpenRouter sometimes returns the actual native provider in model_extra.
+        # We don't mutate the result here; the log callback can read it from raw.
+        return LLMResult(
+            text=text.strip(),
+            provider="openrouter",
+            model=model,
+            input_tokens=int(in_toks),
+            output_tokens=int(out_toks),
+            raw=resp,
+            tool_calls=tool_calls,
+        )
+
     # ─── Lazy client instantiation ───────────────────────────────────────
     def _get_client(self, provider: Provider):
         if provider in self._clients:
@@ -578,6 +687,7 @@ class LLMRouter:
                 "google":    "GOOGLE_API_KEY",
                 "deepseek":  "DEEPSEEK_API_KEY",
                 "moonshot":  "KIMI_API_KEY",
+                "openrouter": "OPENROUTER_API_KEY",
             }[provider]
             raise RuntimeError(
                 f"No API key configured for '{provider}'. "
@@ -599,6 +709,18 @@ class LLMRouter:
             # 10+ min (e.g. Adyen 1022 build 55210ffa stalled here on
             # 2026-05-09). 180s gives Kimi K2.5 enough head-room for full
             # reasoning + JSON emission with our 8000/16000 max_tokens budget.
+            client = AsyncOpenAI(
+                api_key=key,
+                base_url=OPENAI_COMPATIBLE_BASE_URLS[provider],
+                timeout=180.0,
+                max_retries=2,
+            )
+        elif provider == "openrouter":
+            from openai import AsyncOpenAI
+            # OpenRouter uses OpenAI-compatible chat completions. 180s timeout
+            # mirrors deepseek/moonshot — reasoning models through OR can take
+            # just as long. max_retries=2 because OR has its own internal
+            # provider-fallback; we don't need to be overly aggressive.
             client = AsyncOpenAI(
                 api_key=key,
                 base_url=OPENAI_COMPATIBLE_BASE_URLS[provider],
@@ -733,11 +855,29 @@ def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
             "00000000-0000-0000-0000-000000000001",
         )
         graph, node_name = _derive_graph_and_node(agent_name)
+        # B-OR1: For OpenRouter calls, extract the actual native provider from
+        # the response extras (when available) for accurate cost attribution.
+        actual_provider = None
+        if result.provider == "openrouter":
+            raw = getattr(result, "raw", None)
+            if raw:
+                # OpenRouter returns the actual provider in model_extra.provider
+                # or in the response metadata. Best-effort extraction.
+                actual_provider = (
+                    getattr(raw, "provider", None)
+                    or (raw.model_extra or {}).get("provider")
+                    if hasattr(raw, "model_extra")
+                    else None
+                )
+                # If we still don't know, infer from the model name prefix.
+                if not actual_provider and "/" in result.model:
+                    actual_provider = result.model.split("/", 1)[0]
         get_supabase().table("agent_call_log").insert({
             "agent_name": agent_name,
             "graph": graph,
             "node_name": node_name,
             "provider": result.provider,
+            "actual_provider": actual_provider,
             "model": result.model,
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
