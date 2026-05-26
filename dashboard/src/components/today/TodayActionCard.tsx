@@ -13,6 +13,7 @@
 'use client'
 
 import Link from 'next/link'
+import { useState } from 'react'
 import { clsx } from 'clsx'
 import { Icon, IconName } from '@/components/ui/Icon'
 import { Pill } from '@/components/ui/Pill'
@@ -21,6 +22,56 @@ import type {
   TodayActionKind,
   TodayActionState,
 } from '@/lib/types/today'
+
+// 2026-05-26 stale-card fix — dismiss reasons match server-side enum
+// (api/actions.py::_VALID_REASONS). Adding/removing one here requires
+// the matching server change too.
+type DismissReason =
+  | 'not_interested'
+  | 'maybe_later'
+  | 'wrong_seniority'
+  | 'wrong_location'
+  | 'wrong_comp'
+  | 'closed_already'
+  | 'other'
+
+interface DismissOption {
+  label: string
+  reason: DismissReason
+  snoozeDays?: number  // omit for permanent dismissal
+}
+
+const DISMISS_OPTIONS: DismissOption[] = [
+  { label: 'Not interested', reason: 'not_interested' },
+  { label: 'Snooze 3 days',  reason: 'maybe_later', snoozeDays: 3 },
+  { label: 'Snooze 1 week',  reason: 'maybe_later', snoozeDays: 7 },
+  { label: 'Wrong seniority', reason: 'wrong_seniority' },
+  { label: 'Wrong location',  reason: 'wrong_location' },
+  { label: 'Already closed',  reason: 'closed_already' },
+]
+
+async function dismissJob(
+  jobId: number,
+  reason: DismissReason,
+  snoozeDays?: number,
+): Promise<void> {
+  const r = await fetch(`/api/proxy/actions/today/dismiss/${jobId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason, snooze_days: snoozeDays ?? null }),
+  })
+  if (!r.ok) {
+    const body = await r.text().catch(() => '')
+    throw new Error(`dismiss failed: ${r.status} ${body}`)
+  }
+}
+
+function ageDays(iso?: string): number | null {
+  if (!iso) return null
+  const created = new Date(iso).getTime()
+  if (Number.isNaN(created)) return null
+  return Math.max(0, Math.floor((Date.now() - created) / (1000 * 60 * 60 * 24)))
+}
 
 const STATE_BAR_CLS: Record<TodayActionState, string> = {
   ready: 'bg-success',
@@ -93,6 +144,46 @@ export function TodayActionCard({ action }: TodayActionCardProps) {
   const { kind, title, subtitle, state, primary, secondary, meta } = action
   const iconName = KIND_ICON[kind]
 
+  // 2026-05-26 stale-card fix UX state
+  const [dismissOpen, setDismissOpen] = useState(false)
+  const [dismissing, setDismissing] = useState(false)
+  const [dismissed, setDismissed] = useState(false)
+  const [dismissError, setDismissError] = useState<string | null>(null)
+
+  const jobId = meta?.jobId
+  const isDismissibleKind =
+    kind === 'resume_ready' ||
+    kind === 'score_high_no_resume' ||
+    kind === 'score_below_threshold'
+  const showDismiss = isDismissibleKind && jobId !== undefined
+
+  const days = ageDays(meta?.createdAt)
+  const showAgePill = days !== null && days >= 3
+  const showSurfacePill =
+    meta?.surfaceCount !== undefined && meta.surfaceCount >= 3
+
+  async function handleDismiss(opt: DismissOption) {
+    if (!jobId || dismissing) return
+    setDismissing(true)
+    setDismissError(null)
+    try {
+      await dismissJob(jobId, opt.reason, opt.snoozeDays)
+      setDismissed(true)
+      setDismissOpen(false)
+    } catch (e) {
+      setDismissError(e instanceof Error ? e.message : 'dismiss failed')
+    } finally {
+      setDismissing(false)
+    }
+  }
+
+  // Optimistic hide after successful dismissal — the card stays in the
+  // server response until the user's next /today fetch, but they don't
+  // need to see it again right now.
+  if (dismissed) {
+    return null
+  }
+
   return (
     <article
       aria-labelledby={`action-${action.id}-title`}
@@ -151,6 +242,25 @@ export function TodayActionCard({ action }: TodayActionCardProps) {
               {meta?.date && (
                 <span className="text-2xs text-fg-subtle tnum">{meta.date}</span>
               )}
+              {/* 2026-05-26 stale-card fix — visible "shown for N days"
+                 + "surfaced N×" pills give the user a hint of why a card
+                 is sinking down /today. */}
+              {showAgePill && (
+                <span
+                  title={`Job first surfaced ${days} day${days === 1 ? '' : 's'} ago. Older cards rank lower on /today.`}
+                  className="text-2xs text-fg-subtle tnum"
+                >
+                  {days}d
+                </span>
+              )}
+              {showSurfacePill && (
+                <span
+                  title={`Shown ${meta?.surfaceCount}× without action. Repeatedly-shown cards rank lower.`}
+                  className="text-2xs text-fg-subtle tnum"
+                >
+                  ×{meta?.surfaceCount}
+                </span>
+              )}
             </div>
             <h3
               id={`action-${action.id}-title`}
@@ -165,7 +275,45 @@ export function TodayActionCard({ action }: TodayActionCardProps) {
         </div>
 
         {/* Actions */}
-        <div className="flex items-center gap-2 shrink-0 sm:ml-auto">
+        <div className="flex items-center gap-2 shrink-0 sm:ml-auto relative">
+          {/* 2026-05-26 stale-card fix — dismiss / snooze popover.
+              Only shown for job kinds with a jobId in meta. */}
+          {showDismiss && (
+            <>
+              <button
+                type="button"
+                aria-label="Dismiss this card"
+                title="Not interested / snooze"
+                onClick={() => setDismissOpen(v => !v)}
+                disabled={dismissing}
+                className="inline-flex items-center justify-center w-7 h-7 rounded-md text-fg-subtle hover:text-fg hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+              >
+                <Icon name="x" size={14} />
+              </button>
+              {dismissOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-9 z-10 w-48 rounded-md border border-border bg-surface shadow-lg p-1"
+                >
+                  {DISMISS_OPTIONS.map(opt => (
+                    <button
+                      key={`${opt.reason}-${opt.snoozeDays ?? 'perm'}`}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => handleDismiss(opt)}
+                      disabled={dismissing}
+                      className="block w-full text-left text-xs px-2 py-1.5 rounded hover:bg-surface-raised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                  {dismissError && (
+                    <p className="text-2xs text-danger px-2 py-1">{dismissError}</p>
+                  )}
+                </div>
+              )}
+            </>
+          )}
           {secondary && (secondary.href ? (
             <Link
               href={secondary.href}

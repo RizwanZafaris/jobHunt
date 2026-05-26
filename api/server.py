@@ -165,6 +165,17 @@ app.include_router(analytics_router)
 from api.traces import router as traces_router  # noqa: E402  Stream C
 app.include_router(traces_router)
 
+# 2026-05-26: Buffer integration. Two routers because the dashboard treats
+# /buffer/* (account-level) and /linkedin/drafts/*/schedule-to-buffer
+# (per-draft) as separate IA. Both are guarded by the same gate trio:
+# OAuth connected + autopost enabled + draft approved.
+from api.buffer import (  # noqa: E402
+    router as buffer_router,
+    linkedin_buffer_router,
+)
+app.include_router(buffer_router)
+app.include_router(linkedin_buffer_router)
+
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 def verify_secret(x_secret_key: str = Header(None)):

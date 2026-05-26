@@ -43,7 +43,8 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from api.context import get_current_user
 from api.users import User
@@ -60,6 +61,23 @@ MIN_SCORE_THRESHOLD = 80           # below this, jobs don't show on /today
 STALE_APPLICATION_DAYS = 7
 STALE_PERSONA_DAYS = 14
 DEFAULT_TOP_N = 8
+
+# ─── stale-card fix tunables (2026-05-26) ─────────────────────────────────
+# Root cause being addressed: the Adyen evergreen-posting bug — same job
+# card persists on /today for weeks because nothing decays it.
+#
+# Three independent forces now push old cards down/off /today:
+#   1. Age penalty       — _rank() reads job created_at, penalizes by day
+#   2. Surface penalty   — _rank() reads jobs.surface_count (migration 037)
+#   3. User dismissal    — job_card_dismissals filter (migration 036)
+#
+# Defaults chosen so a 95-score, 14-day-old, surfaced-7-times card sinks
+# below a fresh 87-score card. Tune empirically once we have telemetry.
+CARD_AGE_PENALTY_PER_DAY = 1       # subtracts 1 from effective score per day
+CARD_AGE_PENALTY_CAP_DAYS = 30     # don't penalize beyond 30 days
+CARD_SURFACE_PENALTY_PER_VIEW = 2  # subtracts 2 from effective score per surface after the first
+CARD_SURFACE_PENALTY_CAP = 30      # don't penalize beyond 15 surfaces
+CARD_DORMANT_THRESHOLD = 7         # >=7 surfaces with no action = dormant (hidden unless ?show_all=true)
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────
@@ -122,6 +140,10 @@ def _action(
     company: Optional[str] = None,
     date_str: Optional[str] = None,
     letter_grade: Optional[str] = None,
+    # 2026-05-26 stale-card fix — these flow into meta for _rank() to read
+    job_id: Optional[int] = None,         # enables dismiss action
+    created_at: Optional[str] = None,     # age penalty input
+    surface_count: Optional[int] = None,  # lifecycle penalty input
 ) -> dict[str, Any]:
     """Build one TodayAction matching the TS shape exactly."""
     primary: dict[str, Any] = {"label": primary_label}
@@ -156,6 +178,14 @@ def _action(
     # /today chip group can filter without a second fetch.
     if letter_grade:
         meta["letterGrade"] = letter_grade
+    # 2026-05-26 stale-card fix — meta fields consumed by _rank() and
+    # by the dashboard dismiss button.
+    if job_id is not None:
+        meta["jobId"] = int(job_id)
+    if created_at:
+        meta["createdAt"] = created_at
+    if surface_count is not None:
+        meta["surfaceCount"] = int(surface_count)
     if meta:
         out["meta"] = meta
     return out
@@ -237,10 +267,97 @@ def _build_linkedin_post_due(user_id: UUID) -> Optional[dict[str, Any]]:
     )
 
 
+def _active_dismissed_job_ids(user_id: UUID) -> set[int]:
+    """Job IDs the user has dismissed (and not yet snooze-expired).
+
+    Reads job_card_dismissals (migration 036). Defensive — DB error
+    returns empty set so /today never blackouts because of this filter.
+
+    Filter logic:
+      • snoozed_until IS NULL          → permanent dismissal, always filter
+      • snoozed_until >  now()         → snooze still active, filter
+      • snoozed_until <= now()         → snooze expired, do NOT filter
+                                         (re-surface the card to give it
+                                         another shot)
+    """
+    try:
+        rows = (
+            get_supabase()
+            .table("job_card_dismissals")
+            .select("job_id, snoozed_until")
+            .eq("user_id", str(user_id))
+            .execute()
+            .data
+        ) or []
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(
+            "dismissals lookup failed (no filter applied): %s", e
+        )
+        return set()
+
+    now_iso = _utcnow().isoformat()
+    out: set[int] = set()
+    for r in rows:
+        snooze = r.get("snoozed_until")
+        # Active filter: NULL (permanent) OR snooze hasn't elapsed yet.
+        if snooze is None or snooze > now_iso:
+            jid = r.get("job_id")
+            if jid is not None:
+                out.add(int(jid))
+    return out
+
+
+def _bump_surface_counters(user_id: UUID, job_ids: list[int]) -> None:
+    """Increment surface_count + stamp last_surfaced_at for shown jobs.
+
+    Called AFTER /today returns its card list. Best-effort fire-and-forget:
+    if the bump fails, the user still got their cards and the next bump
+    will catch up. Tracking is for ranking, not correctness.
+
+    Uses an RPC-style update (one round-trip per call). At top-N=8 this
+    is 8 UPDATEs; acceptable. Could be optimized to a single CASE WHEN
+    if it becomes a bottleneck.
+
+    Migration 037 added the columns + default 0.
+    """
+    if not job_ids:
+        return
+    db = get_supabase()
+    now_iso = _utcnow().isoformat()
+    try:
+        # Postgres-side increment via RPC would be cleaner; PostgREST
+        # doesn't expose a stored procedure here, so we read-modify-write.
+        # Race-condition tolerance: if two /today calls fire concurrently,
+        # we might under-count by 1. That's a non-issue for ranking.
+        rows = (
+            db.table("jobs")
+            .select("id, surface_count, first_surfaced_at")
+            .eq("user_id", str(user_id))
+            .in_("id", job_ids)
+            .execute()
+            .data
+        ) or []
+        for r in rows:
+            jid = r.get("id")
+            if jid is None:
+                continue
+            current = int(r.get("surface_count") or 0)
+            payload: dict[str, Any] = {
+                "surface_count": current + 1,
+                "last_surfaced_at": now_iso,
+            }
+            if not r.get("first_surfaced_at"):
+                payload["first_surfaced_at"] = now_iso
+            db.table("jobs").update(payload).eq("id", jid).execute()
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("surface counter bump failed (non-fatal): %s", e)
+
+
 def _build_job_actions(
     user_id: UUID,
     *,
     include_suspicious: bool = False,
+    show_dormant: bool = False,
 ) -> list[dict[str, Any]]:
     """resume_ready + score_high_no_resume + score_below_threshold.
 
@@ -280,7 +397,10 @@ def _build_job_actions(
         .select(
             "id, title, company, match_score, resume_generated_at, "
             "posting_closed_at, validation_status, confidence_score, "
-            "validation_failed, letter_grade, legitimacy_tier, legitimacy_score"
+            "validation_failed, letter_grade, legitimacy_tier, legitimacy_score, "
+            # 2026-05-26 stale-card fix: surface created_at + surface_count
+            # so _rank() can apply age + lifecycle penalties (migration 037).
+            "created_at, first_surfaced_at, last_surfaced_at, surface_count"
         )
         .eq("user_id", str(user_id))
         .is_("posting_closed_at", None)
@@ -295,6 +415,36 @@ def _build_job_actions(
     ).data or []
     if not job_rows:
         return []
+
+    # 2026-05-26 stale-card Fix 2: filter user-dismissed/snoozed jobs.
+    # Read once, filter all kinds.
+    dismissed_ids = _active_dismissed_job_ids(user_id)
+    if dismissed_ids:
+        before = len(job_rows)
+        job_rows = [r for r in job_rows if int(r["id"]) not in dismissed_ids]
+        dropped = before - len(job_rows)
+        if dropped:
+            logger.info(
+                "actions: dropped %d dismissed/snoozed job(s) from /today",
+                dropped,
+            )
+
+    # 2026-05-26 stale-card Fix 3: filter dormant cards (surface_count >= threshold)
+    # unless explicitly requested via ?show_all=true. Dormant = user has
+    # been shown the card N times without acting, system stops surfacing.
+    if not show_dormant:
+        before = len(job_rows)
+        job_rows = [
+            r for r in job_rows
+            if int(r.get("surface_count") or 0) < CARD_DORMANT_THRESHOLD
+        ]
+        dropped = before - len(job_rows)
+        if dropped:
+            logger.info(
+                "actions: hid %d dormant job card(s) (surface_count >= %d). "
+                "Use ?show_all=true to surface.",
+                dropped, CARD_DORMANT_THRESHOLD,
+            )
 
     if not include_suspicious:
         before = len(job_rows)
@@ -363,6 +513,10 @@ def _build_job_actions(
         # /today chip filter can narrow the visible list.
         letter_grade = j.get("letter_grade")
 
+        # 2026-05-26: capture the stale-card fix inputs once per job
+        created_at = j.get("created_at")
+        surface_count = int(j.get("surface_count") or 0)
+
         if has_resume:
             out.append(_action(
                 id=f"job-{job_id}-ready",
@@ -377,6 +531,9 @@ def _build_job_actions(
                 score=score,
                 company=company,
                 letter_grade=letter_grade,
+                job_id=job_id,
+                created_at=created_at,
+                surface_count=surface_count,
             ))
         elif score >= HIGH_SCORE_THRESHOLD:
             out.append(_action(
@@ -391,6 +548,9 @@ def _build_job_actions(
                 score=score,
                 company=company,
                 letter_grade=letter_grade,
+                job_id=job_id,
+                created_at=created_at,
+                surface_count=surface_count,
             ))
         else:
             # 80-84 — surface but muted.
@@ -405,6 +565,9 @@ def _build_job_actions(
                 score=score,
                 company=company,
                 letter_grade=letter_grade,
+                job_id=job_id,
+                created_at=created_at,
+                surface_count=surface_count,
             ))
     return out
 
@@ -590,13 +753,64 @@ _KIND_PRIORITY = {
 }
 
 
+def _effective_score(meta: dict[str, Any]) -> int:
+    """Compute an effective ranking score with stale-card penalties applied.
+
+    Fix 1 (age penalty): each day old subtracts CARD_AGE_PENALTY_PER_DAY,
+    capped at CARD_AGE_PENALTY_CAP_DAYS.
+
+    Fix 3 (surface penalty): each prior surface beyond the first subtracts
+    CARD_SURFACE_PENALTY_PER_VIEW, capped at CARD_SURFACE_PENALTY_CAP views.
+
+    Returns the effective score (negative of which is the rank key — higher
+    effective = earlier in queue).
+
+    Example for a 95-score Adyen card after 14 days + 10 surfaces:
+        base = 95
+        age_penalty     = min(14, 30) * 1 = 14
+        surface_penalty = min(max(10-1, 0), 30) * 2 = 18
+        effective       = 95 - 14 - 18 = 63
+    A fresh 88-score job:
+        effective = 88 - 0 - 0 = 88   (wins)
+    """
+    base = int(meta.get("score") or 0)
+
+    age_penalty = 0
+    created_at = meta.get("createdAt")
+    if created_at:
+        try:
+            created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            days_old = (_utcnow() - created_dt).days
+            age_penalty = min(max(days_old, 0), CARD_AGE_PENALTY_CAP_DAYS) * CARD_AGE_PENALTY_PER_DAY
+        except (ValueError, AttributeError):
+            pass  # malformed timestamp — no penalty rather than crashing the page
+
+    surface_penalty = 0
+    sc = meta.get("surfaceCount")
+    if sc is not None:
+        # First surface is free; subsequent surfaces accrue penalty.
+        extra_surfaces = max(int(sc) - 1, 0)
+        surface_penalty = min(extra_surfaces, CARD_SURFACE_PENALTY_CAP) * CARD_SURFACE_PENALTY_PER_VIEW
+
+    return base - age_penalty - surface_penalty
+
+
 def _rank(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Stable sort by (kind priority, descending score for jobs, ascending date for stale)."""
+    """Stable sort by (kind priority, descending effective score, ascending date).
+
+    2026-05-26 stale-card fix: now uses _effective_score() which applies
+    age + surface-count penalties. Old, repeatedly-shown cards naturally
+    sink below fresh ones even at higher raw match_score.
+
+    Non-job kinds (linkedin_post_due, persona_stale, follow_up_*) carry
+    no createdAt/surfaceCount in meta, so _effective_score returns their
+    raw score (0 if absent) — they continue to rank purely by KIND_PRIORITY.
+    """
     def key(a: dict[str, Any]) -> tuple:
         kind = a.get("kind", "")
         meta = a.get("meta") or {}
-        # Higher score → earlier within the same kind for job kinds.
-        score_key = -int(meta.get("score") or 0)
+        # Higher effective score → earlier within the same kind.
+        score_key = -_effective_score(meta)
         # Older date → earlier within stale_application.
         date_key = meta.get("date") or ""
         return (_KIND_PRIORITY.get(kind, 99), score_key, date_key)
@@ -778,9 +992,24 @@ def get_today_actions(
             "Default false (hidden) — useful for debugging the agent."
         ),
     ),
+    show_all: bool = Query(
+        default=False,
+        description=(
+            "2026-05-26 stale-card fix: bypass dormant filter "
+            "(jobs.surface_count >= CARD_DORMANT_THRESHOLD). Default false. "
+            "Used by 'Show all' toggle in the dashboard."
+        ),
+    ),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Return the ranked action queue for /today."""
+    """Return the ranked action queue for /today.
+
+    2026-05-26: three stale-card forces now decay old cards:
+      1. _rank() applies age + surface penalties (Fix 1 + Fix 3)
+      2. _build_job_actions() filters dismissed/snoozed (Fix 2)
+      3. _build_job_actions() filters dormant unless show_all=true (Fix 3)
+    After the response is built, surface counters bump (fire-and-forget).
+    """
     user_id = user.id
     actions: list[dict[str, Any]] = []
 
@@ -802,7 +1031,9 @@ def get_today_actions(
 
     try:
         actions.extend(_build_job_actions(
-            user_id, include_suspicious=include_suspicious,
+            user_id,
+            include_suspicious=include_suspicious,
+            show_dormant=show_all,
         ))
     except Exception:
         logger.exception("job actions builder failed")
@@ -824,9 +1055,206 @@ def get_today_actions(
     for a in ranked:
         counts[a["kind"]] = counts.get(a["kind"], 0) + 1
 
+    # 2026-05-26: bump surface_count for every job card the user is about
+    # to see. Best-effort; non-fatal failure. This is what powers Fix 3's
+    # lifecycle penalty on subsequent /today calls.
+    surfaced_job_ids: list[int] = []
+    for a in top:
+        meta = a.get("meta") or {}
+        jid = meta.get("jobId")
+        if jid is not None and a.get("kind", "").startswith(("score_", "resume_")):
+            try:
+                surfaced_job_ids.append(int(jid))
+            except (TypeError, ValueError):
+                continue
+    if surfaced_job_ids:
+        _bump_surface_counters(user_id, surfaced_job_ids)
+
     return {
         "actions": top,
         "total": len(ranked),
         "counts": counts,
         "generated_at": _utcnow().isoformat(),
     }
+
+
+# ─── Dismiss / snooze (Fix 2 — 2026-05-26) ────────────────────────────────
+
+
+class DismissBody(BaseModel):
+    """Payload for POST /actions/today/dismiss/{job_id}.
+
+    snooze_days: None = permanent dismissal (the card is hidden forever)
+                 >0   = re-surface after N days
+    reason: optional categorical reason for analytics
+    notes:  optional free-form text
+    """
+    snooze_days: Optional[int] = Field(
+        default=None, ge=1, le=365,
+        description="1-365 to snooze, None/omit for permanent dismissal"
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description="Categorical: not_interested | maybe_later | wrong_seniority | "
+                    "wrong_location | wrong_comp | closed_already | other"
+    )
+    notes: Optional[str] = Field(default=None, max_length=1000)
+
+
+_VALID_REASONS = {
+    "not_interested", "maybe_later", "wrong_seniority",
+    "wrong_location", "wrong_comp", "closed_already", "other",
+}
+
+
+@router.post("/today/dismiss/{job_id}")
+def dismiss_today_card(
+    job_id: int,
+    body: DismissBody,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Hide a job card from /today.
+
+    Idempotent — calling twice on the same job_id updates the existing
+    dismissal row rather than creating a duplicate (uq_user_job unique).
+
+    Permanent dismissal: body = { } or { reason: "not_interested" }
+    Snooze 7 days:       body = { snooze_days: 7, reason: "maybe_later" }
+    """
+    if body.reason and body.reason not in _VALID_REASONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"reason must be one of: {sorted(_VALID_REASONS)}",
+        )
+
+    # Verify the job exists and belongs to the user (defense in depth — RLS
+    # would also block, but a 404 is clearer than a silent insert failure).
+    job_check = (
+        get_supabase()
+        .table("jobs")
+        .select("id")
+        .eq("id", job_id)
+        .eq("user_id", str(user.id))
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    if not job_check:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+
+    snoozed_until = None
+    if body.snooze_days:
+        snoozed_until = (_utcnow() + timedelta(days=body.snooze_days)).isoformat()
+
+    payload = {
+        "user_id": str(user.id),
+        "job_id": job_id,
+        "dismissed_at": _utcnow().isoformat(),
+        "snoozed_until": snoozed_until,
+        "reason": body.reason,
+        "notes": body.notes,
+    }
+
+    # Upsert on (user_id, job_id) — see uq_user_job in migration 036.
+    try:
+        get_supabase().table("job_card_dismissals").upsert(
+            payload, on_conflict="user_id,job_id"
+        ).execute()
+    except Exception as e:
+        logger.exception("dismiss upsert failed for job %s", job_id)
+        raise HTTPException(status_code=500, detail=f"dismissal write failed: {e}")
+
+    return {
+        "ok": True,
+        "job_id": job_id,
+        "dismissed": True,
+        "snoozed_until": snoozed_until,
+    }
+
+
+@router.delete("/today/dismiss/{job_id}")
+def undo_dismiss_today_card(
+    job_id: int,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Undo dismissal — the job card will re-surface on next /today.
+
+    Useful for the "Show dismissed" tab + per-card "Undo" button.
+    """
+    try:
+        get_supabase().table("job_card_dismissals").delete().eq(
+            "user_id", str(user.id)
+        ).eq("job_id", job_id).execute()
+    except Exception as e:
+        logger.exception("dismiss delete failed for job %s", job_id)
+        raise HTTPException(status_code=500, detail=f"undo failed: {e}")
+    return {"ok": True, "job_id": job_id, "restored": True}
+
+
+@router.get("/today/dismissed")
+def list_dismissed_cards(
+    limit: int = Query(default=50, ge=1, le=200),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """List the user's active dismissals + snoozed-but-not-expired rows.
+
+    Powers the "Manage dismissed" tab in the dashboard so the user can
+    undo individual dismissals without remembering job IDs.
+    """
+    try:
+        rows = (
+            get_supabase()
+            .table("job_card_dismissals")
+            .select("job_id, dismissed_at, snoozed_until, reason, notes")
+            .eq("user_id", str(user.id))
+            .order("dismissed_at", desc=True)
+            .limit(limit)
+            .execute()
+            .data
+        ) or []
+    except Exception as e:
+        logger.exception("list dismissed failed")
+        raise HTTPException(status_code=500, detail=f"list failed: {e}")
+
+    # Enrich each row with job title/company so the UI doesn't need a join.
+    job_ids = [int(r["job_id"]) for r in rows if r.get("job_id") is not None]
+    job_meta: dict[int, dict] = {}
+    if job_ids:
+        try:
+            job_rows = (
+                get_supabase()
+                .table("jobs")
+                .select("id, title, company, posting_closed_at")
+                .eq("user_id", str(user.id))
+                .in_("id", job_ids)
+                .execute()
+                .data
+            ) or []
+            job_meta = {int(j["id"]): j for j in job_rows}
+        except Exception:
+            logger.exception("dismissed jobs metadata lookup failed (continuing)")
+
+    now_iso = _utcnow().isoformat()
+    out = []
+    for r in rows:
+        jid = int(r["job_id"])
+        j = job_meta.get(jid) or {}
+        snooze = r.get("snoozed_until")
+        if snooze is None:
+            status = "dismissed_permanently"
+        elif snooze > now_iso:
+            status = "snoozed_active"
+        else:
+            status = "snooze_expired"
+        out.append({
+            "job_id": jid,
+            "title": j.get("title"),
+            "company": j.get("company"),
+            "job_closed": j.get("posting_closed_at") is not None,
+            "dismissed_at": r.get("dismissed_at"),
+            "snoozed_until": snooze,
+            "reason": r.get("reason"),
+            "notes": r.get("notes"),
+            "status": status,
+        })
+    return {"dismissals": out, "total": len(out)}
