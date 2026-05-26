@@ -247,46 +247,51 @@ class TestConfidenceFilterLegacyRows:
     PostgREST client honors at runtime.
     """
 
-    def test_or_filter_pattern_present_in_source(self):
-        """Belt-and-braces: grep the source to ensure the OR pattern is
-        used. If a future refactor accidentally re-tightens this filter,
-        this test catches it before deploy."""
-        import inspect
-        src = inspect.getsource(A._build_job_actions)
-        assert 'confidence_score.is.null' in src, (
-            "Expected OR filter pattern 'confidence_score.is.null,"
-            "confidence_score.gte.50' — legacy v1 rows must pass."
-        )
-        assert 'confidence_score.gte.50' in src, (
-            "v2-validated rows must still gate at >= 50."
-        )
-
     def test_strict_not_null_filter_removed(self):
-        """Negative assertion — the old strict filter is gone."""
+        """The original tight filter (NOT NULL AND >= 50) must stay gone."""
         import inspect
         src = inspect.getsource(A._build_job_actions)
-        # The old line was: .not_.is_("confidence_score", None)
-        # Should no longer be present.
         assert '.not_.is_("confidence_score"' not in src, (
             "The strict `.not_.is_('confidence_score', None)` filter "
             "was re-introduced — this regresses the 2026-05-26 hotfix "
             "and will hide all legacy v1 jobs from /today."
         )
 
-    def test_defensive_select_fallback_present(self):
-        """The SELECT must have a fallback path for when migration 037
-        columns are missing. Without this, the entire job query 400s and
-        every job section on /today renders empty."""
+    def test_safe_select_uses_only_proven_columns(self):
+        """Hotfix #4 (2026-05-26): SELECT must use ONLY columns proven
+        to exist on the jobs table (per /api/proxy/jobs probe). Adding
+        columns that don't exist causes PostgREST 400, swallowed by the
+        try/except, returns empty list, blank /today."""
         import inspect
         src = inspect.getsource(A._build_job_actions)
-        assert "_FULL_SELECT" in src, (
-            "Defensive _FULL_SELECT constant missing — without it the "
-            "query can't gracefully fall back to a legacy SELECT when "
-            "migration 037 hasn't been applied."
+        assert "_SAFE_SELECT" in src, (
+            "_SAFE_SELECT constant missing — the SELECT must use a "
+            "verified column whitelist."
         )
-        assert "_LEGACY_SELECT" in src, (
-            "Defensive _LEGACY_SELECT constant missing."
-        )
-        assert "surface_count" in src and "does not exist" in src, (
-            "Defensive fallback should catch column-missing errors."
+        # The forbidden columns (don't exist on jobs table in production)
+        # must NOT appear in any SELECT statement inside _build_job_actions.
+        # They CAN appear in setdefault() calls (padding for downstream code).
+        # Specifically check the _SAFE_SELECT block.
+        # Extract just the _SAFE_SELECT assignment.
+        import re
+        m = re.search(r'_SAFE_SELECT\s*=\s*\(([^)]+)\)', src, re.DOTALL)
+        assert m, "_SAFE_SELECT assignment not found"
+        select_cols = m.group(1)
+        for forbidden in ("confidence_score", "validation_status", "created_at", "legitimacy_score"):
+            assert forbidden not in select_cols, (
+                f"_SAFE_SELECT must NOT include '{forbidden}' — column does not exist on jobs."
+            )
+
+    def test_safe_select_no_or_filter_on_confidence(self):
+        """The OR filter on confidence_score was removed because the
+        column doesn't exist. Re-introducing it would break the query."""
+        import inspect
+        import re
+        src = inspect.getsource(A._build_job_actions)
+        # Strip comments + docstrings to inspect only executable code
+        code_only = re.sub(r'#[^\n]*', '', src)
+        code_only = re.sub(r'""".*?"""', '', code_only, flags=re.DOTALL)
+        assert '.or_(' not in code_only or 'confidence_score' not in code_only.split('.or_(')[1].split(')')[0], (
+            "The OR filter on confidence_score must stay removed — "
+            "the column doesn't exist on the jobs table."
         )
