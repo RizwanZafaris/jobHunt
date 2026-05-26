@@ -79,6 +79,37 @@ CARD_SURFACE_PENALTY_PER_VIEW = 2  # subtracts 2 from effective score per surfac
 CARD_SURFACE_PENALTY_CAP = 30      # don't penalize beyond 15 surfaces
 CARD_DORMANT_THRESHOLD = 7         # >=7 surfaces with no action = dormant (hidden unless ?show_all=true)
 
+# ─── Freshness + source-quality (2026-05-26) ──────────────────────────────
+# Real product issue: /today was surfacing 14-18 day old bogus jobs
+# (Adyen via builtinnyc.com aggregator, Adecco scraped from LinkedIn).
+# These three filters keep /today honest:
+#   1. MAX_AGE_DAYS — hide jobs older than this. Override via ?max_age=N.
+#   2. AGGREGATOR_HOSTS — drop URLs from known aggregators (always stale).
+#   3. (Discovery — separate; see /admin/trigger-scout endpoint below.)
+MAX_AGE_DAYS = 21
+
+# Aggregator URL patterns — jobs from these hosts go stale fast and the
+# validator can't HEAD them reliably (they often serve 200 even for closed
+# postings). Direct ATS URLs (greenhouse.io, lever.co, careers.<co>.com)
+# stay reliable. Match is case-insensitive substring on URL.
+AGGREGATOR_HOSTS: frozenset[str] = frozenset({
+    "builtinnyc.com", "builtin.com", "builtinla.com", "builtinsf.com",
+    "linkedin.com/jobs/view",  # the /jobs/view/ path — LinkedIn careers landing pages are fine
+    "bayt.com",
+    "indeed.com",
+    "naukri.com",
+    "glassdoor.com",
+    "ziprecruiter.com",
+    "monster.com",
+    "simplyhired.com",
+    "wellfound.com/jobs/",     # listings often stale; company pages OK
+    "discoveredmena.com", "discovered.com",
+    "ae.linkedin.com/jobs/view",
+    "sg.linkedin.com/jobs/view",
+    "in.linkedin.com/jobs/view",
+    "uk.linkedin.com/jobs/view",
+})
+
 
 # ─── helpers ──────────────────────────────────────────────────────────────
 def _utcnow() -> datetime:
@@ -118,6 +149,27 @@ def _phantom_company_names(user_id: UUID) -> frozenset[str]:
             "_phantom_company_names lookup failed (no filter applied): %s", e
         )
         return frozenset()
+
+
+def _is_aggregator_url(url: Optional[str]) -> bool:
+    """Return True if the URL host matches a known aggregator pattern.
+
+    Aggregator listings (LinkedIn /jobs/view, BuiltInNYC, Bayt, etc.) are
+    excluded from /today by default because:
+      (a) They go stale rapidly — posters delete from the source ATS but
+          the aggregator keeps the page live for weeks.
+      (b) HTTP HEAD probes return 200 even for closed roles → job_validator
+          can't detect closure.
+      (c) Apply links are often broken anyway.
+
+    Direct ATS URLs (greenhouse.io, lever.co, careers.<co>.com, ashbyhq.com)
+    are reliable and pass through. See AGGREGATOR_HOSTS for the blocklist.
+    Case-insensitive substring match on URL.
+    """
+    if not url:
+        return False
+    u = url.lower()
+    return any(host in u for host in AGGREGATOR_HOSTS)
 
 
 def _days_ago(n: int) -> str:
@@ -358,6 +410,8 @@ def _build_job_actions(
     *,
     include_suspicious: bool = False,
     show_dormant: bool = False,
+    max_age_days: Optional[int] = None,
+    include_aggregators: bool = False,
 ) -> list[dict[str, Any]]:
     """resume_ready + score_high_no_resume + score_below_threshold.
 
@@ -441,6 +495,17 @@ def _build_job_actions(
         "letter_grade, fit_score_breakdown"
     )
 
+    # 2026-05-26 freshness filter: hide jobs older than max_age_days.
+    # The full pipeline expected daily JobScout runs ingesting fresh
+    # postings — but if scout misses a few days, /today fills with
+    # stale rows (Adyen via builtinnyc.com from 2026-05-08 was the
+    # canonical example). Default 21 days; override via ?max_age=N or
+    # set =0 to disable.
+    _effective_max_age = max_age_days if max_age_days is not None else MAX_AGE_DAYS
+    _age_cutoff_iso: Optional[str] = None
+    if _effective_max_age and _effective_max_age > 0:
+        _age_cutoff_iso = (_utcnow() - timedelta(days=_effective_max_age)).isoformat()
+
     def _query():
         q = (
             db.table("jobs")
@@ -453,6 +518,9 @@ def _build_job_actions(
         )
         if not _SKIP_USER_FILTER:
             q = q.eq("user_id", str(user_id))
+        if _age_cutoff_iso:
+            # discovered_at is the proven-to-exist timestamp on jobs.
+            q = q.gte("discovered_at", _age_cutoff_iso)
         return q
 
     try:
@@ -477,9 +545,29 @@ def _build_job_actions(
         return []
 
     if not job_rows:
-        logger.info("actions: jobs SELECT returned 0 rows (user_id=%s, skip_user_filter=%s, min_score=%d)",
-                    user_id, _SKIP_USER_FILTER, MIN_SCORE_THRESHOLD)
+        logger.info("actions: jobs SELECT returned 0 rows (user_id=%s, skip_user_filter=%s, min_score=%d, max_age=%s)",
+                    user_id, _SKIP_USER_FILTER, MIN_SCORE_THRESHOLD, _effective_max_age)
         return []
+
+    # 2026-05-26 source-quality: drop URLs from aggregator hosts (LinkedIn
+    # job-view, BuiltInNYC, Bayt, Indeed, Glassdoor, etc.). These postings
+    # go stale fast and validators can't HEAD them reliably. Override via
+    # ?include_aggregators=true for debugging.
+    if not include_aggregators:
+        before = len(job_rows)
+        job_rows = [
+            r for r in job_rows
+            if not _is_aggregator_url(r.get("url"))
+        ]
+        dropped = before - len(job_rows)
+        if dropped:
+            logger.info(
+                "actions: dropped %d aggregator-URL job(s) from /today",
+                dropped,
+            )
+        if not job_rows:
+            logger.info("actions: all jobs filtered as aggregator URLs — empty result")
+            return []
 
     # 2026-05-26 stale-card Fix 2: filter user-dismissed/snoozed jobs.
     # Read once, filter all kinds.
@@ -1065,6 +1153,17 @@ def get_today_actions(
             "Used by 'Show all' toggle in the dashboard."
         ),
     ),
+    max_age: Optional[int] = Query(
+        default=None, ge=0, le=365,
+        description="Hide jobs older than N days (default MAX_AGE_DAYS=21). "
+                    "Pass 0 to disable age filter entirely.",
+    ),
+    include_aggregators: bool = Query(
+        default=False,
+        description="Include jobs from aggregator URLs (LinkedIn /jobs/view, "
+                    "BuiltInNYC, Bayt, Indeed, etc.). Default false — these "
+                    "go stale fast and validators can't HEAD them reliably.",
+    ),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Return the ranked action queue for /today.
@@ -1099,6 +1198,8 @@ def get_today_actions(
             user_id,
             include_suspicious=include_suspicious,
             show_dormant=show_all,
+            max_age_days=max_age,
+            include_aggregators=include_aggregators,
         ))
     except Exception:
         logger.exception("job actions builder failed")
@@ -1246,6 +1347,15 @@ def get_today_sections(
         default=True,
         description="When true, sections with zero cards are returned with empty_state copy.",
     ),
+    max_age: Optional[int] = Query(
+        default=None, ge=0, le=365,
+        description="Hide jobs older than N days (default MAX_AGE_DAYS=21). "
+                    "Pass 0 to disable age filter entirely.",
+    ),
+    include_aggregators: bool = Query(
+        default=False,
+        description="Include jobs from aggregator URLs. Default false.",
+    ),
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Same data as /actions/today but grouped into sections per kind.
@@ -1279,6 +1389,8 @@ def get_today_sections(
             user_id,
             include_suspicious=include_suspicious,
             show_dormant=show_all,
+            max_age_days=max_age,
+            include_aggregators=include_aggregators,
         ))
     except Exception:
         logger.exception("sections: job actions builder failed")
@@ -1674,3 +1786,81 @@ def debug_today_counts(
         result["surface_count_column"] = {"exists": False, "error": str(e)[:200]}
 
     return result
+
+
+# ─── Manual JobScout + validator triggers (2026-05-26) ────────────────────
+#
+# Production reality: JobScout cron may not be running on Railway's
+# scheduler service (the corpus was 14-18 days stale at /today fix time).
+# These endpoints let the user (or a dashboard button) manually fire
+# discovery + validation without waiting for the daily 09:00 cron.
+
+@router.post("/today/trigger-scout", tags=["actions", "admin"])
+async def trigger_scout(
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Manually fire JobScoutAgent.run() — the daily ATS scan.
+
+    Runs synchronously (~30-60s) — returns a summary once done.
+    """
+    try:
+        from agents.job_scout_agent import JobScoutAgent
+    except Exception as e:
+        logger.exception("trigger-scout: import failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"scout module unavailable: {e}",
+        )
+
+    try:
+        agent = JobScoutAgent()
+        result = await agent.run()
+        return {
+            "ok": True,
+            "mode": "sync",
+            "result_repr": repr(result)[:500],
+            "result_type": type(result).__name__,
+            "message": "JobScout completed. Refresh /today to see new jobs.",
+        }
+    except Exception as e:
+        logger.exception("trigger-scout: sync run failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"scout run failed: {type(e).__name__}: {e}",
+        )
+
+
+@router.post("/today/trigger-validator", tags=["actions", "admin"])
+def trigger_validator(
+    limit: int = Query(default=200, ge=1, le=1000),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Manually fire job_validator.validate_batch — HEAD-probes open job
+    URLs to detect closures. Marks closed postings with posting_closed_at
+    so they stop surfacing on /today.
+
+    Use this when /today is showing jobs you know are closed (Adecco, etc).
+    """
+    try:
+        from agents.job_validator import validate_batch
+    except Exception as e:
+        logger.exception("trigger-validator: import failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"validator module unavailable: {e}",
+        )
+
+    try:
+        result = validate_batch(user_id=str(user.id), limit=limit)
+        return {
+            "ok": True,
+            "result_repr": repr(result)[:500],
+            "result_type": type(result).__name__,
+            "message": f"Validator finished (limit={limit}). Refresh /today.",
+        }
+    except Exception as e:
+        logger.exception("trigger-validator: run failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"validator run failed: {type(e).__name__}: {e}",
+        )

@@ -224,6 +224,66 @@ class TestDismissReasonEnum:
 
 
 # ─── Tunables sanity ─────────────────────────────────────────────────────
+class TestAggregatorFilter:
+    """2026-05-26: filter out URLs from known aggregator hosts (LinkedIn
+    /jobs/view, BuiltInNYC, Bayt, etc.). The user reported these as bogus."""
+
+    def test_builtinnyc_is_aggregator(self):
+        url = "https://www.builtinnyc.com/job/head-product-management-issuing/4498776"
+        assert A._is_aggregator_url(url), (
+            "builtinnyc.com — canonical aggregator that surfaced the bogus Adyen card"
+        )
+
+    def test_linkedin_jobs_view_is_aggregator(self):
+        urls = [
+            "https://ae.linkedin.com/jobs/view/chief-product-officer-fintech-b2b-platforms-at-adecco-4409575832",
+            "https://www.linkedin.com/jobs/view/abc-123",
+            "https://sg.linkedin.com/jobs/view/senior-pm",
+        ]
+        for url in urls:
+            assert A._is_aggregator_url(url), f"LinkedIn /jobs/view path is aggregator: {url}"
+
+    def test_direct_ats_urls_not_aggregator(self):
+        urls = [
+            "https://stripe.com/jobs/listing/product-manager-payments/7176530",
+            "https://careers.adyen.com/jobs/12345",
+            "https://jobs.smartrecruiters.com/Visa/744000116287926-sr-product-manager",
+            "https://www.marqeta.com/careers/7743057",
+            "https://boards.greenhouse.io/stripe/jobs/12345",
+            "https://jobs.lever.co/airwallex/abc",
+        ]
+        for url in urls:
+            assert not A._is_aggregator_url(url), f"Direct ATS URL must pass: {url}"
+
+    def test_none_url_not_aggregator(self):
+        assert not A._is_aggregator_url(None)
+        assert not A._is_aggregator_url("")
+
+    def test_bayt_indeed_glassdoor_blocked(self):
+        for url in [
+            "https://www.bayt.com/en/saudi-arabia/jobs/senior-product-manager-arab-73928456/",
+            "https://www.indeed.com/viewjob?jk=abc",
+            "https://www.glassdoor.com/job-listing/x",
+        ]:
+            assert A._is_aggregator_url(url), f"Should block aggregator: {url}"
+
+
+class TestFreshnessFilter:
+    """2026-05-26: MAX_AGE_DAYS hides jobs older than the threshold."""
+
+    def test_max_age_days_is_reasonable(self):
+        assert 7 <= A.MAX_AGE_DAYS <= 60, (
+            f"MAX_AGE_DAYS={A.MAX_AGE_DAYS} should be 7-60 days — long enough "
+            "to keep good jobs visible, short enough to hide stale ones."
+        )
+
+    def test_aggregator_hosts_includes_known_offenders(self):
+        # The user explicitly named these as bogus
+        assert any("builtinnyc" in h for h in A.AGGREGATOR_HOSTS)
+        assert any("linkedin.com/jobs/view" in h for h in A.AGGREGATOR_HOSTS)
+        assert any("bayt" in h for h in A.AGGREGATOR_HOSTS)
+
+
 class TestTunables:
     def test_dormant_threshold_positive(self):
         assert A.CARD_DORMANT_THRESHOLD > 0
