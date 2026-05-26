@@ -1078,6 +1078,203 @@ def get_today_actions(
     }
 
 
+# ─── Sectioned /today (2026-05-26 — dashboard redesign) ──────────────────
+#
+# User feedback after the Adyen-stale-card fix shipped: "redesign the
+# dashboard, should have a dedicated section for each [kind]."
+#
+# This endpoint returns the same underlying data as /actions/today but
+# grouped into named sections per kind so the UI can render one labeled
+# region per kind instead of one flat ranked list.
+#
+# Section order = same perishability ordering as _KIND_PRIORITY (overdue
+# follow-ups at top, stale personas at bottom). Within each section,
+# ranking is the same _rank() function (effective score after age +
+# surface penalties).
+
+DEFAULT_PER_KIND = 5
+
+_SECTION_SPEC: list[dict[str, Any]] = [
+    {
+        "kind": "follow_up_overdue",
+        "label": "Overdue follow-ups",
+        "subtitle": "Every day without contact costs ~5% callback probability.",
+        # alert-triangle (not alert-octagon — not in Icon.tsx allowlist). Tone
+        # 'danger' differentiates this from follow_up_urgent which uses warning.
+        "icon": "alert-triangle",
+        "tone": "danger",
+        "empty_state": "No overdue follow-ups — your active applications are within cadence.",
+    },
+    {
+        "kind": "follow_up_urgent",
+        "label": "Urgent follow-ups",
+        "subtitle": "Past the cadence window — send within 24h to protect callback rate.",
+        "icon": "alert-triangle",
+        "tone": "warning",
+        "empty_state": "Nothing urgent. You're caught up on follow-ups.",
+    },
+    {
+        "kind": "linkedin_post_due",
+        "label": "Today's LinkedIn post",
+        "subtitle": "An approved draft scheduled for today.",
+        "icon": "note",
+        "tone": "info",
+        "empty_state": "No draft scheduled for today. Generate one on /linkedin.",
+    },
+    {
+        "kind": "resume_ready",
+        "label": "Ready to apply",
+        "subtitle": "Resume tailored — ship it and move the card forward.",
+        "icon": "rocket",
+        "tone": "success",
+        "empty_state": "No tailored resumes waiting. Build one from a hot lead below.",
+    },
+    {
+        "kind": "score_high_no_resume",
+        "label": "Hot leads",
+        "subtitle": "Score ≥85 — kick off G2 to build a tailored resume.",
+        "icon": "sparkles",
+        "tone": "success",
+        "empty_state": "No high-score jobs pending. Discovery may need a fresh scan.",
+    },
+    {
+        "kind": "stale_application",
+        "label": "Stale applications",
+        "subtitle": "Applied 7+ days ago, no outcome logged.",
+        "icon": "mail",
+        "tone": "neutral",
+        "empty_state": "All active applications have a recent touch or outcome.",
+    },
+    {
+        "kind": "score_below_threshold",
+        "label": "Below threshold (review)",
+        "subtitle": "Score 80–84 — surface but review fit before generating.",
+        "icon": "alert-triangle",
+        "tone": "neutral",
+        "empty_state": "No borderline-score jobs to review.",
+    },
+    {
+        "kind": "persona_stale",
+        "label": "Stale personas",
+        "subtitle": "Last synthesized >14 days — news may have moved.",
+        "icon": "refresh",
+        "tone": "neutral",
+        "empty_state": "Every active persona was refreshed in the last 14 days.",
+    },
+]
+
+
+def _group_by_kind(actions: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Bucket actions by .kind preserving rank order within each bucket."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    for a in actions:
+        out.setdefault(a.get("kind", ""), []).append(a)
+    return out
+
+
+@router.get("/today/sections")
+def get_today_sections(
+    per_kind: int = Query(default=DEFAULT_PER_KIND, ge=1, le=20),
+    include_suspicious: bool = Query(default=False),
+    show_all: bool = Query(default=False),
+    include_empty: bool = Query(
+        default=True,
+        description="When true, sections with zero cards are returned with empty_state copy.",
+    ),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Same data as /actions/today but grouped into sections per kind.
+
+    Frontend renders one section per entry in the response. Within each
+    section, cards are pre-ranked by the same _rank() function used by
+    the flat /today queue (so the top card in each section is the same
+    one that would appear at the top of that kind's slice in the flat
+    response).
+
+    Defensive: per-builder exceptions are swallowed so a single broken
+    builder doesn't black out /today (mirrors get_today_actions).
+    """
+    user_id = user.id
+    all_actions: list[dict[str, Any]] = []
+
+    try:
+        post = _build_linkedin_post_due(user_id)
+        if post is not None:
+            all_actions.append(post)
+    except Exception:
+        logger.exception("sections: linkedin_post_due builder failed")
+
+    try:
+        all_actions.extend(_build_follow_up_actions(user_id))
+    except Exception:
+        logger.exception("sections: follow_up builder failed")
+
+    try:
+        all_actions.extend(_build_job_actions(
+            user_id,
+            include_suspicious=include_suspicious,
+            show_dormant=show_all,
+        ))
+    except Exception:
+        logger.exception("sections: job actions builder failed")
+
+    try:
+        all_actions.extend(_build_stale_applications(user_id))
+    except Exception:
+        logger.exception("sections: stale_application builder failed")
+
+    try:
+        all_actions.extend(_build_stale_personas(user_id))
+    except Exception:
+        logger.exception("sections: persona_stale builder failed")
+
+    ranked = _rank(all_actions)
+    grouped = _group_by_kind(ranked)
+
+    surfaced_job_ids: list[int] = []
+    sections: list[dict[str, Any]] = []
+    for spec in _SECTION_SPEC:
+        kind = spec["kind"]
+        all_in_kind = grouped.get(kind, [])
+        visible = all_in_kind[:per_kind]
+
+        if kind.startswith(("score_", "resume_")):
+            for a in visible:
+                meta = a.get("meta") or {}
+                jid = meta.get("jobId")
+                if jid is not None:
+                    try:
+                        surfaced_job_ids.append(int(jid))
+                    except (TypeError, ValueError):
+                        continue
+
+        section_payload = {
+            "kind": kind,
+            "label": spec["label"],
+            "subtitle": spec["subtitle"],
+            "icon": spec["icon"],
+            "tone": spec["tone"],
+            "cards": visible,
+            "count_total": len(all_in_kind),
+            "count_visible": len(visible),
+            "has_more": len(all_in_kind) > len(visible),
+            "empty_state": spec["empty_state"],
+        }
+
+        if not include_empty and not visible:
+            continue
+        sections.append(section_payload)
+
+    if surfaced_job_ids:
+        _bump_surface_counters(user_id, surfaced_job_ids)
+
+    return {
+        "sections": sections,
+        "total": sum(s["count_total"] for s in sections),
+        "generated_at": _utcnow().isoformat(),
+    }
+
+
 # ─── Dismiss / snooze (Fix 2 — 2026-05-26) ────────────────────────────────
 
 
