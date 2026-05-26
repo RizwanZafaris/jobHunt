@@ -1521,3 +1521,157 @@ def list_dismissed_cards(
             "status": status,
         })
     return {"dismissals": out, "total": len(out)}
+
+
+# ─── DIAGNOSTIC ENDPOINT (2026-05-26 — temporary, remove once root cause found) ─
+#
+# Returns ground-truth counts at every stage of _build_job_actions so we can
+# see EXACTLY where the 10 high-score jobs disappear. No filters bypassed in
+# production code — this endpoint is a separate observability surface.
+#
+# Removable after diagnosis. Tagged `[debug]` in OpenAPI for visibility.
+@router.get("/today/debug-counts", tags=["actions", "debug"])
+def debug_today_counts(
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Counts at every filter stage. Use this to diagnose why /today is empty.
+
+    Returns:
+      env: { single_user_mode, RIZWAN_SINGLE_USER_MODE, current_user_id }
+      raw: total jobs in DB (no user_id filter, no other filter)
+      by_user_id: count of jobs grouped by user_id (top 10)
+      by_filter_step: count after each filter (cumulative)
+      sample_jobs: first 5 high-score jobs with full row (including user_id)
+      dismissals_table: status of job_card_dismissals table (table missing? row count?)
+      phantom_personas: list of company_name where is_phantom=true for current user
+    """
+    import os
+    db = get_supabase()
+    result: dict[str, Any] = {
+        "env": {
+            "RIZWAN_SINGLE_USER_MODE": os.getenv("RIZWAN_SINGLE_USER_MODE"),
+            "current_user_id": str(user.id),
+        },
+    }
+
+    # Step 0 — total jobs in DB
+    try:
+        all_rows = (
+            db.table("jobs")
+            .select("id, user_id, match_score, posting_closed_at, validation_failed, confidence_score, company")
+            .gte("match_score", 80)
+            .limit(200)
+            .execute()
+            .data
+        ) or []
+        result["raw"] = {"high_score_jobs_count": len(all_rows)}
+        # Group by user_id
+        user_counts: dict[str, int] = {}
+        for r in all_rows:
+            uid = str(r.get("user_id") or "NULL")
+            user_counts[uid] = user_counts.get(uid, 0) + 1
+        result["by_user_id"] = sorted(user_counts.items(), key=lambda x: -x[1])[:10]
+        result["sample_jobs"] = [
+            {"id": r["id"], "company": r.get("company"), "match_score": r.get("match_score"),
+             "user_id": str(r.get("user_id")) if r.get("user_id") else "NULL",
+             "posting_closed_at": r.get("posting_closed_at"),
+             "validation_failed": r.get("validation_failed"),
+             "confidence_score": r.get("confidence_score")}
+            for r in all_rows[:5]
+        ]
+    except Exception as e:
+        result["raw_error"] = str(e)
+
+    # Step 1 — open + not validation_failed + match_score>=80
+    try:
+        rows1 = (
+            db.table("jobs")
+            .select("id")
+            .is_("posting_closed_at", None)
+            .is_("validation_failed", None)
+            .gte("match_score", 80)
+            .limit(200)
+            .execute()
+            .data
+        ) or []
+        result["step1_open_not_failed_score80"] = len(rows1)
+    except Exception as e:
+        result["step1_error"] = str(e)
+
+    # Step 2 — + confidence OR filter
+    try:
+        rows2 = (
+            db.table("jobs")
+            .select("id")
+            .is_("posting_closed_at", None)
+            .is_("validation_failed", None)
+            .or_("confidence_score.is.null,confidence_score.gte.50")
+            .gte("match_score", 80)
+            .limit(200)
+            .execute()
+            .data
+        ) or []
+        result["step2_plus_confidence_or"] = len(rows2)
+    except Exception as e:
+        result["step2_error"] = str(e)
+
+    # Step 3 — + user_id filter
+    try:
+        rows3 = (
+            db.table("jobs")
+            .select("id")
+            .eq("user_id", str(user.id))
+            .is_("posting_closed_at", None)
+            .is_("validation_failed", None)
+            .or_("confidence_score.is.null,confidence_score.gte.50")
+            .gte("match_score", 80)
+            .limit(200)
+            .execute()
+            .data
+        ) or []
+        result["step3_plus_user_id_filter"] = len(rows3)
+    except Exception as e:
+        result["step3_error"] = str(e)
+
+    # job_card_dismissals table status
+    try:
+        d = (
+            db.table("job_card_dismissals")
+            .select("id", count="exact")
+            .limit(1)
+            .execute()
+        )
+        result["dismissals_table"] = {"exists": True, "row_count": d.count}
+    except Exception as e:
+        result["dismissals_table"] = {"exists": False, "error": str(e)[:200]}
+
+    # Phantom personas for current user
+    try:
+        phantoms = (
+            db.table("company_personas")
+            .select("company_name, is_phantom")
+            .eq("user_id", str(user.id))
+            .eq("is_phantom", True)
+            .limit(100)
+            .execute()
+            .data
+        ) or []
+        result["phantom_personas_for_user"] = [p.get("company_name") for p in phantoms]
+        result["phantom_personas_count"] = len(phantoms)
+    except Exception as e:
+        result["phantom_error"] = str(e)
+
+    # surface_count column status
+    try:
+        sc = (
+            db.table("jobs")
+            .select("id, surface_count")
+            .limit(1)
+            .execute()
+            .data
+        )
+        result["surface_count_column"] = {"exists": True}
+    except Exception as e:
+        result["surface_count_column"] = {"exists": False, "error": str(e)[:200]}
+
+    return result
