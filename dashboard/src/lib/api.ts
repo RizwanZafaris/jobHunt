@@ -44,6 +44,26 @@ export async function fetchTodayActions(limit = 8): Promise<FetchTodayResponse> 
   return res.json()
 }
 
+/**
+ * /actions/today/sections — grouped ranked queue.
+ * 2026-05-26: powers the redesigned /today with dedicated section per kind.
+ * Shape: import('./types/today').TodaySectionsResponse.
+ */
+export async function fetchTodaySections(
+  perKind: number = 5,
+  opts: { include_empty?: boolean; show_all?: boolean } = {},
+): Promise<import('./types/today').TodaySectionsResponse> {
+  const params = new URLSearchParams({ per_kind: String(perKind) })
+  if (opts.include_empty === false) params.set('include_empty', 'false')
+  if (opts.show_all) params.set('show_all', 'true')
+  const res = await fetch(`${baseUrl}/actions/today/sections?${params}`, {
+    headers,
+    next: { revalidate: 30 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch today sections (${res.status})`)
+  return res.json()
+}
+
 export async function fetchJobs(params?: {
   status?: string
   min_score?: number

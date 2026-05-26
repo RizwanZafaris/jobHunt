@@ -16,6 +16,8 @@ export type TodayActionKind =
   | 'stale_application'      // applied 7+ days ago, no outcome logged
   | 'persona_stale'          // persona last refreshed >14 days, kick off /personas/refresh-news
   | 'linkedin_post_due'      // P1 placeholder
+  | 'follow_up_overdue'      // G6 overdue follow-up
+  | 'follow_up_urgent'       // G6 urgent follow-up
 
 export type TodayActionState = 'ready' | 'blocked' | 'stale' | 'pending'
 
@@ -59,4 +61,32 @@ export interface TodayAction {
   primary: TodayActionPrimary
   secondary?: TodayActionSecondary
   meta?: TodayActionMeta
+}
+
+// 2026-05-26 — sectioned /today response shape.
+// Returned by GET /actions/today/sections (api/actions.py::get_today_sections).
+export type TodaySectionTone =
+  | 'danger'    // overdue follow-ups
+  | 'warning'   // urgent follow-ups
+  | 'info'      // LinkedIn post due
+  | 'success'   // ready-to-apply, hot leads
+  | 'neutral'   // stale apps, stale personas, below threshold
+
+export interface TodaySection {
+  kind: TodayActionKind
+  label: string                  // "Hot leads" / "Stale applications"
+  subtitle: string               // one-line purpose / urgency hint
+  icon: string                   // IconName matching '@/components/ui/Icon'
+  tone: TodaySectionTone
+  cards: TodayAction[]
+  count_total: number            // may exceed cards.length when has_more
+  count_visible: number          // cards.length
+  has_more: boolean
+  empty_state: string            // shown when cards is empty
+}
+
+export interface TodaySectionsResponse {
+  sections: TodaySection[]
+  total: number
+  generated_at: string
 }
