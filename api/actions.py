@@ -399,55 +399,56 @@ def _build_job_actions(
     # legacy SELECT (no migration-037 columns) and pad missing fields
     # with safe defaults. This keeps the system functional whether the
     # operator has run the migration or not.
-    _FULL_SELECT = (
-        "id, title, company, match_score, resume_generated_at, "
-        "posting_closed_at, validation_status, confidence_score, "
-        "validation_failed, letter_grade, legitimacy_tier, legitimacy_score, "
-        "created_at, discovered_at, "
-        "first_surfaced_at, last_surfaced_at, surface_count"
-    )
-    _LEGACY_SELECT = (
-        "id, title, company, match_score, resume_generated_at, "
-        "posting_closed_at, validation_status, confidence_score, "
-        "validation_failed, letter_grade, legitimacy_tier, legitimacy_score, "
-        "created_at, discovered_at"
-    )
-
-    # 2026-05-26 hotfix #3 — user_id filter fix.
-    # Root cause: in single-user mode (RIZWAN_SINGLE_USER_MODE=1, the
-    # production default), the jobs table contains rows owned by a
-    # different user_id than the one get_current_user() returns. Could
-    # be NULL (pre-multi-tenancy ingestion) or a legacy UUID. The
-    # `.eq("user_id", str(user_id))` filter excluded all of them, so
-    # /today returned 0 job cards even though the DB has 10+ qualifying
-    # jobs (proven via /api/proxy/jobs which has no user_id filter).
+    # 2026-05-26 hotfix #4 — MATCH /jobs SELECT exactly.
+    # Chrome-MCP probe proved:
+    #   • /api/proxy/companies returns all 94 with user_id=user_001,
+    #     is_phantom=false. Rules out user_id mismatch + phantom filter.
+    #   • /api/proxy/jobs returns 10 high-score open jobs with only
+    #     these columns: id, title, company, location, match_score,
+    #     status, url, discovered_at, archetype, legitimacy_tier,
+    #     resume_generated_at, posting_closed_at, validation_failed,
+    #     letter_grade, fit_score_breakdown
+    #   • /api/proxy/actions/today/sections returns 0 even with all
+    #     bypass flags
     #
-    # Fix: in single-user mode, mirror /jobs endpoint behavior and skip
-    # the user_id filter. The deployment is already single-tenant + gated
-    # by API_SECRET_KEY, so showing all jobs is correct semantics.
-    # In multi-tenant mode (single_user_mode=0), the filter stays —
-    # RLS would also enforce it, but defence-in-depth at the query layer
-    # is safer.
+    # Conclusion: _build_job_actions SELECT references columns that
+    # DON'T EXIST on the jobs table:
+    #   • confidence_score      (column doesn't exist → 400)
+    #   • validation_status     (column doesn't exist → 400)
+    #   • created_at            (jobs uses discovered_at, not created_at)
+    #   • legitimacy_score      (probably missing)
+    #
+    # Plus the OR filter `.or_("confidence_score.is.null,...")` itself
+    # references the missing column. PostgREST 400s → outer try/except
+    # in get_today_sections swallows → returns [] silently → /today empty.
+    #
+    # Fix: use ONLY columns proven to exist by /jobs endpoint. Pad
+    # everything else with safe defaults. Drop the OR filter on
+    # confidence_score (column doesn't exist).
+
+    # Detect single-user mode for the user_id filter decision.
     try:
         from api.context import _is_single_user_mode
         _SKIP_USER_FILTER = _is_single_user_mode()
     except Exception:
         _SKIP_USER_FILTER = False
 
-    def _query(select_cols: str):
+    # Columns proven to exist on jobs (from /jobs endpoint working response).
+    _SAFE_SELECT = (
+        "id, title, company, location, match_score, status, url, "
+        "discovered_at, archetype, legitimacy_tier, "
+        "resume_generated_at, posting_closed_at, validation_failed, "
+        "letter_grade, fit_score_breakdown"
+    )
+
+    def _query():
         q = (
             db.table("jobs")
-            .select(select_cols)
+            .select(_SAFE_SELECT)
             .is_("posting_closed_at", None)
             .is_("validation_failed", None)
-            # 2026-05-26 hotfix #1: Pass legacy rows (NULL) OR v2 rows >= 50.
-            # Previously required confidence_score IS NOT NULL AND >= 50,
-            # which filtered out every legacy v1 row (all rows ingested
-            # before the v2 scout work on 2026-05-12 have NULL).
-            .or_("confidence_score.is.null,confidence_score.gte.50")
             .gte("match_score", MIN_SCORE_THRESHOLD)
             .order("match_score", desc=True)
-            .order("confidence_score", desc=True, nullsfirst=False)
             .limit(50)
         )
         if not _SKIP_USER_FILTER:
@@ -455,31 +456,29 @@ def _build_job_actions(
         return q
 
     try:
-        job_rows = _query(_FULL_SELECT).execute().data or []
+        job_rows = _query().execute().data or []
+        # Pad missing fields with safe defaults so downstream code
+        # (dormant filter, _rank() age penalty) behaves correctly.
+        for r in job_rows:
+            # Use discovered_at as the proxy for "when did we first see this"
+            r.setdefault("created_at", r.get("discovered_at"))
+            r.setdefault("first_surfaced_at", r.get("discovered_at"))
+            r.setdefault("last_surfaced_at", r.get("discovered_at"))
+            r.setdefault("surface_count", 0)
+            r.setdefault("confidence_score", None)
+            r.setdefault("validation_status", None)
+            r.setdefault("legitimacy_score", None)
     except Exception as e:
-        msg = str(e).lower()
-        if "surface_count" in msg or "first_surfaced_at" in msg or "last_surfaced_at" in msg or "does not exist" in msg or "could not find" in msg:
-            logger.warning(
-                "actions: full SELECT failed (likely migration 037 not applied): %s. "
-                "Falling back to legacy SELECT — surface tracking + dormant filter disabled.",
-                e,
-            )
-            try:
-                job_rows = _query(_LEGACY_SELECT).execute().data or []
-            except Exception as e2:
-                logger.exception("actions: legacy SELECT also failed — returning empty: %s", e2)
-                return []
-            # Pad missing migration-037 fields with safe defaults so downstream
-            # ranking + dormant filter behave as if every row is fresh + unseen.
-            for r in job_rows:
-                r.setdefault("first_surfaced_at", r.get("created_at") or r.get("discovered_at"))
-                r.setdefault("last_surfaced_at", r.get("created_at") or r.get("discovered_at"))
-                r.setdefault("surface_count", 0)
-        else:
-            logger.exception("actions: jobs SELECT failed: %s", e)
-            return []
+        # No more retry/fallback — the SAFE_SELECT above only uses columns
+        # proven to exist via /api/proxy/jobs probe. If THIS errors, the
+        # problem is upstream (Supabase down, RLS misconfig, etc.) — log
+        # and return empty so /today still renders the persona section.
+        logger.exception("actions: jobs SELECT failed (using SAFE_SELECT): %s", e)
+        return []
 
     if not job_rows:
+        logger.info("actions: jobs SELECT returned 0 rows (user_id=%s, skip_user_filter=%s, min_score=%d)",
+                    user_id, _SKIP_USER_FILTER, MIN_SCORE_THRESHOLD)
         return []
 
     # 2026-05-26 stale-card Fix 2: filter user-dismissed/snoozed jobs.
