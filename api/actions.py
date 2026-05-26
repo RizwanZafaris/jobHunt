@@ -413,11 +413,31 @@ def _build_job_actions(
         "created_at, discovered_at"
     )
 
+    # 2026-05-26 hotfix #3 — user_id filter fix.
+    # Root cause: in single-user mode (RIZWAN_SINGLE_USER_MODE=1, the
+    # production default), the jobs table contains rows owned by a
+    # different user_id than the one get_current_user() returns. Could
+    # be NULL (pre-multi-tenancy ingestion) or a legacy UUID. The
+    # `.eq("user_id", str(user_id))` filter excluded all of them, so
+    # /today returned 0 job cards even though the DB has 10+ qualifying
+    # jobs (proven via /api/proxy/jobs which has no user_id filter).
+    #
+    # Fix: in single-user mode, mirror /jobs endpoint behavior and skip
+    # the user_id filter. The deployment is already single-tenant + gated
+    # by API_SECRET_KEY, so showing all jobs is correct semantics.
+    # In multi-tenant mode (single_user_mode=0), the filter stays —
+    # RLS would also enforce it, but defence-in-depth at the query layer
+    # is safer.
+    try:
+        from api.context import _is_single_user_mode
+        _SKIP_USER_FILTER = _is_single_user_mode()
+    except Exception:
+        _SKIP_USER_FILTER = False
+
     def _query(select_cols: str):
-        return (
+        q = (
             db.table("jobs")
             .select(select_cols)
-            .eq("user_id", str(user_id))
             .is_("posting_closed_at", None)
             .is_("validation_failed", None)
             # 2026-05-26 hotfix #1: Pass legacy rows (NULL) OR v2 rows >= 50.
@@ -430,6 +450,9 @@ def _build_job_actions(
             .order("confidence_score", desc=True, nullsfirst=False)
             .limit(50)
         )
+        if not _SKIP_USER_FILTER:
+            q = q.eq("user_id", str(user_id))
+        return q
 
     try:
         job_rows = _query(_FULL_SELECT).execute().data or []
