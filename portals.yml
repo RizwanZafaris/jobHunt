@@ -21,6 +21,8 @@ card_networks:
     website: https://visa.com
     careers_url: https://corporate.visa.com/en/careers/job-search
     ats_type: workday
+    workday_slug: visa.wd5
+    workday_tenant: Visa
     priority: 2
     notes: "Target London/Singapore senior roles only. Dubai posts = junior + UAE Nationals preferred."
     tags: [card-network, payments, global, uk]
@@ -29,6 +31,8 @@ card_networks:
     website: https://mastercard.com
     careers_url: https://careers.mastercard.com/us/en/search-results
     ats_type: workday
+    workday_slug: mastercard.wd1
+    workday_tenant: Mastercard
     priority: 2
     notes: "Target London/Amsterdam senior roles only. Dubai posts = graduate + UAE Nationals preferred."
     tags: [card-network, payments, global, uk]
@@ -37,6 +41,8 @@ card_networks:
     website: https://americanexpress.com
     careers_url: https://jobs.americanexpress.com
     ats_type: workday
+    workday_slug: aexp.wd1
+    workday_tenant: AmericanExpressCareers
     priority: 2
     notes: "Strong product culture. London and Singapore have senior PM roles. Dubai office growing."
     tags: [card-network, payments, premium, global, uk]
@@ -45,6 +51,8 @@ card_networks:
     website: https://discover.com
     careers_url: https://jobs.discover.com
     ats_type: workday
+    workday_slug: discover.wd5
+    workday_tenant: DFS_GLOBAL
     priority: 3
     notes: "Primarily US. Some global remote roles."
     tags: [card-network, payments, us]
@@ -104,6 +112,8 @@ payment_processors:
     website: https://paypal.com
     careers_url: https://careers.pypl.com
     ats_type: workday
+    workday_slug: paypal.wd1
+    workday_tenant: jobs
     priority: 2
     notes: "Large product org. Senior PM roles in London and Singapore. Strong enterprise integrations angle."
     tags: [payments, consumer, global]
@@ -112,6 +122,8 @@ payment_processors:
     website: https://braintreepayments.com
     careers_url: https://careers.pypl.com
     ats_type: workday
+    workday_slug: paypal.wd1
+    workday_tenant: jobs
     priority: 2
     notes: "Hired via PayPal careers. Developer payments focus — strong fit for API-first experience."
     tags: [payments, developer-platform, global]
@@ -120,6 +132,8 @@ payment_processors:
     website: https://worldpay.com
     careers_url: https://worldpay.com/en/about-worldpay/careers
     ats_type: workday
+    workday_slug: worldpay.wd5
+    workday_tenant: worldpay_external_careers_site
     priority: 2
     notes: "Enterprise payment processing giant. London + Dubai presence. Good fit for programme/product hybrid roles."
     tags: [payments, enterprise, acquiring, uk, global]
@@ -128,6 +142,8 @@ payment_processors:
     website: https://fiserv.com
     careers_url: https://fiserv.wd5.myworkdayjobs.com/en-US/External
     ats_type: workday
+    workday_slug: fiserv.wd5
+    workday_tenant: External
     priority: 2
     notes: "Large financial infrastructure company. Product roles in payments and banking."
     tags: [payments, banking-infra, enterprise, global]
@@ -136,6 +152,8 @@ payment_processors:
     website: https://fisglobal.com
     careers_url: https://fisglobal.com/en/about/careers
     ats_type: workday
+    workday_slug: fis.wd1
+    workday_tenant: FIS
     priority: 2
     notes: "One of largest financial tech companies globally. Product org is large. Good for programme-to-product profiles."
     tags: [payments, banking-infra, enterprise, global]
@@ -188,6 +206,8 @@ payment_processors:
     website: https://verifone.com
     careers_url: https://verifone.com/en/us/careers
     ats_type: workday
+    workday_slug: verifone.wd5
+    workday_tenant: VerifoneCareers
     priority: 3
     notes: "POS / hardware payments. Product roles exist but hardware-focused."
     tags: [payments, pos, hardware, global]
@@ -317,6 +337,8 @@ cross_border_remittance:
     website: https://westernunion.com
     careers_url: https://careers.westernunion.com
     ats_type: workday
+    workday_slug: westernunion.wd5
+    workday_tenant: WesternUnionJobs
     priority: 2
     notes: "Legacy remittance giant transforming digitally. PM roles in digital transformation track."
     tags: [remittance, cross-border, enterprise, global]
@@ -325,6 +347,8 @@ cross_border_remittance:
     website: https://moneygram.com
     careers_url: https://moneygram.com/mgo/us/en/careers
     ats_type: workday
+    workday_slug: moneygram.wd1
+    workday_tenant: MoneyGram
     priority: 2
     notes: "Rizwan delivered MoneyGram enterprise integration at SimPaisa — direct credibility. Digital transformation hiring."
     tags: [remittance, cross-border, enterprise, global]
@@ -457,6 +481,8 @@ baas_embedded_finance:
     website: https://temenos.com
     careers_url: https://temenos.com/careers
     ats_type: workday
+    workday_slug: temenos.wd3
+    workday_tenant: Temenos
     priority: 2
     notes: "Banking software giant. Strong UAE presence. Product/programme hybrid roles."
     tags: [core-banking, enterprise, global, uae]
@@ -465,6 +491,8 @@ baas_embedded_finance:
     website: https://finastra.com
     careers_url: https://finastra.com/careers
     ats_type: workday
+    workday_slug: finastra.wd5
+    workday_tenant: Finastra_External
     priority: 2
     notes: "Financial software, open banking APIs. London HQ. Dubai office. PM roles exist."
     tags: [banking-software, open-banking, enterprise, uk, uae]
@@ -569,6 +597,8 @@ digital_banks_neobanks:
     website: https://liv.me
     careers_url: https://emiratesnbd.com/en/careers
     ats_type: workday
+    workday_slug: emiratesnbd.wd3
+    workday_tenant: EmiratesNBD
     careers_page_url: https://emiratesnbd.com/en/careers
     priority: 2
     tags: [neobank, digital-banking, uae]
@@ -643,6 +673,8 @@ mena_fintech:
     website: https://stcpay.com.sa
     careers_url: https://careers.stc.com.sa
     ats_type: workday
+    workday_slug: stc.wd5
+    workday_tenant: STC
     careers_page_url: https://careers.stc.com.sa
     priority: 1
     tags: [telco-fintech, payments, digital-wallet, ksa]
@@ -907,6 +939,8 @@ traditional_banks_digital:
     website: https://paysafe.com
     careers_url: https://paysafe.com/careers
     ats_type: workday
+    workday_slug: paysafe.wd3
+    workday_tenant: Paysafe
     priority: 2
     tags: [payments, igaming, uk, global]
 
