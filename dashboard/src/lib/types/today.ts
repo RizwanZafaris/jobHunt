@@ -43,6 +43,11 @@ export interface TodayActionMeta {
   // discovery rows + linkedin_post_due / stale_application etc.
   // cards have no grade. The /today A-F chip group consumes this.
   letterGrade?: LetterGrade
+  // 2026-05-26 stale-card fix — required for the dismiss button +
+  // for explaining age/surface penalties in the UI tooltip.
+  jobId?: number
+  createdAt?: string         // ISO-8601, used for "shown for N days" pill
+  surfaceCount?: number      // n times this card was surfaced
 }
 
 export interface TodayAction {

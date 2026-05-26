@@ -30,6 +30,7 @@ from agents.llm_router import (
     get_router,
     infer_provider,
 )
+from agents.llm_fallback import ask_with_fallback
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -69,6 +70,7 @@ class BaseAgent(ABC):
         tools: Optional[list] = None,
         provider: Optional[Provider] = None,
         model: Optional[str] = None,
+        disable_fallback: bool = False,
         **kwargs: Any,
     ) -> LLMResult:
         """
@@ -76,8 +78,26 @@ class BaseAgent(ABC):
         Defaults to (self.provider, self.model). Override per-call when
         you want to send THIS request to a different model than the agent's
         default (e.g. ensemble critic running on R1 + K2 from one node).
+
+        2026-05-26: now wraps router.ask() with OpenRouter auto-fallback
+        when OPENROUTER_API_KEY is set. On retriable provider failure
+        (rate limit, overload, transient 5xx, timeout), the same logical
+        request is retried through OpenRouter. Set disable_fallback=True
+        to opt out (e.g. tests that want to surface raw provider errors).
         """
-        return await self.router.ask(
+        if disable_fallback:
+            return await self.router.ask(
+                provider=provider or self.provider,
+                model=model or self.model,
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                agent_name=self.name,
+                **kwargs,
+            )
+        return await ask_with_fallback(
             provider=provider or self.provider,
             model=model or self.model,
             system=system,
@@ -86,6 +106,7 @@ class BaseAgent(ABC):
             temperature=temperature,
             tools=tools,
             agent_name=self.name,
+            router=self.router,
             **kwargs,
         )
 
