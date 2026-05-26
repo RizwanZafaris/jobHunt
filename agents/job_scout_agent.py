@@ -632,38 +632,86 @@ class JobScoutAgent(BaseAgent):
                 # slug format expected: "mastercard" → subdomain + job board name (may differ per company)
                 workday_slug = company.get("workday_slug", slug)  # some companies need separate board name
                 url = ATS_APIS["workday"].format(slug=workday_slug)
-                try:
-                    resp = await client.post(
-                        url,
-                        json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": "product manager"},
-                        headers={"Content-Type": "application/json"},
-                        timeout=20,
-                    )
-                    if resp.status_code in (404, 403, 405):
-                        return []
-                    resp.raise_for_status()
-                    data = resp.json()
-                    jobs = []
-                    for j in data.get("jobPostings", []):
-                        title = j.get("title", "")
-                        if not self._is_relevant_title(title):
-                            continue
-                        job_path = j.get("externalPath", "")
-                        jobs.append({
-                            "title": title,
-                            "company": company_name,
-                            "url": f"https://{workday_slug}.wd3.myworkdayjobs.com{job_path}",
-                            "description": j.get("locationsText", ""),
-                            "source": "workday",
-                            "ats_type": "workday",
-                            "location": j.get("locationsText", ""),
-                            "match_score": 0,
-                            "discovered_at": datetime.utcnow().isoformat(),
-                        })
-                    return jobs
-                except Exception as e:
-                    logger.debug(f"Workday fetch failed for {company_name}: {e}")
-                    return []
+
+                # 2026-05-26 fix: previously this used a single query
+                # `searchText: "product manager"` with `limit: 20`. For
+                # Visa/Mastercard/Goldman/HSBC/Standard Chartered, that
+                # returned the top 20 in Workday's default ordering
+                # (typically US-first/featured-first), so MENA/UK/SG/EU
+                # postings never made it through. The geo allowlist
+                # (TARGET_LOCATION_TOKENS) only saw US results → 0 cards
+                # for these companies on /today.
+                #
+                # New strategy: run 6 region-targeted searches per company,
+                # 50 results each, deduplicated by externalPath. Catches:
+                #   - MENA (Dubai)
+                #   - UK   (London)
+                #   - APAC (Singapore)
+                #   - EU   (Amsterdam)
+                #   - Remote roles
+                # Plus the baseline "product manager" sweep for anything
+                # without an explicit location in the search index.
+                REGION_QUERIES = [
+                    "product manager",            # baseline
+                    "product manager Dubai",
+                    "product manager London",
+                    "product manager Singapore",
+                    "product manager Amsterdam",
+                    "product manager remote",
+                ]
+                PAGE_SIZE = 50
+
+                all_jobs: dict[str, dict] = {}  # dedupe by externalPath
+                for query in REGION_QUERIES:
+                    try:
+                        resp = await client.post(
+                            url,
+                            json={
+                                "appliedFacets": {},
+                                "limit": PAGE_SIZE,
+                                "offset": 0,
+                                "searchText": query,
+                            },
+                            headers={"Content-Type": "application/json"},
+                            timeout=30,
+                        )
+                        if resp.status_code in (404, 403, 405):
+                            # Whole company endpoint dead — no point trying more queries.
+                            logger.debug(f"Workday {workday_slug} returned {resp.status_code} on query '{query}' — skipping company")
+                            return []
+                        resp.raise_for_status()
+                        data = resp.json()
+                        for j in data.get("jobPostings", []):
+                            title = j.get("title", "")
+                            if not self._is_relevant_title(title):
+                                continue
+                            job_path = j.get("externalPath", "")
+                            if not job_path or job_path in all_jobs:
+                                continue
+                            all_jobs[job_path] = {
+                                "title": title,
+                                "company": company_name,
+                                "url": f"https://{workday_slug}.wd3.myworkdayjobs.com{job_path}",
+                                "description": j.get("locationsText", ""),
+                                "source": "workday",
+                                "ats_type": "workday",
+                                "location": j.get("locationsText", ""),
+                                "match_score": 0,
+                                "discovered_at": datetime.utcnow().isoformat(),
+                            }
+                    except Exception as e:
+                        # One bad query shouldn't drop the whole company.
+                        # Log + continue to the next regional query.
+                        logger.debug(f"Workday query failed for {workday_slug} q='{query}': {e}")
+                        continue
+                    # Tiny courtesy delay between queries to the same tenant.
+                    await asyncio.sleep(0.2)
+
+                logger.info(
+                    "Workday %s: %d unique relevant jobs across %d region queries",
+                    workday_slug, len(all_jobs), len(REGION_QUERIES),
+                )
+                return list(all_jobs.values())
 
         return []
 
