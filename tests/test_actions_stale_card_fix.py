@@ -233,3 +233,42 @@ class TestTunables:
 
     def test_age_penalty_per_day_positive(self):
         assert A.CARD_AGE_PENALTY_PER_DAY > 0
+
+
+# ─── Confidence filter relaxation (2026-05-26 hotfix) ────────────────────
+class TestConfidenceFilterLegacyRows:
+    """The query must accept legacy rows (confidence_score IS NULL) alongside
+    v2-validated rows (confidence_score >= 50). Previously it required NOT
+    NULL which filtered out 100% of pre-2026-05-12 jobs.
+
+    The actual SQL execution is via PostgREST → can't easily mock the whole
+    chain in a unit test. Instead we assert the query construction calls
+    `.or_(...)` with the expected pattern, which is the contract the
+    PostgREST client honors at runtime.
+    """
+
+    def test_or_filter_pattern_present_in_source(self):
+        """Belt-and-braces: grep the source to ensure the OR pattern is
+        used. If a future refactor accidentally re-tightens this filter,
+        this test catches it before deploy."""
+        import inspect
+        src = inspect.getsource(A._build_job_actions)
+        assert 'confidence_score.is.null' in src, (
+            "Expected OR filter pattern 'confidence_score.is.null,"
+            "confidence_score.gte.50' — legacy v1 rows must pass."
+        )
+        assert 'confidence_score.gte.50' in src, (
+            "v2-validated rows must still gate at >= 50."
+        )
+
+    def test_strict_not_null_filter_removed(self):
+        """Negative assertion — the old strict filter is gone."""
+        import inspect
+        src = inspect.getsource(A._build_job_actions)
+        # The old line was: .not_.is_("confidence_score", None)
+        # Should no longer be present.
+        assert '.not_.is_("confidence_score"' not in src, (
+            "The strict `.not_.is_('confidence_score', None)` filter "
+            "was re-introduced — this regresses the 2026-05-26 hotfix "
+            "and will hide all legacy v1 jobs from /today."
+        )

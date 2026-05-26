@@ -405,11 +405,25 @@ def _build_job_actions(
         .eq("user_id", str(user_id))
         .is_("posting_closed_at", None)
         .is_("validation_failed", None)
-        .not_.is_("confidence_score", None)
-        .gte("confidence_score", 50)
+        # 2026-05-26 hotfix: previously required confidence_score IS NOT NULL
+        # AND >= 50, which filtered out every legacy v1 row (all rows ingested
+        # before the v2 scout work on 2026-05-12 have NULL confidence_score).
+        # Effect: /today showed zero job cards even when DB had high-score
+        # open postings.
+        # Relaxed filter: pass legacy rows (NULL) OR new v2 rows >= 50.
+        # The PostgREST `or` syntax mirrors `(confidence_score IS NULL OR
+        # confidence_score >= 50)`. Rows that explicitly failed v2 validation
+        # are still excluded because validation_failed IS NOT NULL is checked
+        # above. See diagnosis: docs/INCIDENTS/2026_05_26_today_empty.md
+        # (todo) and PR #136 root-cause analysis.
+        .or_("confidence_score.is.null,confidence_score.gte.50")
         .gte("match_score", MIN_SCORE_THRESHOLD)
-        .order("confidence_score", desc=True)
+        # Order: match_score desc (primary), confidence_score desc nulls last
+        # (secondary). When confidence_score is NULL, PostgREST sorts those
+        # last by default — fine, legacy rows rank below v2-validated rows
+        # at the same match_score.
         .order("match_score", desc=True)
+        .order("confidence_score", desc=True, nullsfirst=False)
         .limit(50)
         .execute()
     ).data or []
