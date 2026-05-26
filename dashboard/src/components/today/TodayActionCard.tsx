@@ -101,6 +101,13 @@ const KIND_ICON: Record<TodayActionKind, IconName> = {
   stale_application: 'mail',
   persona_stale: 'refresh',
   linkedin_post_due: 'note',
+  // 2026-05-26 hotfix: PR #134 extended TodayActionKind with two new
+  // follow-up kinds for the sectioned dashboard, but missed updating
+  // this Record-exhaustive map → Vercel build #dpl_ZbJMmSWNHFAYAAeNkJV7wKc8iXzu
+  // failed with "Type ... is missing the following properties: follow_up_overdue,
+  // follow_up_urgent". Both render with alert-triangle (tone differentiates).
+  follow_up_overdue: 'alert-triangle',
+  follow_up_urgent: 'alert-triangle',
 }
 
 // BUG-021: the "company" chip on /today is rendered in uppercase. When
