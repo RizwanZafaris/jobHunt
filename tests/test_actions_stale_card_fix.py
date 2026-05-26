@@ -272,3 +272,21 @@ class TestConfidenceFilterLegacyRows:
             "was re-introduced — this regresses the 2026-05-26 hotfix "
             "and will hide all legacy v1 jobs from /today."
         )
+
+    def test_defensive_select_fallback_present(self):
+        """The SELECT must have a fallback path for when migration 037
+        columns are missing. Without this, the entire job query 400s and
+        every job section on /today renders empty."""
+        import inspect
+        src = inspect.getsource(A._build_job_actions)
+        assert "_FULL_SELECT" in src, (
+            "Defensive _FULL_SELECT constant missing — without it the "
+            "query can't gracefully fall back to a legacy SELECT when "
+            "migration 037 hasn't been applied."
+        )
+        assert "_LEGACY_SELECT" in src, (
+            "Defensive _LEGACY_SELECT constant missing."
+        )
+        assert "surface_count" in src and "does not exist" in src, (
+            "Defensive fallback should catch column-missing errors."
+        )

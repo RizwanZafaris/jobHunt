@@ -386,47 +386,76 @@ def _build_job_actions(
     # 2026-05-12 (Tier 2 §4.3): added legitimacy_tier + legitimacy_score
     # to the select list. Filter `legitimacy_tier='suspicious'` is
     # application-side so NULL (unscored) still renders.
-    job_rows = (
-        db.table("jobs")
-        # Tier 2 select carries TWO new columns into /today:
-        #   - letter_grade (Tier 2 §4.1, G5): A-F chip group on each card.
-        #   - legitimacy_tier + legitimacy_score (Tier 2 §4.3, Legit v1):
-        #     ghost-posting filter + per-card legitimacy badge.
-        # Both are needed downstream; carrying them together keeps /today
-        # to one round-trip.
-        .select(
-            "id, title, company, match_score, resume_generated_at, "
-            "posting_closed_at, validation_status, confidence_score, "
-            "validation_failed, letter_grade, legitimacy_tier, legitimacy_score, "
-            # 2026-05-26 stale-card fix: surface created_at + surface_count
-            # so _rank() can apply age + lifecycle penalties (migration 037).
-            "created_at, first_surfaced_at, last_surfaced_at, surface_count"
+    # 2026-05-26 hotfix #2: Defensive SELECT.
+    # Some production databases haven't run migration 037 yet, which means
+    # surface_count / first_surfaced_at / last_surfaced_at columns don't
+    # exist on `jobs`. The "full" SELECT below requests them, and PostgREST
+    # returns 400 when columns are missing — the outer try/except in
+    # get_today_actions / get_today_sections then swallows the error and
+    # returns []. Result: every job section on /today empty even when the
+    # DB has perfectly valid jobs.
+    #
+    # Strategy: try the full SELECT first. On failure, fall back to the
+    # legacy SELECT (no migration-037 columns) and pad missing fields
+    # with safe defaults. This keeps the system functional whether the
+    # operator has run the migration or not.
+    _FULL_SELECT = (
+        "id, title, company, match_score, resume_generated_at, "
+        "posting_closed_at, validation_status, confidence_score, "
+        "validation_failed, letter_grade, legitimacy_tier, legitimacy_score, "
+        "created_at, discovered_at, "
+        "first_surfaced_at, last_surfaced_at, surface_count"
+    )
+    _LEGACY_SELECT = (
+        "id, title, company, match_score, resume_generated_at, "
+        "posting_closed_at, validation_status, confidence_score, "
+        "validation_failed, letter_grade, legitimacy_tier, legitimacy_score, "
+        "created_at, discovered_at"
+    )
+
+    def _query(select_cols: str):
+        return (
+            db.table("jobs")
+            .select(select_cols)
+            .eq("user_id", str(user_id))
+            .is_("posting_closed_at", None)
+            .is_("validation_failed", None)
+            # 2026-05-26 hotfix #1: Pass legacy rows (NULL) OR v2 rows >= 50.
+            # Previously required confidence_score IS NOT NULL AND >= 50,
+            # which filtered out every legacy v1 row (all rows ingested
+            # before the v2 scout work on 2026-05-12 have NULL).
+            .or_("confidence_score.is.null,confidence_score.gte.50")
+            .gte("match_score", MIN_SCORE_THRESHOLD)
+            .order("match_score", desc=True)
+            .order("confidence_score", desc=True, nullsfirst=False)
+            .limit(50)
         )
-        .eq("user_id", str(user_id))
-        .is_("posting_closed_at", None)
-        .is_("validation_failed", None)
-        # 2026-05-26 hotfix: previously required confidence_score IS NOT NULL
-        # AND >= 50, which filtered out every legacy v1 row (all rows ingested
-        # before the v2 scout work on 2026-05-12 have NULL confidence_score).
-        # Effect: /today showed zero job cards even when DB had high-score
-        # open postings.
-        # Relaxed filter: pass legacy rows (NULL) OR new v2 rows >= 50.
-        # The PostgREST `or` syntax mirrors `(confidence_score IS NULL OR
-        # confidence_score >= 50)`. Rows that explicitly failed v2 validation
-        # are still excluded because validation_failed IS NOT NULL is checked
-        # above. See diagnosis: docs/INCIDENTS/2026_05_26_today_empty.md
-        # (todo) and PR #136 root-cause analysis.
-        .or_("confidence_score.is.null,confidence_score.gte.50")
-        .gte("match_score", MIN_SCORE_THRESHOLD)
-        # Order: match_score desc (primary), confidence_score desc nulls last
-        # (secondary). When confidence_score is NULL, PostgREST sorts those
-        # last by default — fine, legacy rows rank below v2-validated rows
-        # at the same match_score.
-        .order("match_score", desc=True)
-        .order("confidence_score", desc=True, nullsfirst=False)
-        .limit(50)
-        .execute()
-    ).data or []
+
+    try:
+        job_rows = _query(_FULL_SELECT).execute().data or []
+    except Exception as e:
+        msg = str(e).lower()
+        if "surface_count" in msg or "first_surfaced_at" in msg or "last_surfaced_at" in msg or "does not exist" in msg or "could not find" in msg:
+            logger.warning(
+                "actions: full SELECT failed (likely migration 037 not applied): %s. "
+                "Falling back to legacy SELECT — surface tracking + dormant filter disabled.",
+                e,
+            )
+            try:
+                job_rows = _query(_LEGACY_SELECT).execute().data or []
+            except Exception as e2:
+                logger.exception("actions: legacy SELECT also failed — returning empty: %s", e2)
+                return []
+            # Pad missing migration-037 fields with safe defaults so downstream
+            # ranking + dormant filter behave as if every row is fresh + unseen.
+            for r in job_rows:
+                r.setdefault("first_surfaced_at", r.get("created_at") or r.get("discovered_at"))
+                r.setdefault("last_surfaced_at", r.get("created_at") or r.get("discovered_at"))
+                r.setdefault("surface_count", 0)
+        else:
+            logger.exception("actions: jobs SELECT failed: %s", e)
+            return []
+
     if not job_rows:
         return []
 
