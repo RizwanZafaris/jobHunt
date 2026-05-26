@@ -116,8 +116,67 @@ ATS_APIS = {
     "ashby":      "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams",
     "lever":          "https://api.lever.co/v0/postings/{slug}?mode=json",
     "smartrecruiters": "https://api.smartrecruiters.com/v1/companies/{slug}/postings?status=PUBLISHED",
-    "workday":        "https://{slug}.wd3.myworkdayjobs.com/wday/cxs/{slug}/jobs",
+    # 2026-05-26 fix: Workday URL is no longer hardcoded to wd3 + same slug
+    # for both subdomain and tenant. Real-world Workday URLs vary widely:
+    #   - Visa:           visa.wd5.myworkdayjobs.com/wday/cxs/Visa/jobs
+    #   - Mastercard:     mastercard.wd1.myworkdayjobs.com/wday/cxs/Mastercard/jobs
+    #   - PayPal:         paypal.wd1.myworkdayjobs.com/wday/cxs/jobs/jobs
+    #   - Western Union:  westernunion.wd5.myworkdayjobs.com/wday/cxs/WesternUnionJobs/jobs
+    #   - Worldpay:       worldpay.wd5.myworkdayjobs.com/wday/cxs/worldpay_external_careers_site/jobs
+    #
+    # New scheme: portals.yml can specify either:
+    #   workday_slug: visa.wd5         (subdomain only — tenant defaults to capitalized first segment)
+    #   workday_slug: visa.wd5/Visa    (subdomain/tenant explicit)
+    #   workday_tenant: Visa           (alternative explicit field)
+    # See _build_workday_url() below for parsing.
+    "workday": None,  # built dynamically per-company via _build_workday_url()
 }
+
+
+def _build_workday_url(workday_slug: str, workday_tenant: str = None) -> tuple[str, str]:
+    """Build the Workday CXS jobs URL from a slug + optional tenant.
+
+    Returns (url, tenant_for_logging).
+
+    Slug formats supported (backward compatible):
+      "visa"           → https://visa.wd3.myworkdayjobs.com/wday/cxs/visa/jobs   (legacy default)
+      "visa.wd5"       → https://visa.wd5.myworkdayjobs.com/wday/cxs/Visa/jobs   (tenant inferred)
+      "visa.wd5/Visa"  → https://visa.wd5.myworkdayjobs.com/wday/cxs/Visa/jobs   (tenant explicit)
+
+    When workday_tenant is passed separately, it always wins.
+    """
+    # Split tenant from slug if "/" present
+    tenant_from_slug = None
+    if "/" in workday_slug:
+        workday_slug, tenant_from_slug = workday_slug.split("/", 1)
+
+    # Determine subdomain: if no dot, default to wd3 cluster (legacy)
+    has_explicit_cluster = "." in workday_slug
+    if has_explicit_cluster:
+        subdomain = workday_slug  # already includes cluster, e.g. "visa.wd5"
+        subdomain_first = workday_slug.split(".")[0]
+    else:
+        subdomain = f"{workday_slug}.wd3"
+        subdomain_first = workday_slug
+
+    # Tenant resolution order:
+    #   1. explicit workday_tenant param (always wins)
+    #   2. tenant embedded in slug after "/"  (e.g. "visa.wd5/Visa")
+    #   3. if NEW-format (has explicit cluster like "visa.wd5"): capitalize first segment
+    #   4. LEGACY (no cluster): use slug verbatim (lowercase) — preserves
+    #      backward compat with the pre-fix scout, which used `slug=slug` for
+    #      both subdomain and tenant.
+    if workday_tenant:
+        tenant = workday_tenant
+    elif tenant_from_slug:
+        tenant = tenant_from_slug
+    elif has_explicit_cluster:
+        tenant = subdomain_first.capitalize()  # new-format default
+    else:
+        tenant = workday_slug  # legacy verbatim
+
+    url = f"https://{subdomain}.myworkdayjobs.com/wday/cxs/{tenant}/jobs"
+    return url, tenant
 
 # Signals that a job page is expired / no longer accepting applications
 EXPIRY_SIGNALS = [
@@ -629,9 +688,17 @@ class JobScoutAgent(BaseAgent):
             elif ats == "workday":
                 # GAP-02 fix: Workday JSON API (used by Mastercard, Visa, JPMorgan, HSBC etc.)
                 # Workday has no public uniform API — we use the CXS endpoint with a POST search.
-                # slug format expected: "mastercard" → subdomain + job board name (may differ per company)
-                workday_slug = company.get("workday_slug", slug)  # some companies need separate board name
-                url = ATS_APIS["workday"].format(slug=workday_slug)
+                # 2026-05-26 fix: slug can now include cluster ("visa.wd5") and
+                # tenant ("visa.wd5/Visa"). See _build_workday_url() above.
+                workday_slug = company.get("workday_slug") or slug
+                if not workday_slug:
+                    logger.debug(f"Workday: no workday_slug or slug for {company_name} — skipping")
+                    return []
+                workday_tenant = company.get("workday_tenant")
+                url, resolved_tenant = _build_workday_url(workday_slug, workday_tenant)
+                # subdomain for building job URLs (e.g. "visa.wd5") — extract from final URL
+                # Format: https://{subdomain}.myworkdayjobs.com/wday/cxs/{tenant}/jobs
+                workday_subdomain = url.split("//")[1].split(".myworkdayjobs.com")[0]
 
                 # 2026-05-26 fix: previously this used a single query
                 # `searchText: "product manager"` with `limit: 20`. For
@@ -691,7 +758,7 @@ class JobScoutAgent(BaseAgent):
                             all_jobs[job_path] = {
                                 "title": title,
                                 "company": company_name,
-                                "url": f"https://{workday_slug}.wd3.myworkdayjobs.com{job_path}",
+                                "url": f"https://{workday_subdomain}.myworkdayjobs.com{job_path}",
                                 "description": j.get("locationsText", ""),
                                 "source": "workday",
                                 "ats_type": "workday",
