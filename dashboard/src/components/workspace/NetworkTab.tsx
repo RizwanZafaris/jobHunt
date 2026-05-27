@@ -25,9 +25,9 @@ import { Icon } from '@/components/ui/Icon'
 import { Pill } from '@/components/ui/Pill'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { IntroDraftModal } from '@/components/network/IntroDraftModal'
-import { LinkedInImportButton } from '@/components/network/LinkedInImportButton'
+import { PeopleDiscoveryButton, type DiscoveryResult } from '@/components/network/PeopleDiscoveryButton'
 import { submitDraftIntro } from '@/lib/api'
-import type { ImportSummary, IntroDraft, ReferralPath } from '@/lib/types/network'
+import type { IntroDraft, ReferralPath } from '@/lib/types/network'
 
 const KIND_LABEL: Record<string, string> = {
   me_first_degree: '1°',
@@ -65,10 +65,10 @@ export function NetworkTab({
   onNetworkRefresh,
 }: NetworkTabProps) {
   const [activePath, setActivePath] = useState<ReferralPath | null>(null)
-  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null)
+  const [discoveryResult, setDiscoveryResult] = useState<DiscoveryResult | null>(null)
 
-  const handleImport = (summary: ImportSummary) => {
-    setImportSummary(summary)
+  const handleDiscovery = (result: DiscoveryResult) => {
+    setDiscoveryResult(result)
     onNetworkRefresh?.()
   }
 
@@ -78,19 +78,20 @@ export function NetworkTab({
       <Card padding="md">
         <EmptyState
           icon="users"
-          title="Import your LinkedIn CSV to find warm intros"
-          description={`Once you upload your connections, we'll find anyone employed at ${companyName} (or one degree away).`}
-          action={<LinkedInImportButton onSummary={handleImport} />}
+          title="Discover people at your target companies"
+          description={`We'll use Perplexity to find Recruiters, Heads of Talent, Hiring Managers, and Senior PMs at ${companyName} and your other target companies — no LinkedIn CSV upload required.`}
+          action={<PeopleDiscoveryButton onResult={handleDiscovery} />}
           hint={
             <>
-              How: LinkedIn → Settings & Privacy → Data privacy → Get a copy of your data → Connections.
+              Runs server-side via Perplexity Sonar (~60-120s for 20 companies).
+              Results land in your network graph automatically.
             </>
           }
         />
-        {importSummary && (
+        {discoveryResult && (
           <p role="status" className="mt-3 text-2xs text-success text-center">
-            Imported {importSummary.imported} contacts · {importSummary.edges_created} edges ·{' '}
-            {importSummary.employments_created} employments
+            Discovered {discoveryResult.total_people_persisted} people across{' '}
+            {discoveryResult.companies_processed} companies. Refresh to see paths.
           </p>
         )}
       </Card>
@@ -127,12 +128,12 @@ export function NetworkTab({
         <EmptyState
           icon="users"
           title={`No warm intros to ${companyName} yet`}
-          description={`We checked your ${networkSize} contacts — no one currently works there, and no two-hop introducer connects you. Either import more contacts or apply cold this round.`}
-          action={<LinkedInImportButton onSummary={handleImport} />}
+          description={`We checked your ${networkSize} contacts — no one currently works there, and no two-hop introducer connects you. Discover more people via Perplexity, or apply cold this round.`}
+          action={<PeopleDiscoveryButton onResult={handleDiscovery} />}
         />
-        {importSummary && (
+        {discoveryResult && (
           <p role="status" className="mt-3 text-2xs text-success text-center">
-            Imported {importSummary.imported} contacts. Refresh the page to recompute paths.
+            Discovered {discoveryResult.total_people_persisted} people. Refresh to recompute paths.
           </p>
         )}
       </Card>

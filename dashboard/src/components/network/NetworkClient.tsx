@@ -22,10 +22,9 @@ import { Icon } from '@/components/ui/Icon'
 import { TextInput } from '@/components/ui/Field'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { IntroDraftModal } from '@/components/network/IntroDraftModal'
-import { LinkedInImportButton } from '@/components/network/LinkedInImportButton'
+import { PeopleDiscoveryButton, type DiscoveryResult } from '@/components/network/PeopleDiscoveryButton'
 import { submitDraftIntro } from '@/lib/api'
 import type {
-  ImportSummary,
   IntroDraft,
   Person,
   ReferralPath,
@@ -84,10 +83,12 @@ async function draftIntroForPath(path: ReferralPath): Promise<IntroDraft> {
 export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps) {
   const [search, setSearch] = useState('')
   const [activePath, setActivePath] = useState<ReferralPath | null>(null)
-  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null)
+  const [discoveryResult, setDiscoveryResult] = useState<DiscoveryResult | null>(null)
   // BUG-020 — disclaim that the loaded names are demo data. Hidden once
-  // the user imports a real CSV (importSummary truthy).
-  const showDemoBanner = importSummary === null && isDemoFixture(people)
+  // the user discovers real people (discoveryResult truthy with >0 people).
+  const showDemoBanner =
+    (discoveryResult === null || discoveryResult.total_people_persisted === 0) &&
+    isDemoFixture(people)
 
   const filteredPeople = useMemo(() => {
     if (!search.trim()) return people
@@ -119,18 +120,16 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <LinkedInImportButton onSummary={setImportSummary} />
+          <PeopleDiscoveryButton onResult={setDiscoveryResult} />
         </div>
-        {importSummary && (
+        {discoveryResult && (
           <p
             role="status"
             className="mt-3 text-2xs text-success"
           >
-            Imported {importSummary.imported} contacts ·{' '}
-            {importSummary.edges_created} edges ·{' '}
-            {importSummary.employments_created} employments
-            {importSummary.skipped ? ` · skipped ${importSummary.skipped}` : ''}
-            {importSummary.errors.length > 0 ? ` · ${importSummary.errors.length} errors` : ''}
+            Discovered {discoveryResult.total_people_persisted} people across{' '}
+            {discoveryResult.companies_processed} companies ·{' '}
+            {discoveryResult.total_queries} Perplexity queries
           </p>
         )}
       </Card>

@@ -1837,6 +1837,55 @@ async def trigger_scout(
         )
 
 
+@router.get("/today/trigger-people-discovery", tags=["actions", "admin"])
+@router.post("/today/trigger-people-discovery", tags=["actions", "admin"])
+async def trigger_people_discovery(
+    limit_companies: int = Query(
+        default=20, ge=1, le=100,
+        description="Cap on companies per run — protects Perplexity spend.",
+    ),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Manually fire PeopleFinderAgent.run() — Perplexity-based people discovery.
+
+    Replaces the LinkedIn CSV upload flow (2026-05-27). For each target
+    company, queries Perplexity Sonar for Recruiters + Heads of Talent +
+    Hiring Managers + Senior PMs in the user's target geos. Persists
+    results into people + employments + target_company_employees so the
+    Network surface + referral_graph path-finder have data to chew on.
+
+    Cost ~$0.005/query × 4 queries/company = ~$0.02 per company.
+    20 companies ≈ $0.40 per run.
+
+    Runs synchronously (~60-120s for 20 companies).
+    GET alias provided for browser-clickable triggers.
+    """
+    try:
+        from agents.people_finder_agent import PeopleFinderAgent
+    except Exception as e:
+        logger.exception("trigger-people-discovery: import failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"people_finder module unavailable: {e}",
+        )
+
+    try:
+        agent = PeopleFinderAgent()
+        result = await agent.run(user_id=str(user.id), limit_companies=limit_companies)
+        return {
+            "ok": True,
+            "mode": "sync",
+            "message": "People discovery complete. Visit /network to see results.",
+            **result,
+        }
+    except Exception as e:
+        logger.exception("trigger-people-discovery: run failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"people discovery failed: {type(e).__name__}: {e}",
+        )
+
+
 @router.get("/today/trigger-validator", tags=["actions", "admin"])
 @router.post("/today/trigger-validator", tags=["actions", "admin"])
 def trigger_validator(

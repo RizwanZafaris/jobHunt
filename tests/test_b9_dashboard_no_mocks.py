@@ -65,19 +65,32 @@ class TestNetworkClient:
         assert "MOCK_INTRO_DRAFT" not in src, "NetworkClient still references MOCK_INTRO_DRAFT"
 
 
-class TestLinkedInImportButton:
-    def test_does_not_import_mock_summary(self):
-        src = _read("components/network/LinkedInImportButton.tsx")
-        assert "MOCK_IMPORT_SUMMARY" not in src, "LinkedInImportButton still imports MOCK_IMPORT_SUMMARY"
+class TestPeopleDiscoveryButton:
+    """2026-05-27: replaced LinkedInImportButton (CSV upload) with
+    PeopleDiscoveryButton (server-side Perplexity discovery)."""
 
     def test_uses_real_fetch(self):
-        src = _read("components/network/LinkedInImportButton.tsx")
-        assert "/api/proxy/network/import/linkedin-csv" in src, "LinkedInImportButton doesn't use real endpoint"
-        assert "fetch(" in src, "LinkedInImportButton missing fetch call"
+        src = _read("components/network/PeopleDiscoveryButton.tsx")
+        assert "/api/proxy/actions/today/trigger-people-discovery" in src, (
+            "PeopleDiscoveryButton doesn't hit the trigger-people-discovery endpoint"
+        )
+        assert "fetch(" in src, "PeopleDiscoveryButton missing fetch call"
 
     def test_no_mock_delay(self):
-        src = _read("components/network/LinkedInImportButton.tsx")
-        assert "setTimeout" not in src, "LinkedInImportButton still uses artificial delay"
+        src = _read("components/network/PeopleDiscoveryButton.tsx")
+        assert "setTimeout" not in src, "PeopleDiscoveryButton still uses artificial delay"
+
+    def test_csv_button_deleted(self):
+        """The old LinkedInImportButton.tsx must not exist."""
+        import os
+        dashboard_root = os.path.join(
+            os.path.dirname(__file__), "..", "dashboard", "src"
+        )
+        path = os.path.join(dashboard_root, "components/network/LinkedInImportButton.tsx")
+        assert not os.path.exists(path), (
+            "LinkedInImportButton.tsx still exists — was supposed to be deleted "
+            "alongside the CSV upload removal."
+        )
 
 
 class TestLibApi:

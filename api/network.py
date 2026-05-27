@@ -207,37 +207,26 @@ def create_person(
 
 
 # ── /network/import/linkedin-csv ──────────────────────────────────────────
-@router.post("/import/linkedin-csv", response_model=ImportSummary)
-async def import_linkedin_csv(
-    file: UploadFile = File(...),
+# REMOVED 2026-05-27: CSV upload replaced by Perplexity-based people
+# discovery. The new endpoint lives at /admin/today/trigger-people-discovery
+# in api/actions.py — it auto-discovers Recruiters, Heads of Talent,
+# Hiring Managers, and Senior PMs at all target companies without
+# requiring a manual LinkedIn export.
+#
+# Returning 410 Gone (semantically: this resource intentionally deleted)
+# so existing clients fail loudly instead of silently 404-ing.
+@router.post("/import/linkedin-csv", deprecated=True)
+async def import_linkedin_csv_removed(
     user: User = Depends(get_current_user),
-) -> ImportSummary:
-    """Upload a LinkedIn connections CSV (synchronous; small files only).
-
-    The CSV columns we support are exactly those LinkedIn exports today:
-    First Name, Last Name, URL, Email Address, Company, Position, Connected On.
-
-    For larger files (>50k rows), an async/queued version belongs in
-    api/queue.py. V1 is sync-and-simple.
-    """
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="empty_file")
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("latin-1", errors="replace")
-
-    rg = ReferralGraph(user.id)
-    summary = rg.import_linkedin_csv(text, is_path=False)
-    # Run the cache populator inline so paths are findable right after import.
-    try:
-        rg.populate_target_company_employees()
-    except Exception as exc:  # populator failure isn't fatal to the import
-        logger.warning("populate_target_company_employees failed after CSV: %s", exc)
-        summary.setdefault("errors", []).append(f"populator: {exc!r}")
-
-    return ImportSummary(**summary)
+) -> None:
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "LinkedIn CSV import was removed 2026-05-27. Use "
+            "/admin/today/trigger-people-discovery instead — it queries "
+            "Perplexity Sonar per target company, no CSV export needed."
+        ),
+    )
 
 
 # ── /network/edges ────────────────────────────────────────────────────────
