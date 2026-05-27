@@ -1795,6 +1795,7 @@ def debug_today_counts(
 # These endpoints let the user (or a dashboard button) manually fire
 # discovery + validation without waiting for the daily 09:00 cron.
 
+@router.get("/today/trigger-scout", tags=["actions", "admin"])
 @router.post("/today/trigger-scout", tags=["actions", "admin"])
 async def trigger_scout(
     user: User = Depends(get_current_user),
@@ -1802,6 +1803,12 @@ async def trigger_scout(
     """Manually fire JobScoutAgent.run() — the daily ATS scan.
 
     Runs synchronously (~30-60s) — returns a summary once done.
+
+    Accepts both GET (browser-clickable) and POST (programmatic). The
+    GET alias was added 2026-05-27 because opening the trigger URL in
+    a browser tab is the most reliable way to fire the scout (the
+    Vercel SSO session unlocks the proxy automatically). POST is kept
+    so existing scripts/dashboard buttons keep working unchanged.
     """
     try:
         from agents.job_scout_agent import JobScoutAgent
@@ -1830,6 +1837,7 @@ async def trigger_scout(
         )
 
 
+@router.get("/today/trigger-validator", tags=["actions", "admin"])
 @router.post("/today/trigger-validator", tags=["actions", "admin"])
 def trigger_validator(
     limit: int = Query(default=200, ge=1, le=1000),
@@ -1840,6 +1848,8 @@ def trigger_validator(
     so they stop surfacing on /today.
 
     Use this when /today is showing jobs you know are closed (Adecco, etc).
+
+    GET alias added 2026-05-27 — same rationale as trigger-scout above.
     """
     try:
         from agents.job_validator import validate_batch
