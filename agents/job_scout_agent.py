@@ -138,12 +138,23 @@ def _build_workday_url(workday_slug: str, workday_tenant: str = None) -> tuple[s
 
     Returns (url, tenant_for_logging).
 
-    Slug formats supported (backward compatible):
-      "visa"           → https://visa.wd3.myworkdayjobs.com/wday/cxs/visa/jobs   (legacy default)
-      "visa.wd5"       → https://visa.wd5.myworkdayjobs.com/wday/cxs/Visa/jobs   (tenant inferred)
-      "visa.wd5/Visa"  → https://visa.wd5.myworkdayjobs.com/wday/cxs/Visa/jobs   (tenant explicit)
+    The CXS endpoint is ALWAYS two segments: /wday/cxs/{company}/{site}/jobs
+    Verified live 2026-05-27 against Visa, Mastercard, PayPal, Western Union,
+    Worldpay — all return 200 only with the two-segment path.
+      ✓ mastercard.wd1/wday/cxs/mastercard/CorporateCareers/jobs       (1141 jobs)
+      ✓ visa.wd5/wday/cxs/visa/Visa/jobs                                (15 Dubai-search)
+      ✓ paypal.wd1/wday/cxs/paypal/jobs/jobs                            (278 jobs)
+      ✓ westernunion.wd5/wday/cxs/westernunion/WesternUnionJobs/jobs    (72 jobs)
+      ✓ worldpay.wd5/wday/cxs/worldpay/worldpay_external_careers_site/jobs (169)
+      ✗ Single-segment paths (e.g. cxs/Mastercard/jobs) all return 404/400.
 
-    When workday_tenant is passed separately, it always wins.
+    Slug formats supported (backward compatible):
+      "visa.wd5"                              → cxs/visa/Visa/jobs            (site inferred from subdomain)
+      "visa.wd5/Visa"                         → cxs/visa/Visa/jobs            (site explicit)
+      slug="visa.wd5", tenant="Visa"          → cxs/visa/Visa/jobs            (site via tenant param)
+      slug="mastercard.wd1", tenant="CorporateCareers" → cxs/mastercard/CorporateCareers/jobs
+      slug="mastercard.wd1", tenant="mastercard/CorporateCareers"      → exact pass-through (company override)
+      "visa" (legacy, no cluster)             → visa.wd3/cxs/visa/Visa/jobs   (cluster + site both inferred)
     """
     # Split tenant from slug if "/" present
     tenant_from_slug = None
@@ -159,24 +170,25 @@ def _build_workday_url(workday_slug: str, workday_tenant: str = None) -> tuple[s
         subdomain = f"{workday_slug}.wd3"
         subdomain_first = workday_slug
 
-    # Tenant resolution order:
-    #   1. explicit workday_tenant param (always wins)
-    #   2. tenant embedded in slug after "/"  (e.g. "visa.wd5/Visa")
-    #   3. if NEW-format (has explicit cluster like "visa.wd5"): capitalize first segment
-    #   4. LEGACY (no cluster): use slug verbatim (lowercase) — preserves
-    #      backward compat with the pre-fix scout, which used `slug=slug` for
-    #      both subdomain and tenant.
+    # Resolve the SITE name (the second path segment).
+    # Order: explicit tenant param → embedded after "/" → capitalize subdomain.
     if workday_tenant:
-        tenant = workday_tenant
+        site = workday_tenant
     elif tenant_from_slug:
-        tenant = tenant_from_slug
-    elif has_explicit_cluster:
-        tenant = subdomain_first.capitalize()  # new-format default
+        site = tenant_from_slug
     else:
-        tenant = workday_slug  # legacy verbatim
+        site = subdomain_first.capitalize()
 
-    url = f"https://{subdomain}.myworkdayjobs.com/wday/cxs/{tenant}/jobs"
-    return url, tenant
+    # Allow operators to override the {company} segment too by passing
+    # "company/site" in workday_tenant (e.g. "mastercard/CorporateCareers").
+    # If no "/" in site, derive company from subdomain prefix (lowercase).
+    if "/" in site:
+        tenant_path = site
+    else:
+        tenant_path = f"{subdomain_first}/{site}"
+
+    url = f"https://{subdomain}.myworkdayjobs.com/wday/cxs/{tenant_path}/jobs"
+    return url, tenant_path
 
 # Signals that a job page is expired / no longer accepting applications
 EXPIRY_SIGNALS = [
@@ -718,61 +730,88 @@ class JobScoutAgent(BaseAgent):
                 #   - Remote roles
                 # Plus the baseline "product manager" sweep for anything
                 # without an explicit location in the search index.
+                # Workday's CXS searchText is an AND query — every token must
+                # appear in the job (title/description/location concatenated).
+                # `"product manager Dubai"` requires BOTH tokens, so a "Vice
+                # President, Product Management" role in Dubai is excluded
+                # (it doesn't contain the literal phrase "product manager").
+                # Strategy: query by region NAME only; let _is_relevant_title()
+                # filter PM-style titles client-side. Verified 2026-05-27 on
+                # Mastercard — "Dubai" returns 5, "product manager Dubai" only 1.
                 REGION_QUERIES = [
-                    "product manager",            # baseline
-                    "product manager Dubai",
-                    "product manager London",
-                    "product manager Singapore",
-                    "product manager Amsterdam",
-                    "product manager remote",
+                    "product manager",   # baseline — Workday's general PM listings
+                    "Dubai",
+                    "London",
+                    "Singapore",
+                    "Amsterdam",
+                    "Abu Dhabi",
+                    "Riyadh",
+                    "remote",
                 ]
-                PAGE_SIZE = 50
+                # Workday CXS hard-caps limit at 20 (verified 2026-05-27 against
+                # Visa/Mastercard/PayPal/Western Union/Worldpay — all return
+                # HTTP 400 for limit>20). Walk 4 pages via offset to get ~80
+                # per region query; total ceiling per company is ~640 across
+                # 8 region queries × 4 pages, deduplicated by externalPath.
+                PAGE_SIZE = 20
+                MAX_PAGES_PER_QUERY = 4
 
                 all_jobs: dict[str, dict] = {}  # dedupe by externalPath
                 for query in REGION_QUERIES:
-                    try:
-                        resp = await client.post(
-                            url,
-                            json={
-                                "appliedFacets": {},
-                                "limit": PAGE_SIZE,
-                                "offset": 0,
-                                "searchText": query,
-                            },
-                            headers={"Content-Type": "application/json"},
-                            timeout=30,
-                        )
-                        if resp.status_code in (404, 403, 405):
-                            # Whole company endpoint dead — no point trying more queries.
-                            logger.debug(f"Workday {workday_slug} returned {resp.status_code} on query '{query}' — skipping company")
-                            return []
-                        resp.raise_for_status()
-                        data = resp.json()
-                        for j in data.get("jobPostings", []):
-                            title = j.get("title", "")
-                            if not self._is_relevant_title(title):
-                                continue
-                            job_path = j.get("externalPath", "")
-                            if not job_path or job_path in all_jobs:
-                                continue
-                            all_jobs[job_path] = {
-                                "title": title,
-                                "company": company_name,
-                                "url": f"https://{workday_subdomain}.myworkdayjobs.com{job_path}",
-                                "description": j.get("locationsText", ""),
-                                "source": "workday",
-                                "ats_type": "workday",
-                                "location": j.get("locationsText", ""),
-                                "match_score": 0,
-                                "discovered_at": datetime.utcnow().isoformat(),
-                            }
-                    except Exception as e:
-                        # One bad query shouldn't drop the whole company.
-                        # Log + continue to the next regional query.
-                        logger.debug(f"Workday query failed for {workday_slug} q='{query}': {e}")
-                        continue
-                    # Tiny courtesy delay between queries to the same tenant.
-                    await asyncio.sleep(0.2)
+                    company_dead = False
+                    for page in range(MAX_PAGES_PER_QUERY):
+                        try:
+                            resp = await client.post(
+                                url,
+                                json={
+                                    "appliedFacets": {},
+                                    "limit": PAGE_SIZE,
+                                    "offset": page * PAGE_SIZE,
+                                    "searchText": query,
+                                },
+                                headers={"Content-Type": "application/json"},
+                                timeout=30,
+                            )
+                            if resp.status_code in (404, 403, 405):
+                                # Whole company endpoint dead — abort all queries for this company.
+                                logger.debug(f"Workday {workday_slug} returned {resp.status_code} on query '{query}' page {page} — skipping company")
+                                company_dead = True
+                                break
+                            resp.raise_for_status()
+                            data = resp.json()
+                            postings = data.get("jobPostings", [])
+                            if not postings:
+                                # No more results for this query — stop paginating.
+                                break
+                            for j in postings:
+                                title = j.get("title", "")
+                                if not self._is_relevant_title(title):
+                                    continue
+                                job_path = j.get("externalPath", "")
+                                if not job_path or job_path in all_jobs:
+                                    continue
+                                all_jobs[job_path] = {
+                                    "title": title,
+                                    "company": company_name,
+                                    "url": f"https://{workday_subdomain}.myworkdayjobs.com{job_path}",
+                                    "description": j.get("locationsText", ""),
+                                    "source": "workday",
+                                    "ats_type": "workday",
+                                    "location": j.get("locationsText", ""),
+                                    "match_score": 0,
+                                    "discovered_at": datetime.utcnow().isoformat(),
+                                }
+                            # Stop early if Workday returned fewer than a full page.
+                            if len(postings) < PAGE_SIZE:
+                                break
+                        except Exception as e:
+                            # One bad page shouldn't drop the whole query.
+                            logger.debug(f"Workday query failed for {workday_slug} q='{query}' page={page}: {e}")
+                            break
+                        await asyncio.sleep(0.15)
+                    if company_dead:
+                        return []
+                    await asyncio.sleep(0.2)  # courtesy delay between queries
 
                 logger.info(
                     "Workday %s: %d unique relevant jobs across %d region queries",
@@ -1394,19 +1433,38 @@ Certifications: PMP, PMI-ACP, CSPO, CSM
 """.strip()
 
     def _is_relevant_title(self, title: str) -> bool:
-        """Filter: does this title match a PM/PMO/Head of Product role?"""
+        """Filter: does this title match a PM/PMO/Head of Product role?
+
+        2026-05-27: expanded positives to catch Workday's full-name title
+        formats like "Vice President, Product Management, Authentication
+        Products" — previously filtered out because only "product manager"
+        (singular) matched, not "product management". This dropped real
+        VP/Director-level PM roles at Mastercard/Visa/Amex/JPMC.
+        """
         title_lower = title.lower()
         positive = [
-            "product manager", "head of product", "chief product",
-            "programme manager", "program manager", "pmo",
-            "vp product", "vp of product", "vice president product",
+            # PM core
+            "product manager", "product management", "product mgmt",
+            "product owner", "product lead", "product leader",
+            # Senior product titles
+            "head of product", "chief product", "cpo,", "cpo ",
+            "vp product", "vp of product", "vp, product",
+            "vice president product", "vice president, product",
+            "vice president of product",
             "director of product", "director, product",
-            "product lead", "product owner",
-            "head of payments", "head of digital",
-            "head of engineering",   # Sometimes Rizwan-relevant hybrid roles
+            "senior director, product", "principal product",
+            "group product", "global product",
+            # Programme / PMO (Rizwan's hybrid background)
+            "programme manager", "program manager", "pmo",
+            "senior program", "senior programme",
+            # Adjacent senior payments roles
+            "head of payments", "head of digital", "head of fintech",
+            "head of platform", "head of engineering",
         ]
         negative = ["intern", "graduate", "junior", "associate analyst",
-                    "marketing manager", "account manager", "sales"]
+                    "marketing manager", "account manager", "sales manager",
+                    "sales representative", "sales executive",
+                    "assistant", "apprentice", "trainee"]
         if any(neg in title_lower for neg in negative):
             return False
         return any(kw in title_lower for kw in positive)

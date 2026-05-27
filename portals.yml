@@ -32,10 +32,10 @@ card_networks:
     careers_url: https://careers.mastercard.com/us/en/search-results
     ats_type: workday
     workday_slug: mastercard.wd1
-    workday_tenant: Mastercard
+    workday_tenant: CorporateCareers
     priority: 2
-    notes: "Target London/Amsterdam senior roles only. Dubai posts = graduate + UAE Nationals preferred."
-    tags: [card-network, payments, global, uk]
+    notes: "Verified 2026-05-27: cxs/mastercard/CorporateCareers/jobs returns 1141 total, 5 in Dubai inc. VP Product Mgmt Authentication. Target London/Amsterdam senior + Dubai director-level."
+    tags: [card-network, payments, global, uk, uae]
 
   - name: American Express
     website: https://americanexpress.com
@@ -47,15 +47,9 @@ card_networks:
     notes: "Strong product culture. London and Singapore have senior PM roles. Dubai office growing."
     tags: [card-network, payments, premium, global, uk]
 
-  - name: Discover / Discover Financial Services
-    website: https://discover.com
-    careers_url: https://jobs.discover.com
-    ats_type: workday
-    workday_slug: discover.wd5
-    workday_tenant: DFS_GLOBAL
-    priority: 3
-    notes: "Primarily US. Some global remote roles."
-    tags: [card-network, payments, us]
+  # Discover removed 2026-05-27 — acquired by Capital One. Careers redirect
+  # to capitalonecareers.com which uses a non-Workday ATS (eightfold/avature).
+  # Track under Capital One if added in future.
 
   - name: UnionPay International
     website: https://unionpayintl.com
