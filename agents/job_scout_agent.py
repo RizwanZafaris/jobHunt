@@ -1433,20 +1433,37 @@ Certifications: PMP, PMI-ACP, CSPO, CSM
 """.strip()
 
     def _is_relevant_title(self, title: str) -> bool:
-        """Filter: does this title match a PM/PMO/Head of Product role?
+        """Filter: does this title match a PM or adjacent senior-tier role?
 
-        2026-05-27: expanded positives to catch Workday's full-name title
-        formats like "Vice President, Product Management, Authentication
-        Products" — previously filtered out because only "product manager"
-        (singular) matched, not "product management". This dropped real
-        VP/Director-level PM roles at Mastercard/Visa/Amex/JPMC.
+        2026-05-27: expanded positives twice in one day —
+          (a) catch Workday's full-name format ("Vice President, Product
+              Management" was being dropped because only "product manager"
+              matched, not "product management");
+          (b) include Director+/Head-tier Strategy, Business Development,
+              Digital Transformation, Partnerships, and Managing Consultant
+              roles at payments firms. These are legitimate Director-tier
+              paths for a senior payments PM at Mastercard/Visa/Amex/etc.
+              Kept junior/manager-level adjacent roles excluded to maintain
+              signal-to-noise.
         """
         title_lower = title.lower()
+
+        # NEGATIVES first — rejected regardless of any positive match below.
+        negative = [
+            "intern", "graduate", "junior", "associate analyst",
+            "marketing manager", "account manager", "sales manager",
+            "sales representative", "sales executive", "sales associate",
+            "assistant", "apprentice", "trainee", "entry level",
+            "office manager", "executive assistant",
+        ]
+        if any(neg in title_lower for neg in negative):
+            return False
+
+        # POSITIVES — any match passes.
         positive = [
-            # PM core
+            # ── PM core ────────────────────────────────────────────────
             "product manager", "product management", "product mgmt",
             "product owner", "product lead", "product leader",
-            # Senior product titles
             "head of product", "chief product", "cpo,", "cpo ",
             "vp product", "vp of product", "vp, product",
             "vice president product", "vice president, product",
@@ -1454,19 +1471,36 @@ Certifications: PMP, PMI-ACP, CSPO, CSM
             "director of product", "director, product",
             "senior director, product", "principal product",
             "group product", "global product",
-            # Programme / PMO (Rizwan's hybrid background)
+            # ── Programme / PMO (Rizwan's hybrid background) ───────────
             "programme manager", "program manager", "pmo",
             "senior program", "senior programme",
-            # Adjacent senior payments roles
+            # ── Adjacent senior payments leadership roles ──────────────
             "head of payments", "head of digital", "head of fintech",
             "head of platform", "head of engineering",
+            "head of strategy", "head of innovation",
+            "head of business development", "head of partnerships",
+            "head of transformation", "head of growth",
+            # ── Director+/VP-tier Strategy, BD, Transformation ─────────
+            # (Director-tier paths into Mastercard/Visa/Amex/HSBC/etc.)
+            "director of strategy", "director, strategy",
+            "director of business development", "director, business development",
+            "director of partnerships", "director, partnerships",
+            "director of transformation", "director, transformation",
+            "director, digital transformation",
+            "director, value enablement",
+            "vp strategy", "vp, strategy", "vp of strategy",
+            "vice president strategy", "vice president, strategy",
+            "vp business development", "vp, business development",
+            "vice president business development",
+            "vice president, business development",
+            "vp partnerships", "vice president, partnerships",
+            # ── Managing Consultant tier (Mastercard/Visa internal track) ─
+            # Senior MC / Principal MC / MD-Consulting are Director-equivalent
+            # at MC's Advisors & Consulting Services org.
+            "senior managing consultant", "principal managing consultant",
+            "managing director, consulting", "managing director consulting",
+            "head of advisory", "director, advisory", "director of advisory",
         ]
-        negative = ["intern", "graduate", "junior", "associate analyst",
-                    "marketing manager", "account manager", "sales manager",
-                    "sales representative", "sales executive",
-                    "assistant", "apprentice", "trainee"]
-        if any(neg in title_lower for neg in negative):
-            return False
         return any(kw in title_lower for kw in positive)
 
     def _extract_company_from_title(self, title: str) -> Optional[str]:
