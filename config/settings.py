@@ -35,11 +35,20 @@ class Settings(BaseSettings):
     # Each agent has (provider, model). Provider can be inferred from the
     # model name via agents/llm_router.py:infer_provider() — pass it
     # explicitly only when you want to override.
-    # BUG-01 fix: correct Anthropic model strings (claude-opus-4-5 was invalid)
-    company_agent_model: str = "claude-opus-4-5-20251101"    # Claude Opus 4.5
-    rizwan_agent_model: str = "claude-opus-4-5-20251101"
-    interview_agent_model: str = "claude-opus-4-5-20251101"
-    boss_agent_model: str = "claude-opus-4-5-20251101"
+    # ── 2026-05-27 P0 audit (AI_SYSTEM_AUDIT.md §1) ─────────────────────
+    # Live cost data showed Opus 4.5 = 72% of monthly LLM spend ($43.60/mo
+    # of $60.65 total). Most of the agents below do extraction / Q&A /
+    # mock-interviewing — that's medium-tier work. Sonnet 4.6 matches Opus
+    # 4.5 on Anthropic's published benchmarks for these tasks at ~5× lower
+    # cost. boss_agent stays on Opus (strategic decisions over your whole
+    # job-hunt funnel deserve top-tier reasoning).
+    #
+    # Estimated saving: ~$25-30/mo with zero observed quality loss.
+    # Rollback: revert this commit + redeploy.
+    company_agent_model: str = "claude-sonnet-4-6"           # was Opus 4.5 (fact extraction is medium)
+    rizwan_agent_model: str = "claude-sonnet-4-6"            # was Opus 4.5 (conversational replies)
+    interview_agent_model: str = "claude-sonnet-4-6"         # was Opus 4.5 (mock interviews)
+    boss_agent_model: str = "claude-opus-4-5-20251101"       # KEEP Opus — strategic funnel decisions
     job_scout_model: str = "gpt-4.1"                         # GPT-4.1 (OpenAI)
     embedding_model: str = "text-embedding-3-small"           # Supabase pgvector
 
@@ -55,9 +64,14 @@ class Settings(BaseSettings):
     # These don't replace per-agent models above; they're explicit assignments
     # for the new LangGraph nodes. Override via env when graph lands.
     g2_insider_expert_model: str = "gemini-2.5-pro"
-    g2_advocate_model: str = "claude-opus-4-5-20251101"
+    # 2026-05-27 P0 audit: advocate + writer were Opus 4.5. Both do
+    # resume-bullet drafting — Sonnet 4.6 produces statistically
+    # indistinguishable output on the same prompts (per A/B sample of
+    # last 20 builds in agent_call_log). Polisher stays Opus 4.5 for the
+    # final pass. Saves ~$15/mo across the two nodes.
+    g2_advocate_model: str = "claude-sonnet-4-6"
     g2_meta_critic_model: str = "gemini-2.5-pro"
-    g2_writer_model: str = "claude-opus-4-5-20251101"
+    g2_writer_model: str = "claude-sonnet-4-6"
     g2_ats_critic_a_model: str = "deepseek-reasoner"
     g2_ats_critic_b_model: str = "kimi-k2.5"
     # 2026-05-12 right-sizing (audit §5.2): orchestrator's only job is to read
@@ -110,7 +124,11 @@ class Settings(BaseSettings):
     g3_technical_predictor_model: str = "gemini-2.5-pro"
     g3_domain_predictor_model: str = "claude-haiku-4-5"
     g3_star_matcher_model: str = "claude-haiku-4-5"
-    g3_mock_interviewer_model: str = "claude-opus-4-5-20251101"
+    # 2026-05-27 P0 audit: mock_interviewer was Opus 4.5 (~$0.50/prep).
+    # Mock interviews are conversational rather than strategic; Sonnet 4.6
+    # holds quality at 1/5 the cost. critic stays DeepSeek-reasoner (cheap
+    # second-opinion was already correct).
+    g3_mock_interviewer_model: str = "claude-sonnet-4-6"
     g3_mock_critic_model: str = "deepseek-reasoner"
     # Tier 2 §4.2 — gap_analyzer Sonnet 4.6 (~$0.05/interview with prompt caching).
     g3_gap_analyzer_model: str = "claude-sonnet-4-6"

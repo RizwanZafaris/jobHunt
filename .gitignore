@@ -56,3 +56,7 @@ graphify-out/
 _pending_deps_*.txt
 _pending_queue_additions.md
 _pending_endpoints.md
+
+# macOS exFAT shadow files (T7 Shield drive)
+._*
+.DS_Store
