@@ -318,17 +318,17 @@ class LLMRouter:
             elif provider == "openai":
                 result = await self._call_openai_compatible(
                     "openai", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "deepseek":
                 result = await self._call_openai_compatible(
                     "deepseek", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "moonshot":
                 result = await self._call_openai_compatible(
                     "moonshot", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "google":
                 result = await self._call_google(
@@ -601,9 +601,21 @@ class LLMRouter:
         temperature: float,
         tools: Optional[list],
         json_response: bool,
+        agent_name: Optional[str] = None,
         **kwargs,
     ) -> LLMResult:
-        """OpenAI / DeepSeek / Moonshot all share OpenAI's chat completions schema."""
+        """OpenAI / DeepSeek / Moonshot all share OpenAI's chat completions schema.
+
+        2026-05-27 P1 audit: auto-attach `prompt_cache_key` for OpenAI
+        provider so the chat-completions API can cache the request prefix
+        (system prompt + early messages) for 5-15 minutes. Cache hits are
+        billed at 0 input tokens — pure win when the same agent fires
+        repeated calls. Key is derived from agent_name; callers can
+        override by passing `prompt_cache_key=...` in kwargs.
+        OpenAI minimum cacheable: 1024 tokens (~4KB). DeepSeek + Moonshot
+        have their own server-side caching, no header needed.
+        See https://platform.openai.com/docs/guides/prompt-caching
+        """
         client = self._get_client(provider)
         all_msgs = [{"role": "system", "content": system}] + messages
         kw: dict = dict(
@@ -616,6 +628,18 @@ class LLMRouter:
             kw["response_format"] = {"type": "json_object"}
         if tools:
             kw["tools"] = tools
+
+        # OpenAI prompt caching — only for openai provider, only when the
+        # system prompt is big enough to be cacheable. Skip for DeepSeek /
+        # Moonshot (different vendors, no such param).
+        if (
+            provider == "openai"
+            and agent_name
+            and len(system) >= 4096
+            and "prompt_cache_key" not in kwargs
+        ):
+            kw["prompt_cache_key"] = f"jobhunt::{agent_name}"
+
         kw.update(kwargs)
 
         resp = await client.chat.completions.create(**kw)
