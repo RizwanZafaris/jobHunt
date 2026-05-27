@@ -391,6 +391,109 @@ class LLMRouter:
         parsed = _parse_json_loose(result.text)
         return parsed, result
 
+    async def ask_json_validated(
+        self,
+        provider: Provider,
+        model: str,
+        system: str,
+        messages: list[dict],
+        response_model: Any,
+        max_tokens: int = 4096,
+        temperature: float = 0.2,
+        agent_name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> tuple[Any, LLMResult]:
+        """
+        Like ask_json() but validates the response against a Pydantic
+        model. On ValidationError, retries ONCE with the validation
+        error appended to the user message. Fails loud on second failure.
+
+        Added 2026-05-27 (P0 audit) — closes the silent-data-corruption
+        gap from agents like scoring_agent that accept whatever shape
+        the LLM returns.
+
+        Returns (validated_model_instance, full_LLMResult).
+
+        Usage:
+            from pydantic import BaseModel
+            class FitScore(BaseModel):
+                score: int
+                reasoning: str
+                domain_match: bool
+
+            obj, result = await router.ask_json_validated(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                system="You are a scoring agent...",
+                messages=[{"role":"user","content":"Score this job..."}],
+                response_model=FitScore,
+            )
+            print(obj.score)  # IDE-typed; no None checks needed
+        """
+        # Local import so the router stays optional-dep friendly when
+        # callers don't use this method.
+        from pydantic import ValidationError
+
+        # First attempt
+        parsed, result = await self.ask_json(
+            provider=provider,
+            model=model,
+            system=system,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            agent_name=agent_name,
+            **kwargs,
+        )
+        try:
+            return response_model.model_validate(parsed), result
+        except ValidationError as first_err:
+            logger.warning(
+                "[%s] ask_json_validated: first attempt failed Pydantic validation "
+                "against %s — retrying once with error context. errors=%s",
+                agent_name or "?",
+                response_model.__name__,
+                first_err.errors()[:3],  # cap log noise
+            )
+
+        # Retry once, with the validation error appended so the model
+        # can self-correct. This is the cheapest possible self-repair
+        # loop and works ~90% of the time per OpenAI's structured-output
+        # blog. Failing twice means the prompt itself is broken, not
+        # the LLM — surface immediately so the caller can fix it.
+        repair_msg = (
+            "Your previous response did not match the required JSON schema. "
+            f"Pydantic validation errors:\n{first_err.errors()[:5]}\n"
+            f"Required schema (JSON Schema):\n{response_model.model_json_schema()}\n"
+            "Reply ONLY with valid JSON matching this schema — no prose."
+        )
+        repair_messages = list(messages) + [
+            {"role": "assistant", "content": result.text},
+            {"role": "user", "content": repair_msg},
+        ]
+
+        retry_parsed, retry_result = await self.ask_json(
+            provider=provider,
+            model=model,
+            system=system,
+            messages=repair_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            agent_name=f"{agent_name}.repair" if agent_name else "repair",
+            **kwargs,
+        )
+        try:
+            return response_model.model_validate(retry_parsed), retry_result
+        except ValidationError as second_err:
+            # Two-strike — fail loud with both errors so the caller can debug.
+            raise ValueError(
+                f"ask_json_validated: response failed Pydantic validation twice "
+                f"against {response_model.__name__}. "
+                f"First errors: {first_err.errors()[:3]}; "
+                f"Retry errors: {second_err.errors()[:3]}; "
+                f"Last raw text: {retry_result.text[:300]!r}"
+            ) from second_err
+
     # ─── Provider implementations ────────────────────────────────────────
     async def _call_anthropic(
         self,
