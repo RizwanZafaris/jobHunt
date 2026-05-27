@@ -39,13 +39,23 @@ card_networks:
 
   - name: American Express
     website: https://americanexpress.com
-    careers_url: https://jobs.americanexpress.com
-    ats_type: workday
-    workday_slug: aexp.wd1
-    workday_tenant: AmericanExpressCareers
+    careers_url: https://careers.americanexpress.com
+    ats_type: eightfold
+    eightfold_slug: aexp
+    careers_page_url: https://aexp.eightfold.ai/careers
     priority: 2
-    notes: "Strong product culture. London and Singapore have senior PM roles. Dubai office growing."
+    notes: "2026-05-27: NOT on Workday. Migrated to Eightfold AI (aexp.eightfold.ai). Strong product culture. London and Singapore have senior PM roles. Dubai office growing. Needs Eightfold handler to scrape."
     tags: [card-network, payments, premium, global, uk]
+
+  - name: American Express GBT (Global Business Travel)
+    website: https://amexglobalbusinesstravel.com
+    careers_url: https://www.amexglobalbusinesstravel.com/about/careers/
+    ats_type: workday
+    workday_slug: travelhrportal.wd1
+    workday_tenant: Jobs
+    priority: 3
+    notes: "Verified 2026-05-27: travelhrportal.wd1/cxs/travelhrportal/Jobs/jobs returns 88 jobs incl. Technical Product Manager Bangalore, Product Enablement Leader Manchester. Spun off from Amex Cards in 2014, public since 2022. Different company than American Express above."
+    tags: [travel-tech, payments, b2b, global]
 
   # Discover removed 2026-05-27 — acquired by Capital One. Careers redirect
   # to capitalonecareers.com which uses a non-Workday ATS (eightfold/avature).
@@ -134,22 +144,21 @@ payment_processors:
 
   - name: Fiserv
     website: https://fiserv.com
-    careers_url: https://fiserv.wd5.myworkdayjobs.com/en-US/External
-    ats_type: workday
-    workday_slug: fiserv.wd5
-    workday_tenant: External
+    careers_url: https://careers.fiserv.com
+    ats_type: phenom
+    careers_page_url: https://careers.fiserv.com
     priority: 2
-    notes: "Large financial infrastructure company. Product roles in payments and banking."
+    notes: "2026-05-27: NOT Workday — migrated to Phenom People (cdn.phenompeople.com). Large financial infrastructure company. Product roles in payments and banking. Needs Phenom handler — not currently supported."
     tags: [payments, banking-infra, enterprise, global]
 
   - name: FIS Global
     website: https://fisglobal.com
-    careers_url: https://fisglobal.com/en/about/careers
+    careers_url: https://careers.fisglobal.com/us/en
     ats_type: workday
-    workday_slug: fis.wd1
-    workday_tenant: FIS
+    workday_slug: fis.wd5
+    workday_tenant: SearchJobs
     priority: 2
-    notes: "One of largest financial tech companies globally. Product org is large. Good for programme-to-product profiles."
+    notes: "Verified 2026-05-27: fis.wd5/cxs/fis/SearchJobs/jobs returns 463 jobs. Was fis.wd1/FIS (404). One of largest fintechs globally. Large product org. Good for programme-to-product profiles."
     tags: [payments, banking-infra, enterprise, global]
 
   - name: Square (Block)
@@ -198,12 +207,11 @@ payment_processors:
 
   - name: Verifone
     website: https://verifone.com
-    careers_url: https://verifone.com/en/us/careers
-    ats_type: workday
-    workday_slug: verifone.wd5
-    workday_tenant: VerifoneCareers
+    careers_url: https://connect.verifone.com/en/global/careers/jobs
+    ats_type: custom
+    careers_page_url: https://connect.verifone.com/en/global/careers/jobs
     priority: 3
-    notes: "POS / hardware payments. Product roles exist but hardware-focused."
+    notes: "2026-05-27: NOT Workday — uses custom connect.verifone.com portal. POS / hardware payments. Product roles exist but hardware-focused. Low priority."
     tags: [payments, pos, hardware, global]
 
   - name: Network International
@@ -339,12 +347,11 @@ cross_border_remittance:
 
   - name: MoneyGram
     website: https://moneygram.com
-    careers_url: https://moneygram.com/mgo/us/en/careers
-    ats_type: workday
-    workday_slug: moneygram.wd1
-    workday_tenant: MoneyGram
+    careers_url: https://careers.moneygram.com
+    ats_type: custom
+    careers_page_url: https://careers.moneygram.com
     priority: 2
-    notes: "Rizwan delivered MoneyGram enterprise integration at SimPaisa — direct credibility. Digital transformation hiring."
+    notes: "2026-05-27: NOT Workday — uses custom careers.moneygram.com portal. Rizwan delivered MoneyGram enterprise integration at SimPaisa — direct credibility. Needs custom scraper or Perplexity-only discovery."
     tags: [remittance, cross-border, enterprise, global]
 
   - name: Currencycloud (Visa subsidiary)
@@ -475,20 +482,19 @@ baas_embedded_finance:
     website: https://temenos.com
     careers_url: https://temenos.com/careers
     ats_type: workday
-    workday_slug: temenos.wd3
-    workday_tenant: Temenos
+    workday_slug: temenos.wd103
+    workday_tenant: Temenoscareers
     priority: 2
-    notes: "Banking software giant. Strong UAE presence. Product/programme hybrid roles."
+    notes: "Verified 2026-05-27: temenos.wd103/cxs/temenos/Temenoscareers/jobs returns 57 jobs incl. Product Director, Sr Principal Product Engineer. Note unusual wd103 cluster. Was temenos.wd3/Temenos (422). Banking software giant. Strong UAE presence."
     tags: [core-banking, enterprise, global, uae]
 
   - name: Finastra
     website: https://finastra.com
     careers_url: https://finastra.com/careers
-    ats_type: workday
-    workday_slug: finastra.wd5
-    workday_tenant: Finastra_External
+    ats_type: custom
+    careers_page_url: https://www.finastra.com/about/careers
     priority: 2
-    notes: "Financial software, open banking APIs. London HQ. Dubai office. PM roles exist."
+    notes: "2026-05-27: ATS unknown — finastra.wd5 returns 422 (not a real Workday tenant). Careers page geoblocked from US-IP scrapers. Financial software, open banking APIs. London HQ. Dubai office. PM roles exist. Use Perplexity discovery as fallback."
     tags: [banking-software, open-banking, enterprise, uk, uae]
 
   - name: Oracle Financial Services
@@ -589,12 +595,11 @@ digital_banks_neobanks:
 
   - name: Liv. by Emirates NBD
     website: https://liv.me
-    careers_url: https://emiratesnbd.com/en/careers
-    ats_type: workday
-    workday_slug: emiratesnbd.wd3
-    workday_tenant: EmiratesNBD
-    careers_page_url: https://emiratesnbd.com/en/careers
+    careers_url: https://emiratesnbd.talentera.com
+    ats_type: talentera
+    careers_page_url: https://www.emiratesnbd.com/en/careers
     priority: 2
+    notes: "2026-05-27: NOT Workday — uses Talentera (emiratesnbd.talentera.com). MENA-built ATS, common across UAE banks. Needs Talentera handler."
     tags: [neobank, digital-banking, uae]
 
   - name: YAP
@@ -665,12 +670,11 @@ mena_fintech:
 
   - name: STC Pay / STC Bank
     website: https://stcpay.com.sa
-    careers_url: https://careers.stc.com.sa
-    ats_type: workday
-    workday_slug: stc.wd5
-    workday_tenant: STC
+    careers_url: https://stccareers.taleo.net/careersection/stc_external/joblist.ftl
+    ats_type: taleo
     careers_page_url: https://careers.stc.com.sa
     priority: 1
+    notes: "2026-05-27: NOT Workday — uses Taleo (stccareers.taleo.net + stckw.taleo.net for Kuwait). Saudi Telecom Group parent. Needs Taleo handler."
     tags: [telco-fintech, payments, digital-wallet, ksa]
 
   - name: Rasan (Tameeni / Masarat)
@@ -829,79 +833,73 @@ traditional_banks_digital:
   - name: JPMorgan Chase — Digital & Payments
     website: https://jpmorgan.com
     careers_url: https://careers.jpmorgan.com
-    ats_type: smartrecruiters
-    ats_slug: jpmc
-    workday_slug: jpmc
+    ats_type: oracle_hcm
+    careers_page_url: https://jpmc.fa.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/requisitions
     priority: 2
-    notes: "JP Morgan Payments is a major growing division. Senior PM and programme roles exist globally."
+    notes: "2026-05-27: NOT Workday — uses Oracle Cloud HCM (jpmc.fa.oraclecloud.com). JP Morgan Payments is a major growing division. Senior PM and programme roles globally. Needs Oracle Recruiting Cloud (ORC) handler."
     tags: [banking, payments, enterprise, global]
 
   - name: HSBC — Digital Banking
     website: https://hsbc.com
-    careers_url: https://hsbc.com/careers
+    careers_url: https://mycareer.hsbc.com
     ats_type: taleo
+    careers_page_url: https://hsbc.taleo.net/careersection/iam/accessmanagement/login.jsf
     priority: 2
-    notes: "Large UAE presence. Digital transformation + payments product roles in Dubai and London."
+    notes: "2026-05-27: Verified Taleo (hsbc.taleo.net) + custom portal (mycareer.hsbc.com). NOT Workday. Large UAE presence. Digital transformation + payments product roles in Dubai and London. Needs Taleo handler."
     tags: [banking, digital-banking, uae, uk, global]
 
   - name: Standard Chartered — SC Ventures
     website: https://standardchartered.com
-    careers_url: https://careers.sc.com
-    ats_type: workday
-    ats_slug: standardchartered
-    workday_slug: standardchartered
+    careers_url: https://jobs.standardchartered.com
+    ats_type: successfactors
+    careers_page_url: https://jobs.standardchartered.com/
     priority: 2
-    notes: "SC Ventures (innovation arm) hires fintech PM profiles. UAE + London + Singapore."
+    notes: "2026-05-27: NOT on main Workday — primary careers (jobs.standardchartered.com) uses SAP SuccessFactors (rmkcdn.successfactors.com). Found peopleplus.wd3/cxs/peopleplus/SCB_Careers/jobs (25 jobs) but that's early-careers only, 0 PM-relevant. Needs SuccessFactors handler to access main portal."
     tags: [banking, fintech, innovation, uae, uk]
 
   - name: DBS Bank — Digital
     website: https://dbs.com
-    careers_url: https://careers.dbs.com
-    ats_type: workday
-    ats_slug: dbs
-    workday_slug: dbs
+    careers_url: https://dbs.taleo.net/careersection/dbs_professional_hires_career_section/moresearch.ftl
+    ats_type: taleo
+    careers_page_url: https://www.dbs.com/careers/default.page
     priority: 2
-    notes: "World's best digital bank multiple times. Singapore HQ. Remote-friendly senior roles."
+    notes: "2026-05-27: NOT Workday — uses Taleo (dbs.taleo.net) for recruiting (Workday is internal-only for onboarding). World's best digital bank multiple times. Singapore HQ. Remote-friendly senior roles. Needs Taleo handler."
     tags: [banking, digital-banking, singapore, global]
 
   - name: Citibank — Digital Assets & Payments
     website: https://citigroup.com
     careers_url: https://jobs.citi.com
-    ats_type: workday
-    ats_slug: citi
-    workday_slug: citi
+    ats_type: taleo
+    careers_page_url: https://citi.taleo.net/careersection/m/jobdetail.ftl
     priority: 2
-    notes: "Citi Treasury & Trade Solutions is a large product org. Senior PM roles in London and Dubai."
+    notes: "2026-05-27: PRIMARY ATS is Taleo (citi.taleo.net). Legacy citi.wd5 Workday URL exists but mostly returns refresh-facet pages, no main job index. Citi Treasury & Trade Solutions is a large product org. Senior PM roles in London and Dubai. Needs Taleo handler for main coverage."
     tags: [banking, payments, treasury, global, uae]
 
   - name: Goldman Sachs — Marcus / Transaction Banking
     website: https://goldmansachs.com
-    careers_url: https://goldmansachs.com/careers
-    ats_type: workday
-    ats_slug: goldmansachs
-    workday_slug: goldmansachs
+    careers_url: https://uscareers-goldmansachs.icims.com/jobs/intro
+    ats_type: icims
+    icims_slug: uscareers-goldmansachs
     priority: 3
-    notes: "Very prestigious. High bar. Product roles in transaction banking relevant."
+    notes: "2026-05-27: NOT Workday — uses iCIMS (uscareers-goldmansachs.icims.com). Very prestigious. High bar. Product roles in transaction banking relevant. Needs iCIMS handler."
     tags: [banking, fintech, enterprise, global]
 
   - name: Emirates NBD — Digital
     website: https://emiratesnbd.com
-    careers_url: https://emiratesnbd.com/en/careers
-    ats_type: workday
-    ats_slug: emiratesnbd
-    workday_slug: emiratesnbd
+    careers_url: https://emiratesnbd.talentera.com
+    ats_type: talentera
+    careers_page_url: https://www.emiratesnbd.com/en/careers
     priority: 2
-    notes: "UAE's largest bank. Digital banking division active. Product lead roles exist."
+    notes: "2026-05-27: NOT Workday — uses Talentera (emiratesnbd.talentera.com). Duplicated with Liv. by Emirates NBD entry. UAE's largest bank. Digital banking division active. Needs Talentera handler."
     tags: [banking, digital-banking, uae]
 
   - name: FAB — First Abu Dhabi Bank Digital
     website: https://bankfab.com
     careers_url: https://bankfab.com/en/careers
-    ats_type: workday
-    ats_slug: firstabuldhabi
-    workday_slug: firstabuldhabi
+    ats_type: custom
+    careers_page_url: https://www.bankfab.com/en-ae/about-us/careers
     priority: 2
-    notes: "UAE's largest bank by assets. Active digital transformation. Strong product org."
+    notes: "2026-05-27: ATS unknown — firstabuldhabi.wd3 returns 422 (not a real Workday tenant). Careers page 404 on direct fetch. UAE's largest bank by assets. Active digital transformation. Strong product org. Use Perplexity discovery as fallback."
     tags: [banking, digital-banking, uae]
 
   - name: ADCB — Digital
@@ -931,11 +929,11 @@ traditional_banks_digital:
 
   - name: Paysafe
     website: https://paysafe.com
-    careers_url: https://paysafe.com/careers
-    ats_type: workday
-    workday_slug: paysafe.wd3
-    workday_tenant: Paysafe
+    careers_url: https://jobs.paysafe.com
+    ats_type: custom
+    careers_page_url: https://jobs.paysafe.com
     priority: 2
+    notes: "2026-05-27: NOT Workday — uses custom jobs.paysafe.com portal. iGaming + payments. UK + global."
     tags: [payments, igaming, uk, global]
 
 
