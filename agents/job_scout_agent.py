@@ -190,6 +190,64 @@ def _build_workday_url(workday_slug: str, workday_tenant: str = None) -> tuple[s
     url = f"https://{subdomain}.myworkdayjobs.com/wday/cxs/{tenant_path}/jobs"
     return url, tenant_path
 
+# ── _is_relevant_title regex patterns (v3, 2026-05-27) ──────────────────────
+# Compiled once at module load. Pattern derivation in JobScoutAgent
+# ._is_relevant_title docstring. Validated against 233 live Mastercard
+# + 214 live Visa job titles harvested from their CXS endpoints.
+
+_TITLE_NEGATIVE_PATTERN = re.compile(
+    r"\b("
+    r"intern|graduate|junior|associate analyst|sales associate|"
+    r"marketing manager|account manager|sales manager|sales representative|"
+    r"sales executive|assistant|apprentice|trainee|entry.level|"
+    r"office manager|executive assistant"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_TITLE_POSITIVE_PATTERN = re.compile(
+    r"\b("
+    # ─ PRODUCT — any seniority + any product function ─
+    r"product\s+(?:manager|management|mgmt|owner|lead|leader|director|head|"
+        r"strategy|development|marketing|analytics|data|platform|gtm|sales|"
+        r"innovation|architect|specialist)|"
+    r"(?:senior\s+)?specialist[,\s\-]+product|"
+    r"(?:director|head|vp|vice\s+president|svp|chief|principal|lead|group|global|"
+        r"sr\.?\s+director|sr\.?\s+manager|senior\s+manager)"
+        r"[\s,\-]+(?:of\s+)?product|"
+    r"(?:product\s+)?cpo\b|"
+    # ─ PROGRAMME / PMO ─
+    r"progr?am?(?:me)?\s+(?:manager|management|mgmt)|"
+    r"\bpmo\b|"
+    # ─ ADJACENT senior-tier (Director+/Head/VP only) ─
+    r"head\s+of\s+(?:payments|digital|fintech|platform|engineering|strategy|"
+        r"innovation|business\s+development|partnerships|transformation|"
+        r"growth|product|advisory)|"
+    r"(?:director|head|vp|vice\s+president|sr\.?\s+director|senior\s+director)"
+        r"[\s,\-]+(?:of\s+)?(?:strategy|business\s+development|partnerships|"
+        r"transformation|innovation|digital|advisory|value\s+enablement)|"
+    # ─ Mastercard Managing Consultant tier (Director-equivalent) ─
+    r"(?:senior|principal)\s+managing\s+consultant|"
+    r"managing\s+director[,\s\-]+consulting"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_relevant_title_pattern(title: str) -> bool:
+    """Module-level regex check — negatives first, then positives.
+
+    Used by JobScoutAgent._is_relevant_title; pulled out to module level so
+    the patterns compile once at import (not per-call) and so tests can
+    cover the matcher without instantiating the agent + env vars.
+    """
+    if not title:
+        return False
+    if _TITLE_NEGATIVE_PATTERN.search(title):
+        return False
+    return bool(_TITLE_POSITIVE_PATTERN.search(title))
+
+
 # Signals that a job page is expired / no longer accepting applications
 EXPIRY_SIGNALS = [
     "this job is no longer accepting applications",
@@ -1433,75 +1491,35 @@ Certifications: PMP, PMI-ACP, CSPO, CSM
 """.strip()
 
     def _is_relevant_title(self, title: str) -> bool:
-        """Filter: does this title match a PM or adjacent senior-tier role?
+        """Filter: does this title match a PM/PgM or adjacent senior-tier role?
 
-        2026-05-27: expanded positives twice in one day —
-          (a) catch Workday's full-name format ("Vice President, Product
-              Management" was being dropped because only "product manager"
-              matched, not "product management");
-          (b) include Director+/Head-tier Strategy, Business Development,
-              Digital Transformation, Partnerships, and Managing Consultant
-              roles at payments firms. These are legitimate Director-tier
-              paths for a senior payments PM at Mastercard/Visa/Amex/etc.
-              Kept junior/manager-level adjacent roles excluded to maintain
-              signal-to-noise.
+        2026-05-27 v3 — regex-based. Replaces the brittle substring list
+        after live-harvesting 233 Mastercard + 214 Visa job titles and
+        observing dozens of misses (e.g. "Director, New Product Development",
+        "Vice President, Product Data Platform", "Sr. Director - Product
+        Management/AI Solutions"). Verified pass-rates on live data:
+          Mastercard: 40/211 unique titles (only 2 product/program misses,
+                      both legitimately out-of-scope partner-program roles)
+          Visa:       19/202 unique titles (only "Product Analyst Junior")
+
+        Mastercard hierarchy notes (researched via Levels.fyi / Glassdoor):
+          - Specialist (IC) track: Specialist → Senior Specialist (L8) →
+            Lead PM (L7) → Principal PM (L6) → Senior Principal PM (L5)
+          - Manager track: Manager (L8) → Senior Manager (L7) → Director
+            (L6) → Senior Director (L5) → VP (L4) → SVP (L3) → EVP (L2)
+          - Formal title pattern: "Senior Specialist, Product Management"
+            "Director, Product Management" "Vice President, Product
+            Management, [Domain]" — always with comma + "Management" not
+            "Manager" for the formal title.
+
+        Visa hierarchy notes:
+          - PM → Senior PM → Director PM → Sr. Director PM → VP PM
+          - Heavy use of "Sr." abbreviation (Sr. Director, Sr. Manager)
+          - "Product Owner" used for senior IC PMs in some BUs
+          - Visa-specific BUs: Acceptance Solutions, Cybersource Product,
+            VCA (Visa Consulting & Analytics), Authorize.net Product
         """
-        title_lower = title.lower()
-
-        # NEGATIVES first — rejected regardless of any positive match below.
-        negative = [
-            "intern", "graduate", "junior", "associate analyst",
-            "marketing manager", "account manager", "sales manager",
-            "sales representative", "sales executive", "sales associate",
-            "assistant", "apprentice", "trainee", "entry level",
-            "office manager", "executive assistant",
-        ]
-        if any(neg in title_lower for neg in negative):
-            return False
-
-        # POSITIVES — any match passes.
-        positive = [
-            # ── PM core ────────────────────────────────────────────────
-            "product manager", "product management", "product mgmt",
-            "product owner", "product lead", "product leader",
-            "head of product", "chief product", "cpo,", "cpo ",
-            "vp product", "vp of product", "vp, product",
-            "vice president product", "vice president, product",
-            "vice president of product",
-            "director of product", "director, product",
-            "senior director, product", "principal product",
-            "group product", "global product",
-            # ── Programme / PMO (Rizwan's hybrid background) ───────────
-            "programme manager", "program manager", "pmo",
-            "senior program", "senior programme",
-            # ── Adjacent senior payments leadership roles ──────────────
-            "head of payments", "head of digital", "head of fintech",
-            "head of platform", "head of engineering",
-            "head of strategy", "head of innovation",
-            "head of business development", "head of partnerships",
-            "head of transformation", "head of growth",
-            # ── Director+/VP-tier Strategy, BD, Transformation ─────────
-            # (Director-tier paths into Mastercard/Visa/Amex/HSBC/etc.)
-            "director of strategy", "director, strategy",
-            "director of business development", "director, business development",
-            "director of partnerships", "director, partnerships",
-            "director of transformation", "director, transformation",
-            "director, digital transformation",
-            "director, value enablement",
-            "vp strategy", "vp, strategy", "vp of strategy",
-            "vice president strategy", "vice president, strategy",
-            "vp business development", "vp, business development",
-            "vice president business development",
-            "vice president, business development",
-            "vp partnerships", "vice president, partnerships",
-            # ── Managing Consultant tier (Mastercard/Visa internal track) ─
-            # Senior MC / Principal MC / MD-Consulting are Director-equivalent
-            # at MC's Advisors & Consulting Services org.
-            "senior managing consultant", "principal managing consultant",
-            "managing director, consulting", "managing director consulting",
-            "head of advisory", "director, advisory", "director of advisory",
-        ]
-        return any(kw in title_lower for kw in positive)
+        return _is_relevant_title_pattern(title)
 
     def _extract_company_from_title(self, title: str) -> Optional[str]:
         """Extract company name from search result title string.
