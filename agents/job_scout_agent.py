@@ -1166,19 +1166,36 @@ class JobScoutAgent(BaseAgent):
             except Exception:
                 pass
 
-        # Rule 3 — hostname slug fuzzy match (try BEFORE Rule 4 since Workday
-        # URLs typically encode the company in the hostname, not the path).
-        first_label = host.split(".", 1)[0]
-        if any(v in first_label for v in slug_variants):
-            return True
-        # Also try the bare host (catches e.g. "careers.adyen.com" → "adyen").
-        if any(v in host for v in slug_variants):
+        # Token-boundary matcher (2026-05-29 hardening). Match a slug variant
+        # against whole host/path TOKENS — not naive substrings. The old
+        # `any(v in path ...)` accepted "stc" inside "westcoast" and "unit"
+        # inside "opportunity" — short-slug false positives that violate this
+        # function's stated "prefer false negatives" contract. Equality covers
+        # every real ATS tenant/slug; a length-gated prefix match (len >= 5)
+        # allows distinctive compound slugs (finastra, worldline, checkout)
+        # without re-opening the short-slug hole.
+        def _tok_match(tokens: list[str]) -> bool:
+            for tok in tokens:
+                if not tok:
+                    continue
+                for v in slug_variants:
+                    if tok == v or (len(v) >= 5 and tok.startswith(v)):
+                        return True
+            return False
+
+        host_tokens = re.split(r"[^a-z0-9]+", host)
+        path_tokens = re.split(r"[^a-z0-9]+", path)
+
+        # Rule 3 — hostname slug match. Workday encodes the company in the
+        # first host label; tokenising the whole host also catches
+        # "careers.adyen.com" → "adyen".
+        if _tok_match(host_tokens):
             return True
 
         # Rule 4 — generic ATS path slug match (Greenhouse / Lever / Ashby /
-        # SmartRecruiters use /<company-slug>/jobs path patterns).
+        # SmartRecruiters use /<company-slug>/... path patterns).
         is_generic_ats = any(known in host for known in self._KNOWN_ATS_HOSTS)
-        if is_generic_ats and any(v in path for v in slug_variants):
+        if is_generic_ats and _tok_match(path_tokens):
             return True
 
         return False
