@@ -8,15 +8,23 @@
 Built for **Rizwan Zafar** (user #1, lifetime plan) today; multi-tenant
 SaaS-ready tomorrow.
 
-**Status: 2026-05-14** — production stack is live on Railway + Supabase
+**Status: 2026-05-29** — production stack is live on Railway + Supabase
 + Vercel. 68 target companies, ~3,500 rows of company knowledge, 12 G2
 nodes shipping resumes at ~$1 / 5 min, G3 interview studio + tutor
 ready, G4 LinkedIn engine with image briefs, G5 letter-grade A-F + G6
 follow-up cadence + G7 application-form assist + G8 offer-evaluation
 (all live), `/insights?tab=analytics` for pattern analytics,
 `/insights?tab=traces` for LangGraph debugging, embedded APScheduler in
-the API process (no separate worker on Railway needed), 32 migrations
-applied (most recent: phantom cleanup + v_graph_runs view).
+the API process (no separate worker on Railway needed), 41 migrations
+applied.
+
+**Since 2026-05-14:** `/today` redesigned into per-kind sections with a
+résumé-scored **Recommended** list (`/today/recommended`); a JobScout
+reliability overhaul (Workday CXS two-segment + region fixes, title
+filter v3 validated on 447 live Mastercard/Visa titles, and a
+`_url_matches_company` mislabel guard backed by a 33-case regression
+suite); plus an AI cost audit (P0 model-tiering — 6 agents Opus→Sonnet —
+and P1 prompt caching + Perplexity cache-aside) to cut steady-state burn.
 
 > See [`BUILD_RATIONALE.md`](BUILD_RATIONALE.md) for the architecture
 > decisions (why LangGraph, why per-company personas, why Anthropic
@@ -86,7 +94,7 @@ API surface docs: [`api/AUTH.md`](api/AUTH.md) · [`api/QUEUE.md`](api/QUEUE.md)
 
 ## What's in this codebase
 
-### Sprint phases (2026-05-08 → 2026-05-14)
+### Sprint phases (2026-05-08 → 2026-05-29)
 
 | Phase | What | Status |
 |---|---|---|
@@ -115,6 +123,15 @@ API surface docs: [`api/AUTH.md`](api/AUTH.md) · [`api/QUEUE.md`](api/QUEUE.md)
 | **Embedded APScheduler** | Cron jobs (job_scout, persona_synthesis, boss_agent, follow_up_cadence, cost_alert, cost_digest) run inside the FastAPI process · `/admin/scheduler-status` health probe | merged |
 | **Firecrawl pilot** | Source adapter for JS-rendered enterprise career pages (Visa/Mastercard/Stripe/Adyen/Marqeta) · `agents/sources/firecrawl_source.py` · $20/mo budget cap | merged |
 | **Phantom cleanup + LinkedIn harden** | Migrations 028+030 hard-delete the BUG-013 phantom companies + flag 183 phantom-string jobs · LinkedIn title parser regex broadened · `/linkedin` Generate wired end-to-end with company dropdown + image brief always visible · all 4 DraftCard buttons (Edit/Copy/Approve/Reject) wired to real API with validation | merged |
+| **Security advisor hardening** | `boss_audit_log` RLS · views switched to `security_invoker` · `resume_builds` failed-requires-error constraint · `agent_call_log.actual_provider` router telemetry (migrations 031–034) | merged |
+| **`/today` redesign + triggers** | Sectioned action dashboard (one section per card kind) · job-card dismiss/snooze · aggregator blocklist + freshness filter · browser-clickable `GET` aliases for `trigger-scout` / `trigger-validator` (migrations 035–037) | merged |
+| **LinkedIn Buffer integration** | Schedule LinkedIn drafts straight to Buffer queue (migration 038) | merged |
+| **JobScout reliability** | Workday CXS fixes (two-segment tenant URL, `limit=20` cap, region-targeted `searchText`) · title filter v3 (regex, validated on 447 live Mastercard+Visa titles) · verified Workday URLs for 11 previously-blocked companies | merged |
+| **JobScout mislabel guard** | `_url_matches_company` drops Perplexity candidates whose URL doesn't plausibly belong to the target company (the STC-Pay←PNC class of bug) · token-boundary hardening vs short-slug false positives · 33-case regression suite (`tests/test_scout_url_match.py`) | merged |
+| **Résumé-scored Recommendations** | 418 open jobs scored against the résumé · `jobs.user_recommendation_*` columns (migration 039) · `GET /today/recommended` endpoint + `/today` Recommended section (apply_now / strong / stretch tiers) | merged |
+| **AI cost audit — P0** | 6 agents Opus→Sonnet 4.6 in `config/settings.py` (boss + g2_polisher kept on Opus) · hardened-router default · JSON-schema validation + 1-retry helper | merged |
+| **AI cost audit — P1** | Anthropic prompt caching on 5KB+ system prompts · OpenAI `prompt_cache_key` · Perplexity cache-aside with `company_knowledge` TTL/decay (migration 041) | merged |
+| **People-finder (Apollo + Perplexity)** | Replaces LinkedIn CSV import — discovers target-company contacts via Apollo (primary) + Perplexity (fallback) to seed the referral graph · migration 040 applied; agent + UI on `feat/people-finder-perplexity-replace-csv` | in progress (unmerged) |
 
 ### Database migrations applied to production Supabase
 
@@ -148,9 +165,20 @@ API surface docs: [`api/AUTH.md`](api/AUTH.md) · [`api/QUEUE.md`](api/QUEUE.md)
 2026_05_13_028  phantom company hard-cleanup (deletes is_phantom=TRUE rows)
 2026_05_13_029  v_graph_runs (LangGraph trace observability view)
 2026_05_14_030  phantom job strings (flags 183 jobs with phantom company names)
+2026_05_16_031  boss_audit_log RLS
+2026_05_16_032  views security_invoker (advisor hardening)
+2026_05_16_033  resume_builds failed-requires-error constraint
+2026_05_16_034  agent_call_log.actual_provider (multi-LLM router telemetry)
+2026_05_16_035  archive phantom jobs
+2026_05_26_036  job_card_dismissals (/today dismiss + snooze)
+2026_05_26_037  jobs surface-tracking columns (/today card lifecycle)
+2026_05_26_038  linkedin_buffer_integration
+2026_05_27_039  jobs.user_recommendation_* (résumé-scored recommendations)
+2026_05_27_040  people perplexity-discovery provenance columns
+2026_05_27_041  company_knowledge TTL / confidence decay (cache-aside)
 ```
 
-All 32 production tables have RLS enabled (`boss_audit_log` intentionally excluded — admin/global).
+All production tables have RLS enabled; the 031/032 advisor-hardening pass added RLS to `boss_audit_log` and switched analytics views to `security_invoker`.
 
 ---
 
@@ -158,10 +186,10 @@ All 32 production tables have RLS enabled (`boss_audit_log` intentionally exclud
 
 | Agent | Model | Role | Trigger |
 |---|---|---|---|
-| **JobScoutAgent** | GPT-4.1 | Scans portals, scores jobs against persona | Daily 09:00 |
-| **CompanyAgent** | Claude Opus | Deep company expert; reviews resume gaps | Per company |
-| **RizwanAgent** | Claude Opus | Represents the user; fills gaps via dialogue | Per application |
-| **InterviewAgent** *(legacy)* | Claude Opus | STAR prep, likely Qs, salary negotiation | Per high-score job |
+| **JobScoutAgent** | GPT-4.1 | Scans ATS portals (Workday CXS / Greenhouse / Lever / Ashby) + Perplexity discovery; title filter v3 + `_url_matches_company` mislabel guard; scores jobs against persona | Daily 09:00 · manual `GET /today/trigger-scout` |
+| **CompanyAgent** | Claude Sonnet 4.6 *(was Opus 4.5 — P0 audit)* | Deep company expert; reviews resume gaps | Per company |
+| **RizwanAgent** | Claude Sonnet 4.6 *(was Opus 4.5 — P0 audit)* | Represents the user; fills gaps via dialogue | Per application |
+| **InterviewAgent** *(legacy)* | Claude Sonnet 4.6 *(was Opus 4.5 — P0 audit)* | STAR prep, likely Qs, salary negotiation | Per high-score job |
 | **BossAgent** | Claude Opus | Orchestrator; freshness audit; daily digest | Daily 21:00 |
 | **PersonaSynthesizer** | Gemini 2.5 Pro (fallback Claude) | Per-company persona refresh from outcomes + transcripts | Sun 03:00 weekly |
 | **persona_deep_research** | Gemini 2.5 Pro + Apify | Deep persona build: 6-10 success_patterns + 6-10 failure_patterns + ~20 ATS keywords | One-shot per company; refresh on demand |
@@ -196,7 +224,7 @@ All 32 production tables have RLS enabled (`boss_audit_log` intentionally exclud
 | Surface | Endpoints |
 |---|---|
 | **System** | `GET /` · `GET /health` · `GET /jobs-runs/{run_id}` (polling) |
-| **Today** | `GET /actions/today?limit=N` |
+| **Today** | `GET /actions/today?limit=N` · `GET /actions/today/recommended` (résumé-scored, tiered) · `GET/POST /actions/today/trigger-scout` · `GET/POST /actions/today/trigger-validator` |
 | **Workspace (Phase 2)** | `GET /workspace/{job_id}` · `POST /workspace/{job_id}/build-resume` · `POST /workspace/{job_id}/edit-resume` · `POST /workspace/{job_id}/save-resume-edit` · `POST /workspace/{job_id}/rebuild-section` · `POST /workspace/{job_id}/full-rebuild` · `POST /workspace/{job_id}/mark-applied` |
 | **Interview Studio (Phase 3)** | `GET /interview-studio/{application_id}` · `POST /interview-studio/{application_id}/tutor-chat` · `POST /interview-studio/{application_id}/log-outcome` · `POST /interview-studio/{application_id}/build-prep-pack` |
 | **LinkedIn engine (P1.2)** | `POST /linkedin/drafts/generate` · `GET /linkedin/drafts` · `GET/PATCH /linkedin/drafts/{id}` · `POST /linkedin/drafts/{id}/{approve,copy,reject}` · `GET/PUT /linkedin/voice-profile` · `GET/PUT /linkedin/posting-schedule` |
@@ -386,7 +414,8 @@ cd dashboard && vercel deploy --prod
 - **Hybrid resume edit auto-replace edge case** — currently auto-replaces on Full rebuild success with confirm-if-dirty; mid-edit Quick-tweak doesn't auto-apply yet (component state).
 - **Chrome browser scrape integration** — code path possible via `Claude in Chrome` MCP but no extension currently connected. Apify covers the same use cases for now.
 - **Multi-tenant pivot endpoint wiring** — 65 endpoints in `api/server.py` still use service-role; `Depends(get_current_user)` ready but not yet wired. Recipe in [`api/AUTH.md`](api/AUTH.md).
-- **Audit Tier-1 cost cuts** — prompt caching, Sonnet swaps, Haiku for orchestration. Documented, not implemented.
+- **AI audit P2 backlog** — P0 (model tiering, hardened-router default, JSON-schema validation) and P1 (prompt caching, Perplexity cache-aside + TTL) **shipped**. Remaining: router-level PII redaction, `<user_input>` prompt-injection wrapping, persona-version trigger, and broader `ask_json_validated` / `cached_recency_check` adoption.
+- **People-finder (Apollo + Perplexity)** — replaces LinkedIn CSV import for seeding the referral graph; migration 040 applied to prod, agent + UI built on `feat/people-finder-perplexity-replace-csv` (pushed, awaiting merge). CSV import stays the live mechanism until that branch merges.
 - **Outcome-driven persona evolution dashboard** — schema in place (`persona_versions` table); UI surface not yet built.
 
 ---
