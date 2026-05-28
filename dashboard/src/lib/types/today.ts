@@ -90,3 +90,28 @@ export interface TodaySectionsResponse {
   total: number
   generated_at: string
 }
+
+// ─── /today/recommended (AI-curated apply-now list, 2026-05-27) ─────────
+export type RecommendationTier = 'apply_now' | 'strong' | 'stretch'
+
+export interface RecommendedJob {
+  id: number
+  company: string
+  title: string
+  location: string
+  url: string
+  source: string
+  archetype: string
+  match_score: number | null
+  recommendation_score: number | null
+  recommendation_reasoning: string
+  recommended_at: string | null
+  discovered_at_days_old: number | null
+}
+
+export interface TodayRecommendedResponse {
+  ok: boolean
+  total: number
+  by_tier: Record<RecommendationTier, RecommendedJob[]>
+  generated_at: string
+}

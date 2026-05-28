@@ -1481,6 +1481,105 @@ _VALID_REASONS = {
 }
 
 
+@router.get("/today/recommended")
+def get_today_recommended(
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Jobs an AI scorer has tagged for the user to apply to.
+
+    Reads `user_recommended_at`/`user_recommendation_*` columns on jobs.
+    Excludes:
+      - already-applied jobs
+      - jobs marked closed (`posting_closed_at IS NOT NULL`)
+
+    Output shape:
+      {
+        "ok": true,
+        "total": N,
+        "by_tier": {
+          "apply_now": [<job>, ...],  // score >= 85
+          "strong":    [<job>, ...],  // score 70-84
+          "stretch":   [<job>, ...]   // score < 70
+        },
+        "generated_at": "2026-05-27T20:00:00Z"
+      }
+
+    Each job carries: id, company, title, location, url, source,
+    recommendation_score, recommendation_reasoning, recommended_at,
+    discovered_at_days_old, applied (bool).
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    db = get_supabase()
+    user_id = str(user.id)
+
+    try:
+        resp = (
+            db.table("jobs")
+            .select(
+                "id, company, title, location, url, source, archetype, match_score,"
+                " user_recommendation_tier, user_recommendation_score,"
+                " user_recommendation_reasoning, user_recommended_at,"
+                " discovered_at, applied_at, posting_closed_at"
+            )
+            .eq("user_id", user_id)
+            .not_.is_("user_recommended_at", "null")
+            .is_("posting_closed_at", "null")
+            .is_("applied_at", "null")
+            .order("user_recommendation_score", desc=True)
+            .limit(100)
+            .execute()
+        )
+    except Exception as exc:
+        logger.exception("today/recommended: db fetch failed")
+        raise HTTPException(status_code=500, detail=f"db_error: {exc}")
+
+    rows = resp.data or []
+    now = _dt.now(_tz.utc)
+
+    by_tier: dict[str, list[dict[str, Any]]] = {
+        "apply_now": [],
+        "strong": [],
+        "stretch": [],
+    }
+    for r in rows:
+        # Derive age in days for the UI staleness pill
+        days_old: Optional[int] = None
+        if r.get("discovered_at"):
+            try:
+                disc = _dt.fromisoformat(str(r["discovered_at"]).replace("Z", "+00:00"))
+                if disc.tzinfo is None:
+                    disc = disc.replace(tzinfo=_tz.utc)
+                days_old = max(0, (now - disc).days)
+            except (ValueError, TypeError):
+                pass
+
+        tier = (r.get("user_recommendation_tier") or "stretch").lower()
+        if tier not in by_tier:
+            tier = "stretch"
+
+        by_tier[tier].append({
+            "id": r["id"],
+            "company": r.get("company") or "—",
+            "title": r.get("title") or "(untitled)",
+            "location": r.get("location") or "",
+            "url": r.get("url") or "",
+            "source": r.get("source") or "",
+            "archetype": r.get("archetype") or "",
+            "match_score": r.get("match_score"),
+            "recommendation_score": r.get("user_recommendation_score"),
+            "recommendation_reasoning": r.get("user_recommendation_reasoning") or "",
+            "recommended_at": r.get("user_recommended_at"),
+            "discovered_at_days_old": days_old,
+        })
+
+    return {
+        "ok": True,
+        "total": sum(len(v) for v in by_tier.values()),
+        "by_tier": by_tier,
+        "generated_at": now.isoformat(),
+    }
+
+
 @router.post("/today/dismiss/{job_id}")
 def dismiss_today_card(
     job_id: int,
