@@ -228,11 +228,44 @@ class HardenedLLMRouter:
     def __init__(self, router: LLMRouter | None = None):
         self._router = router or get_router()
         self._health = ProviderHealthTracker()
-        self._circuits: dict[Provider, CircuitBreaker] = {
-            p: CircuitBreaker(provider=p) for p in (
+        # P2-4 (docs/SCALABILITY_BUILD_PLAN.md): pick the circuit-breaker
+        # backend from settings. Default "memory" → the in-process
+        # CircuitBreaker below (single-user prod is byte-for-byte unchanged).
+        # "redis" → RedisCircuitBreaker, sharing breaker state across all
+        # replicas so the fleet backs off a 429ing provider together. The
+        # Redis breaker fails OPEN on any Redis error, so flipping this flag
+        # can never block LLM calls if Redis hiccups.
+        breaker_factory = self._select_breaker_factory()
+        self._circuits = {
+            p: breaker_factory(p) for p in (
                 "anthropic", "openai", "google", "deepseek", "moonshot", "openrouter"
             )
         }
+
+    @staticmethod
+    def _select_breaker_factory():
+        """Return a callable ``provider -> breaker`` per ``breaker_backend``.
+
+        Defaults to the in-memory ``CircuitBreaker``. Only when the setting is
+        explicitly ``"redis"`` do we use ``RedisCircuitBreaker`` — and even
+        then, any import/config failure falls back to the in-memory breaker so
+        this selection can never hard-fail router construction.
+        """
+        try:
+            from config.settings import get_settings
+            backend = (get_settings().breaker_backend or "memory").lower()
+        except Exception as e:  # noqa: BLE001 — settings must never block the router
+            logger.warning(
+                f"[hardened] could not read breaker_backend ({type(e).__name__}: {e}); "
+                "defaulting to in-memory circuit breaker"
+            )
+            backend = "memory"
+
+        if backend == "redis":
+            from agents.llm_breaker_redis import RedisCircuitBreaker
+            logger.info("[hardened] circuit-breaker backend: redis (fleet-wide)")
+            return lambda p: RedisCircuitBreaker(provider=p)
+        return lambda p: CircuitBreaker(provider=p)
 
     # ─── Core: ask with retry + circuit breaker ──────────────────────────
     async def ask_safe(
@@ -494,9 +527,14 @@ class HardenedLLMRouter:
         return self._health.snapshot()
 
     def circuit_snapshot(self) -> dict:
-        """Return current circuit breaker states."""
+        """Return current circuit breaker states.
+
+        ``failure_count`` is the in-memory breaker's private counter; the
+        Redis breaker keeps that count in Redis rather than on the object, so
+        we read it defensively (``-1`` = "not tracked on this backend").
+        """
         return {
-            p: {"state": cb.state, "failure_count": cb._failure_count}
+            p: {"state": cb.state, "failure_count": getattr(cb, "_failure_count", -1)}
             for p, cb in self._circuits.items()
         }
 
