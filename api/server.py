@@ -198,8 +198,22 @@ app.include_router(linkedin_buffer_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
+# verify_secret is the historical service-to-service gate used by ~80 endpoints
+# below. Phase 1 (P1-1) hardens it to FAIL CLOSED: if the secret is unset or
+# still the shipped "change-me-in-production" placeholder, authentication is
+# refused outright (500 auth_misconfigured) rather than authorizing any caller
+# that happens to send the placeholder. The match itself is unchanged for a
+# properly-configured deployment, so live behavior with a real SECRET_KEY is
+# byte-for-byte identical. The fail-closed rule lives once in api.auth so the
+# new verify_service_secret dependency shares it.
+from api.auth import verify_service_secret  # noqa: E402  (re-exported for cron/worker/admin use)
+
+
 def verify_secret(x_secret_key: str = Header(None)):
-    if x_secret_key != settings.secret_key:
+    from api.auth import _resolve_service_secret
+
+    expected = _resolve_service_secret()  # raises 500 if unset/placeholder
+    if x_secret_key != expected:
         raise HTTPException(status_code=401, detail="Invalid secret key")
     return True
 
@@ -544,6 +558,69 @@ async def list_jobs(
 
     result = query.execute()
     return {"jobs": result.data or [], "count": len(result.data or [])}
+
+
+# ── Phase 1 (P1-2) reference usages of the per-request RLS client ──────────────
+#
+# These two endpoints are the *reference* for finding 2's mechanical conversion
+# of the ~70 service-secret endpoints above. They show the full multi-tenant
+# shape end-to-end:
+#   - Depends(get_current_user)      → authenticate + resolve the tenant
+#   - Depends(get_request_supabase)  → an RLS-scoped client (anon key + the
+#                                       user's JWT) in multi-tenant mode, or the
+#                                       service-role singleton in single-user
+#                                       mode / for service callers
+#   - .eq("user_id", str(user.id))   → app-level scoping that is ALSO enforced
+#                                       by RLS once the JWT client is in play
+#
+# Behavior with flags default-on (RIZWAN_SINGLE_USER_MODE=1): get_current_user
+# returns user_001 and get_request_supabase returns the service-role singleton,
+# so these read exactly the same rows the legacy /jobs endpoint does today.
+# They are intentionally additive and namespaced under /me/* so nothing existing
+# changes; finding 2 will fold this pattern into the canonical endpoints.
+from api.context import get_current_user, get_request_supabase  # noqa: E402
+from api.users import User  # noqa: E402
+
+
+@app.get("/me/jobs")
+async def list_my_jobs(
+    limit: int = 50,
+    min_score: int = 0,
+    user: "User" = Depends(get_current_user),
+    db=Depends(get_request_supabase),
+):
+    """Reference RLS-scoped list of the current user's jobs (Phase 1, P1-2).
+
+    Single-user mode: identical rows to /jobs (service-role client, user_001).
+    Multi-tenant mode: anon-key client carrying the caller's JWT, so RLS limits
+    the result to the caller's rows even if the explicit .eq() were ever dropped.
+    """
+    result = (
+        db.table("jobs")
+        .select("id, title, company, location, match_score, status, url, discovered_at")
+        .eq("user_id", str(user.id))
+        .gte("match_score", min_score)
+        .order("match_score", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return {"jobs": result.data or [], "count": len(result.data or [])}
+
+
+@app.get("/me")
+async def get_me(user: "User" = Depends(get_current_user)):
+    """Reference identity endpoint: who the request authenticated as.
+
+    Useful for the dashboard to confirm JWT propagation once multi-tenant is on.
+    In single-user mode this always returns the seed owner (admin).
+    """
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "full_name": user.full_name,
+        "plan": user.plan,
+        "is_admin": user.is_admin,
+    }
 
 
 @app.get("/jobs/{job_id}")
