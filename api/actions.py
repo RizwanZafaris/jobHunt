@@ -292,22 +292,31 @@ def _build_linkedin_post_due(user_id: UUID) -> Optional[dict[str, Any]]:
 def _active_dismissed_job_ids(user_id: UUID) -> set[int]:
     """Job IDs the user has dismissed (and not yet snooze-expired).
 
-    Reads job_card_dismissals (migration 036). Defensive — DB error
-    returns empty set so /today never blackouts because of this filter.
+    Reads job_card_dismissals (migrations 036 + 042). Defensive — a DB
+    error returns an empty set so /today never blackouts because of this
+    filter.
 
-    Filter logic:
+    Filter logic (pushed into Postgres, see migration 042):
       • snoozed_until IS NULL          → permanent dismissal, always filter
       • snoozed_until >  now()         → snooze still active, filter
       • snoozed_until <= now()         → snooze expired, do NOT filter
                                          (re-surface the card to give it
                                          another shot)
+
+    The active-snooze predicate is applied server-side via
+    `.or_("snoozed_until.is.null,snoozed_until.gt.<now>")` so we transfer
+    only the rows we actually need instead of fetching every dismissal and
+    filtering in Python. This is index-eligible against idx_dismissals_active
+    (user_id, job_id) INCLUDE (snoozed_until).
     """
+    now_iso = _utcnow().isoformat()
     try:
         rows = (
             get_supabase()
             .table("job_card_dismissals")
             .select("job_id, snoozed_until")
             .eq("user_id", str(user_id))
+            .or_(f"snoozed_until.is.null,snoozed_until.gt.{now_iso}")
             .execute()
             .data
         ) or []
@@ -317,15 +326,11 @@ def _active_dismissed_job_ids(user_id: UUID) -> set[int]:
         )
         return set()
 
-    now_iso = _utcnow().isoformat()
     out: set[int] = set()
     for r in rows:
-        snooze = r.get("snoozed_until")
-        # Active filter: NULL (permanent) OR snooze hasn't elapsed yet.
-        if snooze is None or snooze > now_iso:
-            jid = r.get("job_id")
-            if jid is not None:
-                out.add(int(jid))
+        jid = r.get("job_id")
+        if jid is not None:
+            out.add(int(jid))
     return out
 
 
