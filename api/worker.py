@@ -54,13 +54,14 @@ RQ_RUN_SCHEDULER env var (P2-2):
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import signal
 import sys
 import traceback
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +116,93 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+# ─── Per-tenant in-flight cap: release on terminal (P2-3 fairness) ─────────
+#
+# api/queue.py INCRs a per-(user_id, queue_class) counter on every fresh
+# enqueue; the worker must DECR it once the job reaches a terminal state
+# (success OR failure) so the slot frees up. We do this in a `finally`
+# wrapper around each worker_run_* function rather than threading a
+# decrement into all ~8 success/failure branches by hand — one place, every
+# terminal path covered, including re-raises for RQ retry.
+#
+# The release is fail-safe by construction:
+#   * api.queue.release_inflight never raises and never lets the counter go
+#     negative;
+#   * if we can't determine the run's (user_id, kind) (row deleted between
+#     enqueue and pickup), we skip the DECR and let the counter's TTL safety
+#     net reap it — never crash the job on a counter bug.
+#
+# When the cap is disabled (MAX_INFLIGHT_PER_TENANT <= 0, the default-high
+# value notwithstanding) release_inflight() short-circuits before touching
+# Redis, so single-user mode adds no per-job Redis traffic.
+
+
+def _inflight_release(func: Callable[[str], Any]) -> Callable[[str], Any]:
+    """Decorator: DECR the tenant's in-flight counter when the job finishes.
+
+    Wraps a `worker_run_*(jobs_run_id)` function. Looks up the run's
+    (user_id, kind) once and, in a `finally`, releases one in-flight slot —
+    so the counter is freed whether the job succeeded, failed-and-re-raised
+    for RQ retry, or returned an early sentinel. Best-effort and never
+    raises.
+    """
+
+    @functools.wraps(func)
+    def _wrapper(jobs_run_id: str):
+        # Zero-overhead pass-through when the cap is disabled
+        # (MAX_INFLIGHT_PER_TENANT <= 0): no extra row read, no Redis. This
+        # keeps the worker path byte-for-byte unchanged for operators who
+        # turn the feature off. With the default (cap=50, enabled) the cost
+        # is one cheap indexed read + one Redis DECR per finished job.
+        try:
+            from api.queue import _cap_enabled
+            enabled = _cap_enabled()
+        except Exception:
+            enabled = False
+        if not enabled:
+            return func(jobs_run_id)
+
+        user_id = None
+        kind = None
+        try:
+            # Resolve identity up front so we can still release even if the
+            # row is mutated/deleted during the job. Cheap single-row read,
+            # off the hot path. Guarded — a lookup failure must not block
+            # the actual work.
+            from api.jobs_runs import get_run
+            run = get_run(jobs_run_id)
+            if run is not None:
+                user_id = run.user_id
+                kind = run.kind
+        except Exception:
+            logger.debug(
+                "inflight: could not resolve run %s for release; "
+                "relying on counter TTL", jobs_run_id, exc_info=True,
+            )
+
+        try:
+            return func(jobs_run_id)
+        finally:
+            if user_id is not None and kind is not None:
+                try:
+                    from api.queue import release_inflight
+                    release_inflight(user_id, kind)
+                except Exception:
+                    # release_inflight already swallows Redis errors; this
+                    # is belt-and-suspenders so the worker terminal path is
+                    # truly crash-proof.
+                    logger.debug(
+                        "inflight: release_inflight raised for run %s "
+                        "(ignored)", jobs_run_id, exc_info=True,
+                    )
+
+    return _wrapper
+
+
 # ─── Worker job functions ─────────────────────────────────────────────────
 
 
+@_inflight_release
 def worker_run_g2(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G2 resume graph for one jobs_runs row.
 
@@ -193,6 +278,7 @@ def worker_run_g2(jobs_run_id: str) -> dict[str, Any]:
         raise  # Let RQ apply Retry policy
 
 
+@_inflight_release
 def worker_run_g1(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G1 persona deep-research for one company.
 
@@ -262,6 +348,7 @@ def worker_run_g1(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g3(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G3 interview-prep graph for one application/round."""
     from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
@@ -318,6 +405,7 @@ def worker_run_g3(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g9(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G9 STAR+R story extractor for one user.
 
@@ -369,6 +457,7 @@ def worker_run_g9(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g5(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G5 fit-score evaluation for one job.
 
@@ -431,6 +520,7 @@ def worker_run_g5(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g11(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G11 voice-calibration graph for one user.
 
@@ -484,6 +574,7 @@ def worker_run_g11(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g4(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G4 LinkedIn-draft graph for one user."""
     from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
@@ -527,6 +618,7 @@ def worker_run_g4(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_legitimacy(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the Tier-2 legitimacy agent for one job.
 

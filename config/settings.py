@@ -254,6 +254,25 @@ class Settings(BaseSettings):
     #              error, so a Redis blip never blocks LLM calls.
     breaker_backend: str = "memory"
 
+    # P2-3 (docs/SCALABILITY_BUILD_PLAN.md): per-tenant in-flight job cap.
+    # A single FIFO queue with WORKER_CONCURRENCY=1 has no fairness — one
+    # tenant enqueuing a batch of 200 scoring jobs starves every other
+    # tenant's interactive work. This caps the number of *simultaneously
+    # active* (queued+running) jobs a single (user_id, queue_class) may
+    # hold; over the cap, api/queue.py refuses a NEW enqueue with
+    # TenantQueueFull (the API layer translates that to HTTP 429).
+    #   - Counted per (user_id, queue_class) in a Redis counter
+    #     (`inflight:{user_id}:{queue_class}`); INCR on a fresh enqueue,
+    #     DECR when the worker reaches a terminal state.
+    #   - Default is intentionally HIGH so single-user prod is never
+    #     affected: one human can't hold 50 active jobs of one class.
+    #   - <= 0 (or unset → 0 via env) DISABLES the cap entirely, for full
+    #     backward-compat. The dedup/idempotency path always wins: a dedup
+    #     hit returns the existing run id and is never counted or refused.
+    #   - FAILS OPEN: any Redis error on the counter path logs + allows the
+    #     enqueue, so a counter bug can never block real work.
+    max_inflight_per_tenant: int = 50
+
     # P2-5 (docs/SCALABILITY_BUILD_PLAN.md): async DB seam. supabase-py is
     # synchronous, so every `.execute()` is a blocking socket call on the
     # event loop (SCALABILITY.md P0 #3). The additive `aexecute` / async
