@@ -241,6 +241,19 @@ class Settings(BaseSettings):
         "https://dashboard-rizwanzaffarpk-3779s-projects.vercel.app"
     )
 
+    # ── Scalability flags (Phase 2 — default-neutral) ─────────────────────────
+    # P2-4 (docs/SCALABILITY_BUILD_PLAN.md): the LLM circuit breaker in
+    # agents/llm_hardening.py is an in-process dataclass — one per replica.
+    # At single-replica scale that's correct, but across N workers each
+    # replica independently re-discovers a 429ing provider and keeps hammering
+    # it. Setting this to "redis" externalizes the breaker state into a shared
+    # Redis hash so the whole fleet backs off together (and recovers together).
+    #   "memory" → existing per-process CircuitBreaker (default; single-user
+    #              prod stays byte-for-byte unchanged).
+    #   "redis"  → RedisCircuitBreaker (fleet-wide). Fails OPEN on any Redis
+    #              error, so a Redis blip never blocks LLM calls.
+    breaker_backend: str = "memory"
+
     # ── Scheduling ──────────────────────────────────────────────────────────
     job_scout_time: str = "09:00"
     boss_agent_time: str = "21:00"
