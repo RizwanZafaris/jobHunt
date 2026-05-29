@@ -1507,6 +1507,16 @@ async def add_target_company(
     from db.client import get_supabase
     from datetime import datetime, timezone
     db = get_supabase()
+    # DB-1 (2026-05-29): companies uniqueness is now composite (user_id, name),
+    # so the conflict target must include user_id AND the row must carry it.
+    # This endpoint authenticates via verify_secret (service secret, no user
+    # context), so fall back to the seed-user UUID via env override — mirroring
+    # db.client.upsert_company. Switching the conflict target without writing
+    # user_id would turn a silent clobber into a hard 23502 on first insert.
+    user_id = os.environ.get(
+        "RIZWAN_USER_ID",
+        "00000000-0000-0000-0000-000000000001",
+    )
     row = {
         "name": payload.name,
         "category": payload.category,
@@ -1515,8 +1525,11 @@ async def add_target_company(
         "notes": payload.notes,
         "is_target": True,
         "target_added_at": datetime.now(timezone.utc).isoformat(),
+        "user_id": user_id,
     }
-    result = db.table("companies").upsert(row, on_conflict="name").execute()
+    result = db.table("companies").upsert(
+        row, on_conflict="user_id,name"
+    ).execute()
     return {"created": True, "row": (result.data or [None])[0]}
 
 

@@ -47,10 +47,30 @@ async def upsert_company_knowledge(
     section: str,
     content: str,
     source_url: Optional[str] = None,
-    metadata: dict = None
+    metadata: dict = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Store a company intelligence chunk with its embedding."""
+    """Store a company intelligence chunk with its embedding.
+
+    Multi-tenancy DB-1 (2026-05-29): the uniqueness on company_knowledge is
+    now composite — (user_id, company_name, section) — so the on_conflict
+    arbiter must include user_id, and the row MUST carry user_id. Before this
+    change the writer never set user_id at all: at single-user scale every
+    row already existed so the upsert always took the UPDATE branch and the
+    NOT NULL user_id column was never exercised. Switching the conflict
+    target to the composite key turns that latent gap into a hard 23502 on
+    any first-insert for a new (user_id, company, section) tuple — so we add
+    user_id here in the same change. user_id defaults to the seed-user UUID
+    via env override, mirroring upsert_job / upsert_company; multi-tenant
+    callers can pass an explicit user_id.
+    """
     embedding = await embed(content)
+    if user_id is None:
+        import os
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
     db = get_supabase()
 
     row = {
@@ -59,15 +79,16 @@ async def upsert_company_knowledge(
         "content": content,
         "embedding": embedding,
         "source_url": source_url,
-        "metadata": metadata or {}
+        "metadata": metadata or {},
+        "user_id": user_id,
     }
     if company_id:
         row["company_id"] = company_id
 
-    # Upsert: replace if same company + section
+    # Upsert: replace if same user + company + section (DB-1 composite key).
     result = db.table("company_knowledge").upsert(
         row,
-        on_conflict="company_name,section"
+        on_conflict="user_id,company_name,section"
     ).execute()
     return result.data[0] if result.data else {}
 
@@ -150,7 +171,8 @@ async def upsert_rizwan_profile(
             "embedding": embedding,
             "user_id": user_id,
         },
-        on_conflict="section",
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, section).
+        on_conflict="user_id,section",
     ).execute()
     return result.data[0] if result.data else {}
 
@@ -295,7 +317,9 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
     filtered = {k: v for k, v in payload.items() if k in _JOBS_COLUMNS}
     result = db.table("jobs").upsert(
         filtered,
-        on_conflict="url"
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, url)
+        # [partial: WHERE url IS NOT NULL]. user_id is always set above.
+        on_conflict="user_id,url"
     ).execute()
     return result.data[0] if result.data else {}
 
@@ -362,7 +386,8 @@ def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
     payload["user_id"] = user_id
     filtered = {k: v for k, v in payload.items() if k in _COMPANIES_COLUMNS}
     result = db.table("companies").upsert(
-        filtered, on_conflict="name"
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, name).
+        filtered, on_conflict="user_id,name"
     ).execute()
     return result.data[0] if result.data else {}
 
