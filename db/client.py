@@ -8,12 +8,71 @@ import json
 import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
+from fastapi.concurrency import run_in_threadpool
 from supabase import create_client, Client
 from openai import AsyncOpenAI
 from config.settings import get_settings
 
 _supabase: Optional[Client] = None
 _openai: Optional[AsyncOpenAI] = None
+
+
+# ── P2-5: Async DB seam (additive — no existing caller changed) ────────────
+# supabase-py is synchronous, so every `.execute()` is a blocking socket call.
+# Inside an async FastAPI handler that blocks the whole event loop, stalling
+# every other in-flight request on that worker (SCALABILITY.md P0 #3). The
+# seam below lets async call sites offload that blocking work to FastAPI's
+# threadpool WITHOUT rewriting the sync helpers — the sync functions stay the
+# single canonical implementation (preserving the DB-1 `on_conflict` edits and
+# Phase-1 `user_id` edits), and each async twin is a thin wrapper that calls
+# its sync counterpart via `run_in_threadpool`.
+#
+# Today NOTHING calls these (handler conversion is P2-8…N), so single-user
+# prod behaviour is byte-for-byte unchanged.
+
+# Module-level semaphore bounding concurrent DB work in the threadpool. The
+# threadpool is shared by every `run_in_threadpool` caller (and defaults to
+# ~40 workers in Starlette/AnyIO); without a bound, a burst of slow DB calls
+# could occupy all of them and starve unrelated offloaded work. Sized from
+# DB_THREADPOOL_CONCURRENCY (default 20). Created lazily so importing this
+# module never requires a running event loop (Semaphore binds to the loop on
+# first acquire on modern asyncio).
+_db_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_db_semaphore() -> asyncio.Semaphore:
+    """Return the lazily-constructed DB threadpool semaphore (singleton)."""
+    global _db_semaphore
+    if _db_semaphore is None:
+        concurrency = get_settings().db_threadpool_concurrency
+        _db_semaphore = asyncio.Semaphore(concurrency)
+    return _db_semaphore
+
+
+async def aexecute(query_builder: Any) -> Any:
+    """Run a synchronous supabase-py query off the event loop.
+
+    Async seam for the synchronous supabase-py client. Given any supabase-py
+    query builder (the object you'd normally call ``.execute()`` on — e.g.
+    ``get_supabase().table("jobs").select("*").eq("id", 1)``), this runs its
+    blocking ``.execute()`` in FastAPI's threadpool instead of on the event
+    loop, and returns the same ``APIResponse`` the sync ``.execute()`` would.
+
+    Bounded by a module-level semaphore (``DB_THREADPOOL_CONCURRENCY``, default
+    20) so a burst of slow queries can't swamp the shared threadpool.
+
+    Usage (in a future async handler — NOT wired anywhere yet)::
+
+        resp = await aexecute(
+            get_supabase().table("jobs").select("*").eq("id", job_id)
+        )
+        row = resp.data
+
+    This is purely additive: existing sync callers keep calling ``.execute()``
+    directly and are completely unaffected.
+    """
+    async with _get_db_semaphore():
+        return await run_in_threadpool(query_builder.execute)
 
 
 def get_supabase() -> Client:
@@ -382,10 +441,30 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
     return result.data[0] if result.data else {}
 
 
+async def aupsert_job(job_data: dict, user_id: str | None = None) -> dict:
+    """Async twin of ``upsert_job`` (P2-5 seam).
+
+    Runs the canonical sync ``upsert_job`` off the event loop. Per the
+    non-negotiable de-collision rule in SCALABILITY_BUILD_PLAN.md §1, this
+    must CALL the sync writer (so the DB-1 ``on_conflict`` and Phase-1
+    ``user_id`` logic stay single-sourced), never copy its body.
+    """
+    return await run_in_threadpool(upsert_job, job_data, user_id)
+
+
 def get_job(job_id: int) -> Optional[dict]:
     db = get_supabase()
     result = db.table("jobs").select("*").eq("id", job_id).single().execute()
     return result.data
+
+
+async def aget_job(job_id: int) -> Optional[dict]:
+    """Async twin of ``get_job`` (P2-5 seam).
+
+    Thin wrapper that runs the canonical sync ``get_job`` off the event loop
+    via the threadpool. NOT a reimplementation — same behaviour, same return.
+    """
+    return await run_in_threadpool(get_job, job_id)
 
 
 def update_job(job_id: int, updates: dict) -> dict:
@@ -394,10 +473,20 @@ def update_job(job_id: int, updates: dict) -> dict:
     return result.data[0] if result.data else {}
 
 
+async def aupdate_job(job_id: int, updates: dict) -> dict:
+    """Async twin of ``update_job`` (P2-5 seam). Delegates to the sync fn."""
+    return await run_in_threadpool(update_job, job_id, updates)
+
+
 def get_company_by_name(name: str) -> Optional[dict]:
     db = get_supabase()
     result = db.table("companies").select("*").ilike("name", name).limit(1).execute()
     return result.data[0] if result.data else None
+
+
+async def aget_company_by_name(name: str) -> Optional[dict]:
+    """Async twin of ``get_company_by_name`` (P2-5 seam). Delegates to sync fn."""
+    return await run_in_threadpool(get_company_by_name, name)
 
 
 _COMPANIES_COLUMNS = {
@@ -448,6 +537,16 @@ def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
         filtered, on_conflict="user_id,name"
     ).execute()
     return result.data[0] if result.data else {}
+
+
+async def aupsert_company(company_data: dict, user_id: str | None = None) -> dict:
+    """Async twin of ``upsert_company`` (P2-5 seam).
+
+    Delegates to the canonical sync ``upsert_company`` via the threadpool —
+    including its BUG-013 phantom-name guard and DB-1 composite ``on_conflict``
+    — so behaviour (and the ValueError on phantom names) is identical.
+    """
+    return await run_in_threadpool(upsert_company, company_data, user_id)
 
 
 # ── Supabase Storage helpers ──────────────────────────────────────────────
