@@ -211,8 +211,54 @@ app.include_router(linkedin_buffer_router)
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
+# verify_secret is the historical service-to-service gate used by ~80 endpoints
+# below. Phase 1 (P1-1) hardens it to FAIL CLOSED: if the secret is unset or
+# still the shipped "change-me-in-production" placeholder, authentication is
+# refused outright (500 auth_misconfigured) rather than authorizing any caller
+# that happens to send the placeholder. The match itself is unchanged for a
+# properly-configured deployment, so live behavior with a real SECRET_KEY is
+# byte-for-byte identical. The fail-closed rule lives once in api.auth so the
+# new verify_service_secret dependency shares it.
+from api.auth import verify_service_secret  # noqa: E402  (re-exported for cron/worker/admin use)
+from api.context import get_current_user, require_admin  # noqa: E402  (tenant + admin gates)
+from api.users import User  # noqa: E402
+from db.client import get_supabase  # noqa: E402  (module-level: tenant endpoints + tests monkeypatch this)
+
+
+# ── Phase 1, finding 2: tenant scoping (feat/endpoint-user-scoping) ─────────────
+#
+# Every endpoint that reads/writes a *per-tenant* table now authenticates via
+# `Depends(get_current_user)` and filters its DB queries by `user.id` (an
+# explicit `.eq("user_id", str(user.id))` on reads + `"user_id": str(user.id)`
+# on writes). The load-bearing guarantee is that explicit predicate — we never
+# rely on RLS alone (the service-role client bypasses RLS).
+#
+# SINGLE-USER NO-OP: in single-user mode (RIZWAN_SINGLE_USER_MODE=1, the
+# default) `get_current_user` returns the seed owner (user_001) header-agnostic,
+# and every existing row already carries user_id=user_001 — so the added
+# `.eq("user_id", user_001)` matches exactly today's rows and changes nothing
+# live. Existing X-Secret-Key callers still work because in multi-tenant mode
+# `get_current_user`'s service-secret branch resolves a bare X-Secret-Key to the
+# system (seed) user.
+#
+# STAYS service-secret / admin (NOT user-scoped):
+#   - infra/health: /, /health, /jobs-runs/{id}
+#   - diagnostics: /debug/*
+#   - cron/worker/system batch triggers: /pipeline/*, /companies/build,
+#     /companies/research, /jobs/reclassify, /personas/* (synth/research/news),
+#     /applications/review + /applications/pipeline (tracker batch), boss/*
+#   - global observability: /costs/*, /alerts/*, /digest/latest,
+#     /resumes/outcomes/conversion (un-tenanted views / agent_call_log)
+#   - admin ops (require_admin): /admin/*
+# These keep `Depends(verify_service_secret)` (the renamed-but-identical gate)
+# or `Depends(require_admin)`.
+
+
 def verify_secret(x_secret_key: str = Header(None)):
-    if x_secret_key != settings.secret_key:
+    from api.auth import _resolve_service_secret
+
+    expected = _resolve_service_secret()  # raises 500 if unset/placeholder
+    if x_secret_key != expected:
         raise HTTPException(status_code=401, detail="Invalid secret key")
     return True
 
@@ -232,7 +278,7 @@ def verify_secret(x_secret_key: str = Header(None)):
 @app.get("/jobs-runs/{run_id}")
 def get_jobs_run(
     run_id: str,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """Return the current state of a jobs_runs row by id.
 
@@ -354,7 +400,7 @@ async def ready():
 
 
 @app.get("/debug/apify-check")
-async def debug_apify_check(_auth=Depends(verify_secret)):
+async def debug_apify_check(_auth=Depends(verify_service_secret)):
     """Diagnostic: check whether APIFY_TOKEN reaches the container + works.
 
     Bypasses Pydantic settings cache by reading os.environ directly.
@@ -417,7 +463,7 @@ async def debug_apify_check(_auth=Depends(verify_secret)):
 async def debug_provider_ping(
     provider: str,
     model: str,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Diagnostic: send a 1-token "ping" to a provider+model and report the
@@ -491,7 +537,7 @@ async def debug_provider_ping(
 async def run_pipeline(
     request: PipelineRunRequest,
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret)
+    _auth=Depends(verify_service_secret)
 ):
     """Trigger a full pipeline run (runs in background)."""
     async def _run():
@@ -510,7 +556,7 @@ async def run_pipeline(
 @app.post("/pipeline/evaluate")
 async def evaluate_job(
     request: JobEvalRequest,
-    _auth=Depends(verify_secret)
+    _auth=Depends(verify_service_secret)
 ):
     """
     Evaluate a single job description.
@@ -567,7 +613,7 @@ async def list_jobs(
     limit: int = 50,
     include_closed: bool = False,
     letter_grade: Optional[str] = None,
-    _auth=Depends(verify_secret)
+    user: "User" = Depends(get_current_user),
 ):
     """List all discovered jobs.
 
@@ -582,7 +628,6 @@ async def list_jobs(
     NOT filtered out unless an explicit `letter_grade` filter is passed,
     so the dashboard can render a "Score now" state on those.
     """
-    from db.client import get_supabase
     from api._job_guards import filter_open_jobs_query
     db = get_supabase()
     query = db.table("jobs").select(
@@ -593,7 +638,7 @@ async def list_jobs(
         # for the A-F chip; fit_score_breakdown carries the per-dim
         # rationale + composite for the workspace detail view.
         "letter_grade, fit_score_breakdown"
-    ).gte("match_score", min_score).order("match_score", desc=True).limit(limit)
+    ).eq("user_id", str(user.id)).gte("match_score", min_score).order("match_score", desc=True).limit(limit)
 
     # Hide stale rows unless explicitly requested. Keeps the canonical list
     # endpoint (and anything that proxies it — dashboards, integrations)
@@ -613,27 +658,98 @@ async def list_jobs(
     return {"jobs": result.data or [], "count": len(result.data or [])}
 
 
+# ── Phase 1 (P1-2) reference usages of the per-request RLS client ──────────────
+#
+# These two endpoints are the *reference* for finding 2's mechanical conversion
+# of the ~70 service-secret endpoints above. They show the full multi-tenant
+# shape end-to-end:
+#   - Depends(get_current_user)      → authenticate + resolve the tenant
+#   - Depends(get_request_supabase)  → an RLS-scoped client (anon key + the
+#                                       user's JWT) in multi-tenant mode, or the
+#                                       service-role singleton in single-user
+#                                       mode / for service callers
+#   - .eq("user_id", str(user.id))   → app-level scoping that is ALSO enforced
+#                                       by RLS once the JWT client is in play
+#
+# Behavior with flags default-on (RIZWAN_SINGLE_USER_MODE=1): get_current_user
+# returns user_001 and get_request_supabase returns the service-role singleton,
+# so these read exactly the same rows the legacy /jobs endpoint does today.
+# They are intentionally additive and namespaced under /me/* so nothing existing
+# changes; finding 2 will fold this pattern into the canonical endpoints.
+from api.context import get_current_user, get_request_supabase  # noqa: E402
+from api.users import User  # noqa: E402
+
+
+@app.get("/me/jobs")
+async def list_my_jobs(
+    limit: int = 50,
+    min_score: int = 0,
+    user: "User" = Depends(get_current_user),
+    db=Depends(get_request_supabase),
+):
+    """Reference RLS-scoped list of the current user's jobs (Phase 1, P1-2).
+
+    Single-user mode: identical rows to /jobs (service-role client, user_001).
+    Multi-tenant mode: anon-key client carrying the caller's JWT, so RLS limits
+    the result to the caller's rows even if the explicit .eq() were ever dropped.
+    """
+    result = (
+        db.table("jobs")
+        .select("id, title, company, location, match_score, status, url, discovered_at")
+        .eq("user_id", str(user.id))
+        .gte("match_score", min_score)
+        .order("match_score", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return {"jobs": result.data or [], "count": len(result.data or [])}
+
+
+@app.get("/me")
+async def get_me(user: "User" = Depends(get_current_user)):
+    """Reference identity endpoint: who the request authenticated as.
+
+    Useful for the dashboard to confirm JWT propagation once multi-tenant is on.
+    In single-user mode this always returns the seed owner (admin).
+    """
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "full_name": user.full_name,
+        "plan": user.plan,
+        "is_admin": user.is_admin,
+    }
+
+
 @app.get("/jobs/{job_id}")
-async def get_job(job_id: int, _auth=Depends(verify_secret)):
-    """Get full job details."""
-    from db.client import get_job as _get_job
-    job = _get_job(job_id)
-    if not job:
+async def get_job(job_id: int, user: "User" = Depends(get_current_user)):
+    """Get full job details (scoped to the caller's tenant)."""
+    db = get_supabase()
+    result = (
+        db.table("jobs")
+        .select("*")
+        .eq("id", job_id)
+        .eq("user_id", str(user.id))
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    if not rows:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return rows[0]
 
 
 @app.get("/companies")
-async def list_companies(_auth=Depends(verify_secret)):
-    """List all tracked companies.
+async def list_companies(user: "User" = Depends(get_current_user)):
+    """List all tracked companies (scoped to the caller's tenant).
 
     BUG-013: filter out `is_phantom=true` rows (scraping artifacts).
     """
-    from db.client import get_supabase
     db = get_supabase()
     result = (
         db.table("companies")
         .select("*")
+        .eq("user_id", str(user.id))
         .eq("is_phantom", False)
         .order("name")
         .execute()
@@ -645,7 +761,7 @@ async def list_companies(_auth=Depends(verify_secret)):
 async def build_company(
     request: CompanyBuildRequest,
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret)
+    _auth=Depends(verify_service_secret)
 ):
     """Build or refresh a company agent."""
     async def _build():
@@ -660,13 +776,23 @@ async def build_company(
 @app.post("/interview-prep")
 async def generate_interview_prep(
     request: InterviewPrepRequest,
-    _auth=Depends(verify_secret)
+    user: "User" = Depends(get_current_user),
 ):
-    """Generate interview prep for a job."""
+    """Generate interview prep for a job (scoped to the caller's tenant)."""
     from agents.interview_agent import InterviewAgent
-    from db.client import get_job as _get_job
 
-    job = _get_job(request.job_id)
+    # Scope the job lookup by user_id so a caller can't prep against another
+    # tenant's job (the legacy db.client.get_job() had no user filter).
+    db = get_supabase()
+    job_rows = (
+        db.table("jobs")
+        .select("*")
+        .eq("id", request.job_id)
+        .eq("user_id", str(user.id))
+        .limit(1)
+        .execute()
+    ).data or []
+    job = job_rows[0] if job_rows else None
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -690,8 +816,8 @@ async def generate_interview_prep(
 
 
 @app.get("/digest/latest")
-async def get_latest_digest(_auth=Depends(verify_secret)):
-    """Get the latest daily digest."""
+async def get_latest_digest(_auth=Depends(verify_service_secret)):
+    """Get the latest daily digest (boss_audit_log is admin/global, un-tenanted)."""
     from db.client import get_supabase
     db = get_supabase()
     result = db.table("boss_audit_log") \
@@ -707,7 +833,7 @@ async def get_latest_digest(_auth=Depends(verify_secret)):
 @app.post("/boss/audit")
 async def run_boss_audit(
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret)
+    _auth=Depends(verify_service_secret)
 ):
     """Trigger a boss agent audit immediately."""
     async def _audit():
@@ -850,7 +976,7 @@ def _build_boss_context() -> str:
 @app.post("/boss/chat")
 async def boss_chat(
     request: BossChatRequest,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """Interactive chat with the BossAgent persona, grounded in live pipeline state.
 
@@ -919,9 +1045,14 @@ class OfferEvalRequest(BaseModel):
 @app.post("/networking/strategy")
 async def get_networking_strategy(
     request: NetworkingRequest,
-    _auth=Depends(verify_secret)
+    user: "User" = Depends(get_current_user),
 ):
-    """Generate networking strategy and outreach messages for a target company."""
+    """Generate networking strategy and outreach messages for a target company.
+
+    No tenant-table read/write in this handler (pure LLM agent call), but it's a
+    user-facing feature so it authenticates as the user rather than via the
+    service secret.
+    """
     from agents.networking_agent import NetworkingAgent
     agent = NetworkingAgent()
     result = await agent.run(
@@ -937,9 +1068,9 @@ async def get_networking_strategy(
 @app.post("/salary/research")
 async def research_salary(
     request: SalaryRequest,
-    _auth=Depends(verify_secret)
+    user: "User" = Depends(get_current_user),
 ):
-    """Research market compensation for a role."""
+    """Research market compensation for a role (user-facing; no tenant-table I/O)."""
     from agents.salary_research_agent import SalaryResearchAgent
     agent = SalaryResearchAgent()
     result = await agent.research_compensation(
@@ -954,9 +1085,9 @@ async def research_salary(
 @app.post("/salary/evaluate-offer")
 async def evaluate_offer(
     request: OfferEvalRequest,
-    _auth=Depends(verify_secret)
+    user: "User" = Depends(get_current_user),
 ):
-    """Evaluate a job offer against market and Rizwan's targets."""
+    """Evaluate a job offer against market and Rizwan's targets (user-facing; no tenant-table I/O)."""
     from agents.salary_research_agent import SalaryResearchAgent
     agent = SalaryResearchAgent()
     result = await agent.evaluate_offer(
@@ -975,9 +1106,9 @@ async def evaluate_offer(
 @app.post("/applications/review")
 async def review_applications(
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret)
+    _auth=Depends(verify_service_secret)
 ):
-    """Run application tracker — surfaces follow-ups and drafts emails."""
+    """Run application tracker — surfaces follow-ups and drafts emails (system batch)."""
     from agents.application_tracker_agent import ApplicationTrackerAgent
     agent = ApplicationTrackerAgent()
     result = await agent.run()
@@ -985,16 +1116,16 @@ async def review_applications(
 
 
 @app.get("/applications/pipeline")
-async def get_pipeline_report(_auth=Depends(verify_secret)):
-    """Get the application pipeline report."""
+async def get_pipeline_report(_auth=Depends(verify_service_secret)):
+    """Get the application pipeline report (ApplicationTrackerAgent system batch)."""
     from agents.application_tracker_agent import ApplicationTrackerAgent
     agent = ApplicationTrackerAgent()
     return agent.get_pipeline_report()
 
 
 @app.get("/resumes/{filename}")
-async def download_resume(filename: str, _auth=Depends(verify_secret)):
-    """Download a generated resume."""
+async def download_resume(filename: str, _auth=Depends(verify_service_secret)):
+    """Download a generated resume (legacy local-file artifact; no tenant column)."""
     path = os.path.join(settings.output_resumes_dir, filename)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="File not found")
@@ -1040,14 +1171,16 @@ def _safe_resume_build_row(row: dict) -> dict:
 
 
 @app.get("/resume-builds/by-job/{job_id}")
-async def list_resume_builds_for_job(job_id: int, _auth=Depends(verify_secret)):
+async def list_resume_builds_for_job(
+    job_id: int, user: "User" = Depends(get_current_user)
+):
     """All builds for a job, latest first. Used by the Resume tab to
     show 'previous attempts' and let the user switch between them."""
-    from db.client import get_supabase
     db = get_supabase()
     result = (
         db.table("resume_builds")
         .select("*")
+        .eq("user_id", str(user.id))
         .eq("job_id", job_id)
         .order("created_at", desc=True)
         .execute()
@@ -1057,16 +1190,16 @@ async def list_resume_builds_for_job(job_id: int, _auth=Depends(verify_secret)):
 
 
 @app.get("/resume-builds/{build_id}")
-async def get_resume_build(build_id: str, _auth=Depends(verify_secret)):
+async def get_resume_build(build_id: str, user: "User" = Depends(get_current_user)):
     """Single build record with all fields (without the heavy
     agent_transcript blob — fetch that via /resume-builds/{id}/transcript
     if you need it)."""
-    from db.client import get_supabase
     db = get_supabase()
     result = (
         db.table("resume_builds")
         .select("*")
         .eq("id", build_id)
+        .eq("user_id", str(user.id))
         .limit(1)
         .execute()
     )
@@ -1077,20 +1210,22 @@ async def get_resume_build(build_id: str, _auth=Depends(verify_secret)):
 
 
 @app.get("/resume-builds/{build_id}/markdown")
-async def get_resume_build_markdown(build_id: str, _auth=Depends(verify_secret)):
+async def get_resume_build_markdown(
+    build_id: str, user: "User" = Depends(get_current_user)
+):
     """Return the resume markdown content for the dashboard's preview/edit
     surface. Prefers user_edited_md if the user has saved an override; else
     fetches the canonical Storage object referenced from jobs.resume_path.
 
     Returns: {markdown: str, source: 'user_edit'|'storage'|'missing', byte_size: int}
     """
-    from db.client import get_supabase
     import httpx
     db = get_supabase()
     rb = (
         db.table("resume_builds")
         .select("id, job_id, user_edited_md, user_edited_at")
         .eq("id", build_id)
+        .eq("user_id", str(user.id))
         .limit(1)
         .execute()
         .data or []
@@ -1104,11 +1239,12 @@ async def get_resume_build_markdown(build_id: str, _auth=Depends(verify_secret))
         md = rb["user_edited_md"]
         return {"markdown": md, "source": "user_edit", "byte_size": len(md.encode("utf-8"))}
 
-    # 2. Fall back to canonical Storage URL on the jobs row
+    # 2. Fall back to canonical Storage URL on the jobs row (also user-scoped).
     job = (
         db.table("jobs")
         .select("resume_path")
         .eq("id", rb["job_id"])
+        .eq("user_id", str(user.id))
         .limit(1)
         .execute()
         .data or []
@@ -1136,13 +1272,12 @@ async def get_resume_build_markdown(build_id: str, _auth=Depends(verify_secret))
 async def save_resume_build_edit(
     build_id: str,
     payload: ResumeBuildEdit,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
     """Save user-edited markdown over the agent draft. Stored in
     resume_builds.user_edited_md so the original Storage object is kept
     intact (audit trail). Display/download endpoints prefer this over
     the canonical version."""
-    from db.client import get_supabase
     db = get_supabase()
     if not payload.user_edited_md or not payload.user_edited_md.strip():
         raise HTTPException(status_code=400, detail="user_edited_md cannot be empty")
@@ -1156,6 +1291,7 @@ async def save_resume_build_edit(
             "user_edited_at": datetime.now(timezone.utc).isoformat(),
         })
         .eq("id", build_id)
+        .eq("user_id", str(user.id))
         .execute()
     )
     if not result.data:
@@ -1167,12 +1303,11 @@ async def save_resume_build_edit(
 async def save_resume_build_feedback(
     build_id: str,
     payload: ResumeBuildFeedback,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
     """Save user rating + free-text feedback on a build. Either field
     is optional but at least one must be set. Used by the Sunday persona
     synth cron to learn from negative ratings."""
-    from db.client import get_supabase
     db = get_supabase()
     if payload.user_rating is None and not payload.user_feedback:
         raise HTTPException(
@@ -1192,6 +1327,7 @@ async def save_resume_build_feedback(
         db.table("resume_builds")
         .update(update)
         .eq("id", build_id)
+        .eq("user_id", str(user.id))
         .execute()
     )
     if not result.data:
@@ -1203,7 +1339,7 @@ async def save_resume_build_feedback(
 async def download_resume_build(
     build_id: str,
     fmt: str = "md",
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
     """Download a resume in the chosen format.
 
@@ -1215,7 +1351,6 @@ async def download_resume_build(
     For now copy-paste the markdown into Pages/Word; the Phase 2.0
     typography is intentionally clean enough to render verbatim.
     """
-    from db.client import get_supabase
     import httpx
     fmt = (fmt or "md").lower()
     if fmt != "md":
@@ -1229,6 +1364,7 @@ async def download_resume_build(
         db.table("resume_builds")
         .select("id, job_id, company_name, user_edited_md")
         .eq("id", build_id)
+        .eq("user_id", str(user.id))
         .limit(1)
         .execute()
         .data or []
@@ -1237,13 +1373,14 @@ async def download_resume_build(
         raise HTTPException(status_code=404, detail="Resume build not found")
     rb = rb[0]
 
-    # Source: user edit if present, else canonical Storage URL
+    # Source: user edit if present, else canonical Storage URL (user-scoped).
     md = rb.get("user_edited_md")
     if not md:
         job = (
             db.table("jobs")
             .select("resume_path")
             .eq("id", rb["job_id"])
+            .eq("user_id", str(user.id))
             .limit(1)
             .execute()
             .data or []
@@ -1271,14 +1408,17 @@ async def download_resume_build(
 
 
 @app.get("/pipeline/stats")
-async def get_pipeline_stats(_auth=Depends(verify_secret)):
-    """Get overall pipeline statistics."""
-    from db.client import get_supabase
+async def get_pipeline_stats(user: "User" = Depends(get_current_user)):
+    """Get overall pipeline statistics (scoped to the caller's tenant)."""
     from collections import Counter
     db = get_supabase()
 
-    jobs_result = db.table("jobs").select("status, match_score").execute()
-    apps_result = db.table("applications").select("status").execute()
+    jobs_result = (
+        db.table("jobs").select("status, match_score").eq("user_id", str(user.id)).execute()
+    )
+    apps_result = (
+        db.table("applications").select("status").eq("user_id", str(user.id)).execute()
+    )
 
     jobs_data = jobs_result.data or []
     apps_data = apps_result.data or []
@@ -1302,15 +1442,23 @@ async def get_pipeline_stats(_auth=Depends(verify_secret)):
 # ── Profile endpoints ──────────────────────────────────────────────────────
 
 @app.get("/profile")
-async def get_profile(_auth=Depends(verify_secret)):
-    """Return master profile + experience + certs + education."""
-    from db.client import get_supabase
+async def get_profile(user: "User" = Depends(get_current_user)):
+    """Return master profile + experience + certs + education (caller's tenant)."""
     db = get_supabase()
+    uid = str(user.id)
 
-    master = db.table("profile_master").select("*").eq("id", 1).limit(1).execute()
-    experience = db.table("profile_experience").select("*").order("sort_order").execute()
-    certs = db.table("profile_certification").select("*").order("sort_order").execute()
-    edu = db.table("profile_education").select("*").order("sort_order").execute()
+    master = (
+        db.table("profile_master").select("*").eq("user_id", uid).eq("id", 1).limit(1).execute()
+    )
+    experience = (
+        db.table("profile_experience").select("*").eq("user_id", uid).order("sort_order").execute()
+    )
+    certs = (
+        db.table("profile_certification").select("*").eq("user_id", uid).order("sort_order").execute()
+    )
+    edu = (
+        db.table("profile_education").select("*").eq("user_id", uid).order("sort_order").execute()
+    )
 
     return {
         "master": (master.data or [None])[0],
@@ -1321,17 +1469,33 @@ async def get_profile(_auth=Depends(verify_secret)):
 
 
 @app.get("/profile/keywords")
-async def get_profile_keywords(_auth=Depends(verify_secret), category: Optional[str] = None, limit: int = 500):
-    """Return keyword bank, optionally filtered by category."""
-    from db.client import get_supabase
+async def get_profile_keywords(
+    user: "User" = Depends(get_current_user),
+    category: Optional[str] = None,
+    limit: int = 500,
+):
+    """Return keyword bank, optionally filtered by category (caller's tenant)."""
     db = get_supabase()
+    uid = str(user.id)
 
-    q = db.table("profile_keyword").select("*").order("ats_strength", desc=True).limit(limit)
+    q = (
+        db.table("profile_keyword")
+        .select("*")
+        .eq("user_id", uid)
+        .order("ats_strength", desc=True)
+        .limit(limit)
+    )
     if category:
         q = q.eq("category", category)
     result = q.execute()
 
-    cats = db.table("profile_keyword_category").select("*").order("total_occurrences", desc=True).execute()
+    cats = (
+        db.table("profile_keyword_category")
+        .select("*")
+        .eq("user_id", uid)
+        .order("total_occurrences", desc=True)
+        .execute()
+    )
     return {
         "keywords": result.data or [],
         "categories": cats.data or [],
@@ -1339,14 +1503,13 @@ async def get_profile_keywords(_auth=Depends(verify_secret), category: Optional[
 
 
 @app.get("/profile/sources")
-async def get_profile_sources(_auth=Depends(verify_secret)):
-    """Return parsed source-document registry."""
-    from db.client import get_supabase
+async def get_profile_sources(user: "User" = Depends(get_current_user)):
+    """Return parsed source-document registry (caller's tenant)."""
     from collections import Counter
     db = get_supabase()
     result = db.table("profile_source_document").select(
         "id, file_hash, file_name, document_class, char_count, file_size, parsed_at"
-    ).order("parsed_at", desc=True).execute()
+    ).eq("user_id", str(user.id)).order("parsed_at", desc=True).execute()
     docs = result.data or []
     by_class = Counter(d["document_class"] for d in docs)
     return {
@@ -1386,15 +1549,20 @@ class ProfileExperienceUpdate(BaseModel):
 @app.put("/profile")
 async def update_profile_master(
     payload: ProfileMasterUpdate,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Update master profile fields. Only provided fields are written."""
-    from db.client import get_supabase
+    """Update master profile fields. Only provided fields are written (caller's tenant)."""
     db = get_supabase()
     updates = {k: v for k, v in payload.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
-    result = db.table("profile_master").update(updates).eq("id", 1).execute()
+    result = (
+        db.table("profile_master")
+        .update(updates)
+        .eq("user_id", str(user.id))
+        .eq("id", 1)
+        .execute()
+    )
     # ─── Phase 1.2: re-extract STAR+R stories after a master-CV change ──
     # G9 is idempotent on (user_id, cv_hash); if nothing relevant changed
     # the enqueue collapses to a no-op via the queue's dedup gate. We
@@ -1408,15 +1576,20 @@ async def update_profile_master(
 async def update_profile_experience(
     exp_id: int,
     payload: ProfileExperienceUpdate,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Update one experience entry."""
-    from db.client import get_supabase
+    """Update one experience entry (caller's tenant)."""
     db = get_supabase()
     updates = {k: v for k, v in payload.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
-    result = db.table("profile_experience").update(updates).eq("id", exp_id).execute()
+    result = (
+        db.table("profile_experience")
+        .update(updates)
+        .eq("user_id", str(user.id))
+        .eq("id", exp_id)
+        .execute()
+    )
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"Experience {exp_id} not found")
@@ -1461,14 +1634,19 @@ def _maybe_enqueue_g9_after_profile_change(*, reason: str) -> Optional[str]:
 
 @app.get("/profile/recommendations")
 async def get_profile_recommendations(
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
     include_dismissed: bool = False,
 ):
-    """Return AI-generated profile improvement recommendations."""
-    from db.client import get_supabase
+    """Return AI-generated profile improvement recommendations (caller's tenant)."""
     from collections import Counter
     db = get_supabase()
-    q = db.table("profile_recommendation").select("*").order("severity", desc=True).order("created_at", desc=True)
+    q = (
+        db.table("profile_recommendation")
+        .select("*")
+        .eq("user_id", str(user.id))
+        .order("severity", desc=True)
+        .order("created_at", desc=True)
+    )
     if not include_dismissed:
         q = q.eq("dismissed", False)
     result = q.execute()
@@ -1491,14 +1669,13 @@ class RecommendationDismiss(BaseModel):
 async def update_recommendation(
     rec_id: int,
     payload: RecommendationDismiss,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Dismiss/restore a recommendation."""
-    from db.client import get_supabase
+    """Dismiss/restore a recommendation (caller's tenant)."""
     db = get_supabase()
     result = db.table("profile_recommendation").update(
         {"dismissed": payload.dismissed}
-    ).eq("id", rec_id).execute()
+    ).eq("user_id", str(user.id)).eq("id", rec_id).execute()
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"Recommendation {rec_id} not found")
@@ -1508,9 +1685,9 @@ async def update_recommendation(
 @app.post("/profile/recommendations/regenerate")
 async def regenerate_recommendations(
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Re-run the analyzer to refresh recommendations."""
+    """Re-run the analyzer to refresh recommendations (user-facing trigger)."""
     async def _run():
         from agents.profile_analyzer import ProfileAnalyzer
         analyzer = ProfileAnalyzer()
@@ -1538,16 +1715,16 @@ class TargetCompanyUpdate(BaseModel):
 
 
 @app.get("/companies/targets")
-async def list_target_companies(_auth=Depends(verify_secret)):
-    """List all target companies grouped by category.
+async def list_target_companies(user: "User" = Depends(get_current_user)):
+    """List all target companies grouped by category (caller's tenant).
 
     BUG-013: exclude phantom rows.
     """
-    from db.client import get_supabase
     db = get_supabase()
     result = (
         db.table("companies")
         .select("*")
+        .eq("user_id", str(user.id))
         .eq("is_target", True)
         .eq("is_phantom", False)
         .order("priority", desc=False)
@@ -1568,22 +1745,15 @@ async def list_target_companies(_auth=Depends(verify_secret)):
 @app.post("/companies/targets")
 async def add_target_company(
     payload: TargetCompanyCreate,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Add a new target company."""
-    from db.client import get_supabase
+    """Add a new target company (scoped to the caller's tenant)."""
     from datetime import datetime, timezone
     db = get_supabase()
     # DB-1 (2026-05-29): companies uniqueness is now composite (user_id, name),
     # so the conflict target must include user_id AND the row must carry it.
-    # This endpoint authenticates via verify_secret (service secret, no user
-    # context), so fall back to the seed-user UUID via env override — mirroring
-    # db.client.upsert_company. Switching the conflict target without writing
-    # user_id would turn a silent clobber into a hard 23502 on first insert.
-    user_id = os.environ.get(
-        "RIZWAN_USER_ID",
-        "00000000-0000-0000-0000-000000000001",
-    )
+    # finding 2: the row's user_id is now the authenticated caller (in single-
+    # user mode that resolves to the seed user, so behaviour is unchanged).
     row = {
         "name": payload.name,
         "category": payload.category,
@@ -1592,7 +1762,7 @@ async def add_target_company(
         "notes": payload.notes,
         "is_target": True,
         "target_added_at": datetime.now(timezone.utc).isoformat(),
-        "user_id": user_id,
+        "user_id": str(user.id),
     }
     result = db.table("companies").upsert(
         row, on_conflict="user_id,name"
@@ -1604,15 +1774,20 @@ async def add_target_company(
 async def update_company(
     company_id: str,
     payload: TargetCompanyUpdate,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Update a company's target/priority/etc."""
-    from db.client import get_supabase
+    """Update a company's target/priority/etc. (caller's tenant)."""
     db = get_supabase()
     updates = {k: v for k, v in payload.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
-    result = db.table("companies").update(updates).eq("id", company_id).execute()
+    result = (
+        db.table("companies")
+        .update(updates)
+        .eq("user_id", str(user.id))
+        .eq("id", company_id)
+        .execute()
+    )
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Company not found")
@@ -1622,12 +1797,17 @@ async def update_company(
 @app.delete("/companies/{company_id}")
 async def remove_target_company(
     company_id: str,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Remove from targets (soft: just sets is_target=false)."""
-    from db.client import get_supabase
+    """Remove from targets (soft: just sets is_target=false) (caller's tenant)."""
     db = get_supabase()
-    result = db.table("companies").update({"is_target": False}).eq("id", company_id).execute()
+    result = (
+        db.table("companies")
+        .update({"is_target": False})
+        .eq("user_id", str(user.id))
+        .eq("id", company_id)
+        .execute()
+    )
     return {"removed": True, "row": (result.data or [None])[0]}
 
 
@@ -1675,24 +1855,29 @@ def _strip_llm_disclaimers(text: str | None) -> str | None:
 @app.get("/companies/{company_name}/knowledge")
 async def get_company_knowledge(
     company_name: str,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
     """Return full research intel for a company (overview, news, culture, recruitment process, etc.).
+
+    Scoped to the caller's tenant (companies / company_knowledge /
+    company_personas all carry user_id).
 
     BUG-011: also exposes ``last_synthesized_at`` from ``company_personas`` so
     the dashboard can render a freshness pill + a "Refresh" CTA when the
     research is older than 30 days. Disclaimer-y LLM filler is stripped from
     each section's content on read.
     """
-    from db.client import get_supabase
     db = get_supabase()
-    # Look up company record
-    company = db.table("companies").select("*").eq("name", company_name).limit(1).execute()
+    uid = str(user.id)
+    # Look up company record (tenant-scoped)
+    company = (
+        db.table("companies").select("*").eq("user_id", uid).eq("name", company_name).limit(1).execute()
+    )
     company_row = (company.data or [None])[0]
-    # Pull all knowledge sections
+    # Pull all knowledge sections (tenant-scoped)
     knowledge = db.table("company_knowledge").select(
         "section, content, source_url, scraped_at"
-    ).eq("company_name", company_name).execute()
+    ).eq("user_id", uid).eq("company_name", company_name).execute()
     knowledge_rows = knowledge.data or []
     # BUG-011: strip hard-coded LLM disclaimers from every section's content.
     for row in knowledge_rows:
@@ -1704,6 +1889,7 @@ async def get_company_knowledge(
         persona = (
             db.table("company_personas")
             .select("last_synthesized_at")
+            .eq("user_id", uid)
             .eq("company_name", company_name)
             .limit(1)
             .execute()
@@ -1733,11 +1919,12 @@ class CompanyResearchRequest(BaseModel):
 async def trigger_company_research(
     request: CompanyResearchRequest,
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Trigger CompanyAgent research on one company or a tier of targets.
-    Runs in background; results stored in company_knowledge.
+    Runs in background; results stored in company_knowledge. (System batch —
+    service-secret gated; the agents resolve user_id internally.)
     """
     async def _run():
         from agents.company_agent import CompanyAgent
@@ -1778,12 +1965,13 @@ async def trigger_company_research(
 @app.post("/pipeline/run-targets")
 async def run_pipeline_targets(
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Workflow v2: scout-only mode. Scans all target companies, scores + classifies
     archetype + assesses posting legitimacy, stores in DB. Does NOT auto-build
     resumes — user clicks "Generate Resume" on each high-scoring job.
+    (Cron/worker trigger — service-secret gated.)
     """
     async def _run():
         from pipeline import JobHuntPipeline
@@ -1801,12 +1989,13 @@ async def run_pipeline_targets(
 async def reclassify_existing_jobs(
     background_tasks: BackgroundTasks,
     only_missing: bool = True,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Re-run archetype + legitimacy classification on jobs that were scored
     BEFORE workflow v2. Default: only jobs where archetype IS NULL.
     Set only_missing=false to reclassify ALL jobs.
+    (Admin/system batch — service-secret gated.)
     """
     async def _run():
         from db.client import get_supabase, upsert_job
@@ -1858,7 +2047,7 @@ async def generate_resume_for_job(
     background_tasks: BackgroundTasks,
     max_cost_usd: Optional[float] = None,
     force: bool = False,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
     """
     Workflow v2: manual trigger to build a tailored resume for ONE job.
@@ -1879,20 +2068,19 @@ async def generate_resume_for_job(
     Returns HTTP 400 with a structured detail if blocked, so the
     dashboard can show a confirm dialog and retry with force=true.
     """
-    from db.client import get_supabase
     from api._job_guards import load_open_job
     db = get_supabase()
     # 2026-05-12: route through load_open_job. This was the highest-impact
     # bypass found by Agent B's code audit — a legacy twin of
     # `/workspace/{id}/build-resume` that lacked the OKX-1641 wallet guard.
-    # `_auth=verify_secret` (no per-user scope) → pass user_id=None and rely
-    # on the staleness 409. If posting_closed_at or validation_failed is
-    # set, 409 with a structured `code` so the dashboard can show a confirm
-    # dialog and offer a `force=true` retry.
+    # finding 2: now scoped to the authenticated user so tenant B can't kick
+    # off a (paid) G2 build against tenant A's job. load_open_job adds
+    # `.eq("user_id", ...)` and 404s if the row isn't the caller's. Staleness
+    # still surfaces a 409 with a structured `code` for the confirm dialog.
     job = load_open_job(
         db,
         job_id=job_id,
-        user_id=None,
+        user_id=user.id,
         force=force,
         cost_label="G2 resume build (~$1-5)",
     )
@@ -1946,7 +2134,7 @@ async def generate_resume_for_job(
             await pipeline._process_single_job(job)
             db.table("jobs").update({
                 "resume_generated_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", job_id).execute()
+            }).eq("id", job_id).eq("user_id", str(user.id)).execute()
         except Exception as e:
             logger.error(f"Resume generation failed for job {job_id}: {e}")
 
@@ -1979,7 +2167,7 @@ async def prep_interview_for_job(
     round_number: int = 1,
     max_cost_usd: Optional[float] = None,
     force: bool = False,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
     """
     Phase 2: manual trigger to build a persona-aware interview prep pack
@@ -2004,27 +2192,29 @@ async def prep_interview_for_job(
     HTTP 400 with structured detail so the dashboard can show a confirm
     dialog and retry with force=true.
     """
-    from db.client import get_supabase
     from api._job_guards import load_open_job
     db = get_supabase()
     # 2026-05-12: wallet guard. G3 prep packs cost ~$0.50 each; preparing
     # for an interview on a closed posting is pure waste. Same 409 pattern
     # as generate-resume above — pass force=true to override (e.g. user
     # had an interview scheduled BEFORE the posting got marked closed).
+    # finding 2: scoped to the authenticated user (load_open_job 404s if the
+    # job isn't the caller's) so a paid G3 prep can't target another tenant.
     job = load_open_job(
         db,
         job_id=job_id,
-        user_id=None,
+        user_id=user.id,
         force=force,
         cost_label="G3 interview prep (~$0.50)",
     )
 
-    # Resolve application_id if not provided
+    # Resolve application_id if not provided (scoped to the caller's tenant).
     resolved_application_id = application_id
     if not resolved_application_id:
         apps = (
             db.table("applications")
             .select("id, status, created_at")
+            .eq("user_id", str(user.id))
             .eq("job_id", job_id)
             .order("created_at", desc=True)
             .limit(1)
@@ -2110,11 +2300,13 @@ async def prep_interview_for_job(
 # ── Job Detail (Phase D) ──────────────────────────────────────────────────
 
 @app.get("/jobs/{job_id}/detail")
-async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
-    """Full job detail including artifacts paths + fit details."""
-    from db.client import get_supabase
+async def get_job_detail(job_id: int, user: "User" = Depends(get_current_user)):
+    """Full job detail including artifacts paths + fit details (caller's tenant)."""
     db = get_supabase()
-    result = db.table("jobs").select("*").eq("id", job_id).limit(1).execute()
+    uid = str(user.id)
+    result = (
+        db.table("jobs").select("*").eq("id", job_id).eq("user_id", uid).limit(1).execute()
+    )
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -2163,6 +2355,7 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
         rb_rows = (
             db.table("resume_builds")
             .select("status, cover_email_md, created_at")
+            .eq("user_id", uid)
             .eq("job_id", job_id)
             .order("created_at", desc=True)
             .limit(10)
@@ -2196,6 +2389,7 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
         ip_rows = (
             db.table("interview_prep")
             .select("status, prep_pack_url, prep_pack_md, created_at")
+            .eq("user_id", uid)
             .eq("job_id", job_id)
             .order("created_at", desc=True)
             .limit(5)
@@ -2239,8 +2433,15 @@ async def get_job_detail(job_id: int, _auth=Depends(verify_secret)):
             job_id, exc,
         )
 
-    # Application status (if any)
-    apps = db.table("applications").select("*").eq("job_id", job_id).limit(1).execute()
+    # Application status (if any) — scoped to the caller's tenant.
+    apps = (
+        db.table("applications")
+        .select("*")
+        .eq("user_id", uid)
+        .eq("job_id", job_id)
+        .limit(1)
+        .execute()
+    )
     application = (apps.data or [None])[0]
     return {"job": job, "artifacts": artifacts, "application": application}
 
@@ -2261,8 +2462,8 @@ class ApplicationUpdate(BaseModel):
 
 
 @app.get("/applications")
-async def list_applications(_auth=Depends(verify_secret)):
-    """List all applications grouped by status (kanban columns).
+async def list_applications(user: "User" = Depends(get_current_user)):
+    """List all applications grouped by status (kanban columns) — caller's tenant.
 
     BUG-012: also annotates each row with ``threshold_violated`` so the
     dashboard can pill rows whose underlying ``jobs.match_score`` came in
@@ -2270,19 +2471,31 @@ async def list_applications(_auth=Depends(verify_secret)):
     a rejection happened without forcing the user to recompute the
     fit-score arithmetic in their head.
     """
-    from db.client import get_supabase
     from collections import defaultdict
     settings = get_settings()
     db = get_supabase()
-    apps = db.table("applications").select("*").order("created_at", desc=True).execute()
+    uid = str(user.id)
+    apps = (
+        db.table("applications")
+        .select("*")
+        .eq("user_id", uid)
+        .order("created_at", desc=True)
+        .execute()
+    )
     apps_data = apps.data or []
     apply_threshold = int(getattr(settings, "apply_threshold", 85) or 85)
-    # Also enrich with job info
+    # Also enrich with job info (tenant-scoped join).
     job_map: dict = {}
     if apps_data:
         job_ids = list({a["job_id"] for a in apps_data if a.get("job_id")})
         if job_ids:
-            jobs = db.table("jobs").select("id, title, company, location, match_score, url").in_("id", job_ids).execute()
+            jobs = (
+                db.table("jobs")
+                .select("id, title, company, location, match_score, url")
+                .eq("user_id", uid)
+                .in_("id", job_ids)
+                .execute()
+            )
             job_map = {j["id"]: j for j in (jobs.data or [])}
             for a in apps_data:
                 a["job"] = job_map.get(a.get("job_id"))
@@ -2308,12 +2521,19 @@ async def list_applications(_auth=Depends(verify_secret)):
 @app.post("/applications")
 async def create_application(
     payload: ApplicationCreate,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Create application from a job (used when user clicks 'Apply')."""
-    from db.client import get_supabase
+    """Create application from a job (used when user clicks 'Apply') — caller's tenant.
+
+    CRITICAL (finding 2): the job lookup is scoped by user_id so tenant B
+    can't create an application attached to tenant A's job, and the inserted
+    row carries the caller's user_id.
+    """
     db = get_supabase()
-    job_result = db.table("jobs").select("*").eq("id", payload.job_id).limit(1).execute()
+    uid = str(user.id)
+    job_result = (
+        db.table("jobs").select("*").eq("id", payload.job_id).eq("user_id", uid).limit(1).execute()
+    )
     job_rows = job_result.data or []
     if not job_rows:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -2329,6 +2549,7 @@ async def create_application(
         "interview_path": job.get("interview_path"),
         "notes": payload.notes,
         "company_id": job.get("company_id"),
+        "user_id": uid,
     }
     result = db.table("applications").insert(row).execute()
     return {"created": True, "row": (result.data or [None])[0]}
@@ -2338,10 +2559,9 @@ async def create_application(
 async def update_application(
     app_id: str,
     payload: ApplicationUpdate,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Update application status/notes/dates."""
-    from db.client import get_supabase
+    """Update application status/notes/dates (caller's tenant)."""
     db = get_supabase()
     updates = {k: v for k, v in payload.dict().items() if v is not None}
     if not updates:
@@ -2350,7 +2570,13 @@ async def update_application(
     if updates.get("status") == "applied" and "applied_date" not in updates:
         from datetime import date
         updates["applied_date"] = date.today().isoformat()
-    result = db.table("applications").update(updates).eq("id", app_id).execute()
+    result = (
+        db.table("applications")
+        .update(updates)
+        .eq("user_id", str(user.id))
+        .eq("id", app_id)
+        .execute()
+    )
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Application not found")
@@ -2383,17 +2609,17 @@ class ResumeOutcomeUpsert(BaseModel):
 
 
 @app.get("/resumes/outcomes/by-job/{job_id}")
-async def get_outcome_by_job(job_id: int, _auth=Depends(verify_secret)):
+async def get_outcome_by_job(job_id: int, user: "User" = Depends(get_current_user)):
     """
-    Return the most-recent outcome row for this job (or null if none).
+    Return the most-recent outcome row for this job (or null if none) — caller's tenant.
     There can be multiple if multiple resume_builds exist for the same
     job; we return the most recently logged.
     """
-    from db.client import get_supabase
     db = get_supabase()
     result = (
         db.table("resume_outcomes")
         .select("*")
+        .eq("user_id", str(user.id))
         .eq("job_id", job_id)
         .order("logged_at", desc=True)
         .limit(1)
@@ -2406,19 +2632,22 @@ async def get_outcome_by_job(job_id: int, _auth=Depends(verify_secret)):
 @app.post("/resumes/outcomes")
 async def upsert_outcome(
     payload: ResumeOutcomeUpsert,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
     """
-    Create OR update an outcome row.
+    Create OR update an outcome row (scoped to the caller's tenant).
 
     Resolution order for the target row:
       1. If `resume_build_id` provided and a row exists for it → update
       2. Else if `job_id` provided + a row already exists for this job
          → update the most recent one
       3. Else → INSERT a new row
+
+    Every lookup is scoped by user_id, the auto-fill job lookup is scoped,
+    and the inserted row carries the caller's user_id.
     """
-    from db.client import get_supabase
     db = get_supabase()
+    uid = str(user.id)
 
     payload_dict: dict = {k: v for k, v in payload.dict().items() if v is not None}
     if not payload_dict:
@@ -2426,11 +2655,12 @@ async def upsert_outcome(
 
     target_id: Optional[str] = None
 
-    # Case 1: resume_build_id provided — find by it
+    # Case 1: resume_build_id provided — find by it (tenant-scoped)
     if payload_dict.get("resume_build_id"):
         existing = (
             db.table("resume_outcomes")
             .select("id")
+            .eq("user_id", uid)
             .eq("resume_build_id", payload_dict["resume_build_id"])
             .limit(1)
             .execute()
@@ -2438,11 +2668,12 @@ async def upsert_outcome(
         if existing.data:
             target_id = existing.data[0]["id"]
 
-    # Case 2: fall back to job_id-based update
+    # Case 2: fall back to job_id-based update (tenant-scoped)
     elif payload_dict.get("job_id"):
         existing = (
             db.table("resume_outcomes")
             .select("id")
+            .eq("user_id", uid)
             .eq("job_id", payload_dict["job_id"])
             .order("logged_at", desc=True)
             .limit(1)
@@ -2455,17 +2686,20 @@ async def upsert_outcome(
         result = (
             db.table("resume_outcomes")
             .update(payload_dict)
+            .eq("user_id", uid)
             .eq("id", target_id)
             .execute()
         )
         return {"updated": True, "row": (result.data or [None])[0]}
 
     # Case 3: INSERT new row. If company_name not passed but job_id is,
-    # auto-fill company_name from the job for downstream persona aggregation.
+    # auto-fill company_name from the job (tenant-scoped) for downstream
+    # persona aggregation.
     if not payload_dict.get("company_name") and payload_dict.get("job_id"):
         job_lookup = (
             db.table("jobs")
             .select("company")
+            .eq("user_id", uid)
             .eq("id", payload_dict["job_id"])
             .limit(1)
             .execute()
@@ -2473,6 +2707,7 @@ async def upsert_outcome(
         if job_lookup.data:
             payload_dict["company_name"] = job_lookup.data[0]["company"]
 
+    payload_dict["user_id"] = uid
     result = db.table("resume_outcomes").insert(payload_dict).execute()
     return {"created": True, "row": (result.data or [None])[0]}
 
@@ -2481,10 +2716,9 @@ async def upsert_outcome(
 async def patch_outcome(
     outcome_id: str,
     payload: ResumeOutcomeUpsert,
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
-    """Direct PATCH by outcome id. Used when the client already has the row id."""
-    from db.client import get_supabase
+    """Direct PATCH by outcome id (caller's tenant). Used when the client already has the row id."""
     updates: dict = {k: v for k, v in payload.dict().items() if v is not None}
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -2492,6 +2726,7 @@ async def patch_outcome(
         get_supabase()
         .table("resume_outcomes")
         .update(updates)
+        .eq("user_id", str(user.id))
         .eq("id", outcome_id)
         .execute()
     )
@@ -2502,10 +2737,16 @@ async def patch_outcome(
 
 
 @app.get("/resumes/outcomes/conversion")
-async def get_conversion_funnel(_auth=Depends(verify_secret)):
+async def get_conversion_funnel(_auth=Depends(verify_service_secret)):
     """
     Per-company conversion funnel from the v_company_conversion_funnel view.
     Used by the dashboard to show which company personas are converting best.
+
+    KEPT on service-secret (finding 2): this view groups by company_name and
+    does NOT expose user_id, so it cannot carry the load-bearing
+    `.eq("user_id")` predicate without a view migration (out of scope — NO
+    MIGRATION). The properly tenant-scoped funnel lives at
+    /analytics/funnel (api/analytics.py).
     """
     from db.client import get_supabase
     try:
@@ -2525,7 +2766,7 @@ async def trigger_persona_synthesis(
     company_name: Optional[str] = None,
     force: bool = False,
     quality_filter: Optional[str] = None,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Manually trigger PersonaSynthesizer. By default, runs against all
@@ -2610,7 +2851,7 @@ async def trigger_persona_synthesis(
 @app.post("/personas/backfill-embeddings")
 async def trigger_backfill_embeddings(
     company: Optional[str] = None,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """One-shot: re-embed any company_knowledge rows whose embedding IS NULL.
 
@@ -2630,7 +2871,7 @@ async def trigger_deep_research(
     company: str,
     background_tasks: BackgroundTasks,
     sync: bool = False,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Build (or refresh) a company persona using live web research.
@@ -2702,7 +2943,7 @@ async def trigger_refresh_news(
     background_tasks: BackgroundTasks,
     company: Optional[str] = None,
     sync: bool = False,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """Daily news-only refresh. Cheap variant of /personas/deep-research.
 
@@ -2778,7 +3019,7 @@ async def trigger_deep_research_batch(
     background_tasks: BackgroundTasks,
     priority: Optional[str] = None,
     only_missing: bool = True,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Run deep research across all target companies, sequentially.
@@ -2842,22 +3083,23 @@ async def trigger_deep_research_batch(
 
 
 @app.get("/personas")
-async def list_personas(_auth=Depends(verify_secret)):
-    """List all company_personas with quality + version info.
+async def list_personas(user: "User" = Depends(get_current_user)):
+    """List all company_personas with quality + version info (caller's tenant).
 
     BUG-013: drop personas whose `company_name` matches a phantom row in
     `companies` (Adyen Careers, SuperApp, Merchant Acquiring ...). The
     persona row still exists for audit, but the /insights table no longer
     shows it.
     """
-    from db.client import get_supabase
     db = get_supabase()
+    uid = str(user.id)
     result = (
         db.table("company_personas")
         .select(
             "company_name, persona_version, n_examples_used, "
             "last_synthesized_at, metadata, ats_keyword_bank"
         )
+        .eq("user_id", uid)
         .order("last_synthesized_at", desc=True)
         .execute()
     )
@@ -2867,6 +3109,7 @@ async def list_personas(_auth=Depends(verify_secret)):
         for r in (
             db.table("companies")
             .select("name")
+            .eq("user_id", uid)
             .eq("is_phantom", True)
             .execute()
             .data
@@ -2882,13 +3125,13 @@ async def list_personas(_auth=Depends(verify_secret)):
 
 
 @app.get("/personas/{company_name}")
-async def get_persona(company_name: str, _auth=Depends(verify_secret)):
-    """Full persona row for a single company (incl. system_prompt_template)."""
-    from db.client import get_supabase
+async def get_persona(company_name: str, user: "User" = Depends(get_current_user)):
+    """Full persona row for a single company (incl. system_prompt_template) — caller's tenant."""
     result = (
         get_supabase()
         .table("company_personas")
         .select("*")
+        .eq("user_id", str(user.id))
         .eq("company_name", company_name)
         .limit(1)
         .execute()
@@ -2923,7 +3166,7 @@ def _cost_window_query(days: int):
 
 
 @app.get("/costs/summary")
-async def costs_summary(_auth=Depends(verify_secret)):
+async def costs_summary(_auth=Depends(verify_service_secret)):
     """
     Top-line cost stats: today / 7d / 30d totals, plus all-time + per-resume_build avg.
     Empty-state safe — returns zeros when agent_call_log is empty.
@@ -2988,7 +3231,7 @@ async def costs_summary(_auth=Depends(verify_secret)):
 
 
 @app.get("/costs/daily")
-async def costs_daily(days: int = 30, _auth=Depends(verify_secret)):
+async def costs_daily(days: int = 30, _auth=Depends(verify_service_secret)):
     """
     Per-day rollup, fronted by the v_daily_llm_cost view when present.
     Returns one row per (day, provider, model) — frontend re-aggregates
@@ -3017,7 +3260,7 @@ async def costs_daily(days: int = 30, _auth=Depends(verify_secret)):
 
 
 @app.get("/costs/by-provider")
-async def costs_by_provider(days: int = 7, _auth=Depends(verify_secret)):
+async def costs_by_provider(days: int = 7, _auth=Depends(verify_service_secret)):
     """
     Aggregate cost + calls + tokens + latency by provider over the window.
     Phase 1.9: uses cost_by_provider_window() RPC for DB-side aggregation
@@ -3067,7 +3310,7 @@ async def costs_by_provider(days: int = 7, _auth=Depends(verify_secret)):
 
 
 @app.get("/costs/by-agent")
-async def costs_by_agent(days: int = 7, _auth=Depends(verify_secret)):
+async def costs_by_agent(days: int = 7, _auth=Depends(verify_service_secret)):
     """
     Aggregate by agent_name (e.g. 'g2.writer', 'CompanyAgent[Stripe]').
     Phase 1.9: uses cost_by_agent_window() RPC for DB-side aggregation.
@@ -3123,7 +3366,7 @@ async def costs_by_agent(days: int = 7, _auth=Depends(verify_secret)):
 
 
 @app.get("/costs/health")
-async def costs_health(_auth=Depends(verify_secret)):
+async def costs_health(_auth=Depends(verify_service_secret)):
     """
     Per-provider health summary: error rate, p50/p95/p99 latency, last 7d
     cost, last call timestamp. Reads v_agent_call_health (added in
@@ -3157,7 +3400,7 @@ async def costs_health(_auth=Depends(verify_secret)):
 
 
 @app.get("/costs/log-stats")
-async def costs_log_stats(_auth=Depends(verify_secret)):
+async def costs_log_stats(_auth=Depends(verify_service_secret)):
     """
     Stats on the agent_call_log table itself: row count, size, oldest +
     newest entries. Used by docs/PERF.md guidance + dashboard footer.
@@ -3187,7 +3430,7 @@ class CleanupRequest(BaseModel):
 @app.post("/costs/cleanup")
 async def costs_cleanup(
     request: CleanupRequest,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Delete agent_call_log rows older than `days_to_keep` (default 365).
@@ -3219,7 +3462,7 @@ async def costs_cleanup(
 @app.post("/alerts/check")
 async def trigger_daily_alert_check(
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Manually trigger the daily-spend alert check. Idempotent — won't
@@ -3236,7 +3479,7 @@ async def trigger_daily_alert_check(
 @app.post("/alerts/weekly-digest")
 async def trigger_weekly_digest(
     background_tasks: BackgroundTasks,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Manually trigger the weekly cost digest. Useful for previewing the
@@ -3250,7 +3493,7 @@ async def trigger_weekly_digest(
 
 
 @app.get("/alerts/last")
-async def get_last_alerts(_auth=Depends(verify_secret)):
+async def get_last_alerts(_auth=Depends(verify_service_secret)):
     """
     Return the last 10 cost-alerter audit log entries — useful for the
     dashboard's audit-trail view to confirm alerts are firing as expected.
@@ -3273,7 +3516,7 @@ async def get_last_alerts(_auth=Depends(verify_secret)):
 
 
 @app.get("/costs/by-resume-build")
-async def costs_by_resume_build(limit: int = 20, _auth=Depends(verify_secret)):
+async def costs_by_resume_build(limit: int = 20, _auth=Depends(verify_service_secret)):
     """
     Top resume_builds by total cost. Joins to resume_builds for context
     (company_name, polisher_score, status).
@@ -3331,11 +3574,12 @@ async def costs_recent_calls(
     provider: Optional[str] = None,
     agent_name: Optional[str] = None,
     has_error: Optional[bool] = None,
-    _auth=Depends(verify_secret),
+    _auth=Depends(verify_service_secret),
 ):
     """
     Last N rows from agent_call_log with optional filters.
-    Used by the dashboard's recent-calls table.
+    Used by the dashboard's recent-calls table. (Global cost observability —
+    service-secret gated; per-user cost scoping is a separate Phase-1 finding.)
     """
     from db.client import get_supabase
     db = get_supabase()
@@ -3372,13 +3616,15 @@ async def costs_recent_calls(
 
 
 @app.get("/admin/scheduler-status")
-async def admin_scheduler_status(_auth=Depends(verify_secret)):
+async def admin_scheduler_status(_admin: "User" = Depends(require_admin)):
     """BUG-053: Surface scheduler state + next-run times for the 6 cron jobs.
 
     Returns:
         {running: bool, job_count: int, jobs: [{id, name, next_run_time, trigger}]}
-    Gated by verify_secret. Used to verify Railway is running the cron after
-    the BUG-053 fix that embedded APScheduler inside the FastAPI process.
+    Gated by require_admin (admins bypass tenant scoping for ops visibility).
+    In single-user mode the seed owner is admin, so this is unchanged for
+    self-use. Used to verify Railway is running the cron after the BUG-053 fix
+    that embedded APScheduler inside the FastAPI process.
     """
     scheduler = getattr(app.state, "scheduler", None)
     if scheduler is None:
@@ -3406,7 +3652,7 @@ async def admin_scheduler_status(_auth=Depends(verify_secret)):
 
 
 @app.get("/admin/provider-health")
-async def admin_provider_health(_auth=Depends(verify_secret)):
+async def admin_provider_health(_admin: "User" = Depends(require_admin)):
     """GAP-008: Surface per-provider LLM health + circuit-breaker state.
 
     Returns rolling success_rate / avg_latency_ms / consecutive_failures
@@ -3427,7 +3673,7 @@ async def admin_provider_health(_auth=Depends(verify_secret)):
 # ── B1: Worker queue diagnostics ──────────────────────────────────────────
 
 @app.get("/admin/worker-status")
-async def admin_worker_status(_auth=Depends(verify_secret)):
+async def admin_worker_status(_admin: "User" = Depends(require_admin)):
     """B1: Diagnostic endpoint for the RQ worker queue.
 
     Returns:
@@ -3493,7 +3739,7 @@ async def admin_worker_status(_auth=Depends(verify_secret)):
 
 
 @app.post("/admin/requeue-stuck")
-async def admin_requeue_stuck(_auth=Depends(verify_secret)):
+async def admin_requeue_stuck(_admin: "User" = Depends(require_admin)):
     """B1: Idempotent one-shot to re-enqueue stale queued rows.
 
     Re-enqueues every jobs_runs row with:
@@ -3542,22 +3788,22 @@ async def admin_requeue_stuck(_auth=Depends(verify_secret)):
 @app.get("/applications/by-job/{job_id}")
 async def get_application_by_job(
     job_id: int = Path(..., ge=1),
-    _auth=Depends(verify_secret),
+    user: "User" = Depends(get_current_user),
 ):
     """E3 (BUG-058): Resolve jobs.id (INTEGER) → applications.id (UUID).
 
     Used by the G8 offer page where the URL param is jobs.id but the
     evaluate-offer backend expects applications.id UUID. Returns the
-    latest applications row for (single-user-mode user, job_id) or 404.
+    latest applications row for (caller, job_id) or 404.
 
-    In multi-tenant mode this should also filter by user_id from the
-    auth context; in single-user mode the verify_secret gate is the
-    boundary (Rizwan's one user).
+    finding 2: now scoped by user_id from the auth context (in single-user
+    mode that resolves to the seed owner, so behaviour is unchanged).
     """
     db = get_supabase()
     rows = (
         db.table("applications")
         .select("id, job_id, status, created_at")
+        .eq("user_id", str(user.id))
         .eq("job_id", job_id)
         .order("created_at", desc=True)
         .limit(1)

@@ -32,11 +32,36 @@ os.environ.setdefault("SECRET_KEY", "test-secret")
 
 @pytest.fixture
 def client():
-    """FastAPI TestClient against the real app, scheduler hook short-circuited."""
+    """FastAPI TestClient against the real app, scheduler hook short-circuited.
+
+    Phase-1 finding 2: /admin/* now uses ``require_admin`` (was verify_secret).
+    Override ``get_current_user`` with an admin user so the admin endpoints
+    resolve without touching the mocked Supabase user table. (Non-admin
+    endpoints in this file don't depend on it, so the override is a no-op for
+    them.)
+    """
+    from datetime import datetime, timezone
+    from uuid import UUID
     from fastapi.testclient import TestClient
     from api import server
+    from api.context import get_current_user
+    from api.users import User
+
     server._scheduler_started = True
-    return TestClient(server.app)
+
+    def _admin_user() -> User:
+        return User(
+            id=UUID("00000000-0000-0000-0000-000000000001"),
+            email="rizwanzaffar.pk@gmail.com",
+            full_name="Rizwan Zafar",
+            plan="lifetime",
+            is_admin=True,
+            created_at=datetime.now(timezone.utc),
+        )
+
+    server.app.dependency_overrides[get_current_user] = _admin_user
+    yield TestClient(server.app)
+    server.app.dependency_overrides.clear()
 
 
 # ────────────────────────────────────────────────────────────────────────────

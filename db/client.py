@@ -5,6 +5,7 @@ Supabase client — singleton with vector search helpers.
 from __future__ import annotations
 import asyncio
 import json
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 from supabase import create_client, Client
@@ -16,11 +17,68 @@ _openai: Optional[AsyncOpenAI] = None
 
 
 def get_supabase() -> Client:
+    """The shared **service-role** client (singleton).
+
+    Connects with the service-role key, which **bypasses RLS**. Correct for
+    worker/cron/system code that legitimately operates across the data, and the
+    default everywhere today. End-user request paths that want RLS enforced
+    should use ``get_user_supabase(access_token)`` instead (Phase 1, P1-2).
+    """
     global _supabase
     if _supabase is None:
         s = get_settings()
         _supabase = create_client(s.supabase_url, s.supabase_service_key)
     return _supabase
+
+
+def _is_single_user_mode() -> bool:
+    return os.getenv("RIZWAN_SINGLE_USER_MODE", "1") == "1"
+
+
+def get_user_supabase(access_token: Optional[str] = None) -> Client:
+    """Return a Supabase client scoped to the end user's JWT (Phase 1, P1-2).
+
+    Builds an **anon-key** client and applies the user's access token via
+    ``client.postgrest.auth(token)`` so PostgREST sends it as the request's
+    ``Authorization`` bearer. That makes ``auth.uid()`` resolve inside Postgres,
+    so the RLS policies defined in migration 001 (``auth.uid() = user_id``)
+    actually apply — turning tenant isolation into a DB-enforced guarantee
+    rather than relying solely on application-level ``.eq("user_id")`` filters.
+
+    Fallbacks that preserve today's behavior byte-for-byte:
+
+    - **Single-user mode** (``RIZWAN_SINGLE_USER_MODE=1``, the default): always
+      return the service-role singleton. Nothing changes for self-use.
+    - **No token** (e.g. a service/cron caller, or the token wasn't threaded
+      through yet): return the service-role singleton. Callers that *require*
+      RLS must pass a token in multi-tenant mode.
+    - **No anon key configured**: fall back to the service-role singleton (RLS
+      can't be applied without an anon client; we don't want to hard-fail a
+      partially-configured deployment).
+
+    A fresh client is created per call when a token is applied — these are NOT
+    cached, because the postgrest auth header is per-user and caching would risk
+    cross-tenant bleed. Client construction is cheap (no network on init).
+
+    NOTE: this is intentionally NOT wired into the ~70 endpoints here — that
+    mechanical conversion is Phase 1 finding 2 (endpoint scoping). This provides
+    the building block plus the ``Depends`` shim below and a couple of reference
+    usages.
+    """
+    if _is_single_user_mode() or not access_token:
+        return get_supabase()
+
+    s = get_settings()
+    anon_key = s.supabase_anon_key
+    if not anon_key:
+        # Can't build an RLS-scoped client without the anon key; degrade to the
+        # service-role singleton rather than failing the request outright.
+        return get_supabase()
+
+    client = create_client(s.supabase_url, anon_key)
+    # Apply the user JWT so PostgREST forwards it and auth.uid() resolves.
+    client.postgrest.auth(access_token)
+    return client
 
 
 def get_openai() -> AsyncOpenAI:
