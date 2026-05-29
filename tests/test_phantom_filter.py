@@ -5,11 +5,12 @@ Covers:
   - CompanyAgent refuses to instantiate when the DB flags the name phantom
   - CompanyAgent allows a real company through the DB guard
 
-Note: the older /today phantom filter (`_phantom_company_names` in
-api/actions.py) was retired 2026-05-29. It queried `company_personas.is_phantom`
-— a column that actually lives on `companies` (BUG-013) — so the query always
-raised 42703 and the filter silently no-op'd. The surviving phantom filter is
-`_build_incoming_jobs` (queries the correct `companies` table).
+Note (2026-05-29): the `is_phantom` flag lives on `companies`, not
+`company_personas` (BUG-013). Two callers that wrongly queried
+`company_personas.is_phantom` were corrected — the /today phantom filter
+(`_phantom_company_names`) was retired, and this CompanyAgent guard was
+repointed to `companies`. The surviving runtime filters (`_build_incoming_jobs`
+and this guard) all query the correct `companies` table.
 """
 from __future__ import annotations
 
@@ -33,7 +34,7 @@ os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
 _USER = UUID("11111111-1111-1111-1111-111111111111")
 
 
-def _mock_db(*, phantom_personas: list[dict] | None = None, job_rows: list[dict] | None = None):
+def _mock_db(*, phantom_companies: list[dict] | None = None, job_rows: list[dict] | None = None):
     """Build a MagicMock Supabase client returning canned table data."""
 
     class _Q:
@@ -77,16 +78,16 @@ def _mock_db(*, phantom_personas: list[dict] | None = None, job_rows: list[dict]
             return self
 
         def execute(self):
-            if self.table == "company_personas":
-                rows = phantom_personas or []
+            if self.table == "companies":
+                rows = phantom_companies or []
                 # Honor is_phantom filter
                 wants_phantom = any(f == ("eq", "is_phantom", True) for f in self._filters)
                 if wants_phantom:
                     rows = [r for r in rows if r.get("is_phantom") is True]
-                # Honor ilike(company_name, X) filter
+                # Honor ilike(name, X) filter
                 for f in self._filters:
-                    if f[0] == "ilike" and f[1] == "company_name":
-                        rows = [r for r in rows if r.get("company_name", "").lower() == f[2].lower()]
+                    if f[0] == "ilike" and f[1] == "name":
+                        rows = [r for r in rows if r.get("name", "").lower() == f[2].lower()]
                 return MagicMock(data=list(rows))
             if self.table == "jobs":
                 return MagicMock(data=list(job_rows or []))
@@ -117,8 +118,8 @@ def test_company_agent_refuses_phantom_via_db_flag(monkeypatch):
     )
 
     # DB returns a phantom row for "SuperApp"
-    db = _mock_db(phantom_personas=[
-        {"company_name": "SuperApp", "is_phantom": True},
+    db = _mock_db(phantom_companies=[
+        {"name": "SuperApp", "is_phantom": True},
     ])
     # Patch the lazy get_supabase import inside CompanyAgent.__init__
     import db.client as dbc
@@ -140,7 +141,7 @@ def test_company_agent_allows_real_company_via_db_check(monkeypatch):
     )
 
     # DB returns empty (no row for "Adyen") → guard does not fire
-    db = _mock_db(phantom_personas=[])
+    db = _mock_db(phantom_companies=[])
     import db.client as dbc
     monkeypatch.setattr(dbc, "get_supabase", lambda: db, raising=False)
 

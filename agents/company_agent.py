@@ -181,20 +181,26 @@ class CompanyAgent(BaseAgent):
             )
         # Stream B (2026-05-13): belt-and-suspenders DB check. Even if the
         # regex misses (e.g. "SuperApp" looks legitimate), an existing
-        # company_personas row flagged is_phantom=TRUE blocks the agent.
+        # `companies` row flagged is_phantom=TRUE blocks the agent.
         # Production audit found ~$1 spent on CompanyAgent[SuperApp] +
         # CompanyAgent[Adyen Careers] + CompanyAgent[68 Vacancies Apr 2026]
         # because the regex didn't flag them but the DB had already marked
         # them as phantoms. This closes that loop. Defensive — DB errors
         # don't block (logged + continue) so a transient Supabase issue
         # doesn't take the whole pipeline down.
+        #
+        # Schema fix (BUG-013, 2026-05-29): is_phantom lives on `companies`,
+        # NOT company_personas (the column was never added there). The earlier
+        # company_personas query always raised Postgres 42703, which the
+        # except-clause below swallowed — so this guard was a silent no-op
+        # until repointed to `companies` (matching _build_incoming_jobs).
         try:
             from db.client import get_supabase
             phantom_rows = (
                 get_supabase()
-                .table("company_personas")
-                .select("id")
-                .ilike("company_name", company_name)
+                .table("companies")
+                .select("name")
+                .ilike("name", company_name)
                 .eq("is_phantom", True)
                 .limit(1)
                 .execute()
@@ -203,7 +209,7 @@ class CompanyAgent(BaseAgent):
             if phantom_rows:
                 raise PhantomCompanyError(
                     f"Refusing to build CompanyAgent for {company_name!r}: "
-                    f"company_personas row flagged is_phantom=TRUE."
+                    f"companies row flagged is_phantom=TRUE."
                 )
         except PhantomCompanyError:
             raise
