@@ -1174,13 +1174,12 @@ async def list_resume_builds_for_job(
     """All builds for a job, latest first. Used by the Resume tab to
     show 'previous attempts' and let the user switch between them."""
     db = get_supabase()
-    result = (
+    result = await aexecute(
         db.table("resume_builds")
         .select("*")
         .eq("user_id", str(user.id))
         .eq("job_id", job_id)
         .order("created_at", desc=True)
-        .execute()
     )
     rows = [_safe_resume_build_row(r) for r in (result.data or [])]
     return {"builds": rows, "total": len(rows)}
@@ -1192,13 +1191,12 @@ async def get_resume_build(build_id: str, user: "User" = Depends(get_current_use
     agent_transcript blob — fetch that via /resume-builds/{id}/transcript
     if you need it)."""
     db = get_supabase()
-    result = (
+    result = await aexecute(
         db.table("resume_builds")
         .select("*")
         .eq("id", build_id)
         .eq("user_id", str(user.id))
         .limit(1)
-        .execute()
     )
     rows = result.data or []
     if not rows:
@@ -1218,15 +1216,13 @@ async def get_resume_build_markdown(
     """
     import httpx
     db = get_supabase()
-    rb = (
+    rb = (await aexecute(
         db.table("resume_builds")
         .select("id, job_id, user_edited_md, user_edited_at")
         .eq("id", build_id)
         .eq("user_id", str(user.id))
         .limit(1)
-        .execute()
-        .data or []
-    )
+    )).data or []
     if not rb:
         raise HTTPException(status_code=404, detail="Resume build not found")
     rb = rb[0]
@@ -1237,15 +1233,13 @@ async def get_resume_build_markdown(
         return {"markdown": md, "source": "user_edit", "byte_size": len(md.encode("utf-8"))}
 
     # 2. Fall back to canonical Storage URL on the jobs row (also user-scoped).
-    job = (
+    job = (await aexecute(
         db.table("jobs")
         .select("resume_path")
         .eq("id", rb["job_id"])
         .eq("user_id", str(user.id))
         .limit(1)
-        .execute()
-        .data or []
-    )
+    )).data or []
     url = (job[0] if job else {}).get("resume_path")
     if not url or not url.startswith("http"):
         return {"markdown": "", "source": "missing", "byte_size": 0}
@@ -1357,15 +1351,13 @@ async def download_resume_build(
         )
 
     db = get_supabase()
-    rb = (
+    rb = (await aexecute(
         db.table("resume_builds")
         .select("id, job_id, company_name, user_edited_md")
         .eq("id", build_id)
         .eq("user_id", str(user.id))
         .limit(1)
-        .execute()
-        .data or []
-    )
+    )).data or []
     if not rb:
         raise HTTPException(status_code=404, detail="Resume build not found")
     rb = rb[0]
@@ -1373,15 +1365,13 @@ async def download_resume_build(
     # Source: user edit if present, else canonical Storage URL (user-scoped).
     md = rb.get("user_edited_md")
     if not md:
-        job = (
+        job = (await aexecute(
             db.table("jobs")
             .select("resume_path")
             .eq("id", rb["job_id"])
             .eq("user_id", str(user.id))
             .limit(1)
-            .execute()
-            .data or []
-        )
+        )).data or []
         url = (job[0] if job else {}).get("resume_path")
         if url and url.startswith("http"):
             try:
@@ -1410,11 +1400,11 @@ async def get_pipeline_stats(user: "User" = Depends(get_current_user)):
     from collections import Counter
     db = get_supabase()
 
-    jobs_result = (
-        db.table("jobs").select("status, match_score").eq("user_id", str(user.id)).execute()
+    jobs_result = await aexecute(
+        db.table("jobs").select("status, match_score").eq("user_id", str(user.id))
     )
-    apps_result = (
-        db.table("applications").select("status").eq("user_id", str(user.id)).execute()
+    apps_result = await aexecute(
+        db.table("applications").select("status").eq("user_id", str(user.id))
     )
 
     jobs_data = jobs_result.data or []
@@ -1444,17 +1434,17 @@ async def get_profile(user: "User" = Depends(get_current_user)):
     db = get_supabase()
     uid = str(user.id)
 
-    master = (
-        db.table("profile_master").select("*").eq("user_id", uid).eq("id", 1).limit(1).execute()
+    master = await aexecute(
+        db.table("profile_master").select("*").eq("user_id", uid).eq("id", 1).limit(1)
     )
-    experience = (
-        db.table("profile_experience").select("*").eq("user_id", uid).order("sort_order").execute()
+    experience = await aexecute(
+        db.table("profile_experience").select("*").eq("user_id", uid).order("sort_order")
     )
-    certs = (
-        db.table("profile_certification").select("*").eq("user_id", uid).order("sort_order").execute()
+    certs = await aexecute(
+        db.table("profile_certification").select("*").eq("user_id", uid).order("sort_order")
     )
-    edu = (
-        db.table("profile_education").select("*").eq("user_id", uid).order("sort_order").execute()
+    edu = await aexecute(
+        db.table("profile_education").select("*").eq("user_id", uid).order("sort_order")
     )
 
     return {
@@ -1484,14 +1474,13 @@ async def get_profile_keywords(
     )
     if category:
         q = q.eq("category", category)
-    result = q.execute()
+    result = await aexecute(q)
 
-    cats = (
+    cats = await aexecute(
         db.table("profile_keyword_category")
         .select("*")
         .eq("user_id", uid)
         .order("total_occurrences", desc=True)
-        .execute()
     )
     return {
         "keywords": result.data or [],
@@ -1504,9 +1493,9 @@ async def get_profile_sources(user: "User" = Depends(get_current_user)):
     """Return parsed source-document registry (caller's tenant)."""
     from collections import Counter
     db = get_supabase()
-    result = db.table("profile_source_document").select(
+    result = await aexecute(db.table("profile_source_document").select(
         "id, file_hash, file_name, document_class, char_count, file_size, parsed_at"
-    ).eq("user_id", str(user.id)).order("parsed_at", desc=True).execute()
+    ).eq("user_id", str(user.id)).order("parsed_at", desc=True))
     docs = result.data or []
     by_class = Counter(d["document_class"] for d in docs)
     return {
@@ -1646,7 +1635,7 @@ async def get_profile_recommendations(
     )
     if not include_dismissed:
         q = q.eq("dismissed", False)
-    result = q.execute()
+    result = await aexecute(q)
     recs = result.data or []
     by_kind = Counter(r["kind"] for r in recs)
     by_severity = Counter(r["severity"] for r in recs)
