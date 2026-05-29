@@ -73,6 +73,37 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
+class TenantQueueFull(Exception):
+    """Raised by the enqueue path when a tenant is at/over their per-tenant
+    in-flight job cap (P2-3 per-tenant fairness).
+
+    The API layer translates this to HTTP 429 (Too Many Requests). It is a
+    *fairness* signal, not an error: the tenant already has the configured
+    maximum of simultaneously-active (queued+running) jobs of this latency
+    class, so a NEW one is refused to keep one tenant's batch from starving
+    everyone else on the shared single-FIFO queue.
+
+    A dedup/idempotency hit is NEVER refused — returning an already-queued
+    run id is not a new in-flight job, so it bypasses the cap entirely.
+
+    Attributes:
+        user_id      the tenant who hit the cap
+        queue_class  the latency class ('interactive'/'batch'/'cron')
+        cap          the configured cap value
+        in_flight    the observed in-flight count at refusal time
+    """
+
+    def __init__(self, user_id, queue_class: str, cap: int, in_flight: int):
+        self.user_id = str(user_id)
+        self.queue_class = queue_class
+        self.cap = cap
+        self.in_flight = in_flight
+        super().__init__(
+            f"tenant {self.user_id} is at the in-flight cap for "
+            f"queue_class={queue_class}: {in_flight}/{cap} active jobs"
+        )
+
+
 # ─── Queue latency-class registry ──────────────────────────────────────────
 # The three latency classes. 'cron' has no `kind` mapped to it today; it
 # exists so scheduled-cron fan-out (a later PR) can target a low-priority
@@ -186,6 +217,152 @@ def _idempotency_key(user_id: UUID | str, kind: str, payload: dict[str, Any]) ->
     return hashlib.sha256(blob).hexdigest()
 
 
+# ─── Per-tenant in-flight job cap (P2-3 per-tenant fairness) ───────────────
+#
+# A Redis counter per (user_id, queue_class) tracks how many of that
+# tenant's jobs are simultaneously active (queued+running). We INCR on a
+# fresh enqueue and DECR when the worker reaches a terminal state. Over the
+# cap we refuse NEW enqueues with TenantQueueFull. Every counter op fails
+# OPEN: on any Redis error we log and allow, so a counter bug can never
+# block real work.
+#
+# A TTL safety net is set on every INCR so a crashed worker (which never
+# DECRs) can't leak the counter forever — the key self-expires and the cap
+# auto-heals. The TTL is comfortably longer than the longest job timeout.
+
+# Longer than the longest RQ job_timeout (900s) plus retry/backoff headroom,
+# so the counter never expires out from under a legitimately-running job but
+# always self-heals after a crash within an hour.
+_INFLIGHT_TTL_SECONDS = 3600
+
+
+def _inflight_key(user_id: UUID | str, queue_class: str) -> str:
+    """Redis key for a tenant's in-flight counter in one latency class."""
+    return f"inflight:{user_id}:{queue_class}"
+
+
+def _inflight_cap() -> int:
+    """Resolve the configured per-tenant in-flight cap.
+
+    Reads `MAX_INFLIGHT_PER_TENANT` via config.settings (default 50).
+    Returns 0 when disabled or on any error — the caller treats <= 0 as
+    "no cap" so the feature is fully backward-compatible and fails safe
+    (a settings/import problem must not start refusing jobs).
+    """
+    try:
+        from config.settings import get_settings
+        return int(get_settings().max_inflight_per_tenant)
+    except Exception:
+        # Misconfig / import error → behave as if disabled (fail-open).
+        logger.debug("inflight cap: settings unavailable; treating as disabled")
+        return 0
+
+
+def _cap_enabled(cap: int | None = None) -> bool:
+    """True when the cap is active. `cap <= 0` (or unset) means disabled."""
+    c = _inflight_cap() if cap is None else cap
+    return c > 0
+
+
+def incr_inflight(user_id: UUID | str, queue_class: str) -> Optional[int]:
+    """INCR the tenant's in-flight counter and (re)set its TTL safety net.
+
+    Returns the post-increment count, or None on any Redis error (fail-open:
+    the caller proceeds without an accurate count rather than blocking work).
+    Re-setting the TTL on every INCR means an active tenant's key keeps
+    sliding forward, while a tenant that stops enqueuing lets it expire.
+    """
+    try:
+        r = _get_redis()
+        key = _inflight_key(user_id, queue_class)
+        # Pipeline so INCR + EXPIRE are one round-trip; not atomic vs other
+        # clients but we don't need strict atomicity for a generous cap.
+        pipe = r.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, _INFLIGHT_TTL_SECONDS)
+        count = pipe.execute()[0]
+        return int(count)
+    except Exception as e:
+        logger.warning(
+            f"inflight: INCR failed for user={user_id} class={queue_class} "
+            f"({type(e).__name__}: {e}) — failing open (enqueue allowed)"
+        )
+        return None
+
+
+def decr_inflight(user_id: UUID | str, queue_class: str) -> None:
+    """DECR the tenant's in-flight counter when a job reaches a terminal state.
+
+    Guarded so it never goes negative (a stray double-decrement, or a DECR
+    after the TTL already reaped the key, must not push the counter below 0
+    and start over-crediting future enqueues) and never raises (it runs in
+    the worker's terminal/cleanup path, which must never crash on a counter
+    bug). On any Redis error we simply log and move on (fail-open).
+    """
+    try:
+        r = _get_redis()
+        key = _inflight_key(user_id, queue_class)
+        new_val = r.decr(key)
+        try:
+            if int(new_val) < 0:
+                # Clamp to 0 — the key was already gone (TTL reaped) or a
+                # double-decrement happened; never let it go negative.
+                r.set(key, 0)
+        except (TypeError, ValueError):
+            # Fake/mocked Redis may return a non-int; nothing to clamp.
+            pass
+    except Exception as e:
+        logger.warning(
+            f"inflight: DECR failed for user={user_id} class={queue_class} "
+            f"({type(e).__name__}: {e}) — ignoring (counter self-heals via TTL)"
+        )
+
+
+def queue_class_for_kind(kind: str) -> str:
+    """Public: map a job `kind` to its latency class (the cap counter key).
+
+    Mirrors the routing in `_enqueue_or_dedup` so the worker can decrement
+    the same `(user_id, queue_class)` counter the enqueue incremented,
+    without reaching into the private `_KIND_QUEUE` map.
+    """
+    return _KIND_QUEUE.get(kind, _DEFAULT_QUEUE_CLASS)
+
+
+def release_inflight(user_id: UUID | str, kind: str) -> None:
+    """Worker-side: free one in-flight slot for a finished job.
+
+    Resolves the job's latency class from its `kind`, then decrements the
+    tenant's counter. Never raises and never goes negative (delegates to
+    `decr_inflight`). No-ops cheaply when the cap is disabled so the worker
+    terminal path stays free of Redis traffic in single-user mode.
+    """
+    if not _cap_enabled():
+        return
+    decr_inflight(user_id, queue_class_for_kind(kind))
+
+
+def _over_inflight_cap(user_id: UUID | str, queue_class: str) -> tuple[bool, int, int]:
+    """Check whether a tenant is at/over their cap WITHOUT mutating the counter.
+
+    Returns (over, in_flight, cap). When the cap is disabled (<= 0) or on any
+    Redis error, returns (False, ...) so the enqueue proceeds — fail-open.
+    """
+    cap = _inflight_cap()
+    if cap <= 0:
+        return (False, 0, cap)
+    try:
+        r = _get_redis()
+        raw = r.get(_inflight_key(user_id, queue_class))
+        in_flight = int(raw) if raw is not None else 0
+    except Exception as e:
+        logger.warning(
+            f"inflight: GET failed for user={user_id} class={queue_class} "
+            f"({type(e).__name__}: {e}) — failing open (enqueue allowed)"
+        )
+        return (False, 0, cap)
+    return (in_flight >= cap, in_flight, cap)
+
+
 def _enqueue_or_dedup(
     *,
     user_id: UUID | str,
@@ -230,6 +407,10 @@ def _enqueue_or_dedup(
     existing = find_by_idempotency_key(key)
     if existing is not None:
         if existing.status in ACTIVE_STATUSES:
+            # DEDUP WINS OVER THE CAP: returning an already-active run id is
+            # not a new in-flight job, so we must NOT count it or refuse it.
+            # (A user re-clicking "Generate" while at the cap still gets the
+            # run they already have, never a 429.)
             logger.info(
                 f"queue: dedup hit kind={kind} key={key[:12]}… "
                 f"-> existing run {existing.id} (status={existing.status})"
@@ -240,12 +421,32 @@ def _enqueue_or_dedup(
             # a true retry the caller flips `force=True` (changes the
             # payload, changes the hash). Returning the terminal id here
             # is the least-surprising behavior; the API layer can decide
-            # to surface "already completed" to the user.
+            # to surface "already completed" to the user. Also not a new
+            # in-flight job → not counted, not refused.
             logger.info(
                 f"queue: terminal dedup hit kind={kind} key={key[:12]}… "
                 f"-> existing run {existing.id} (status={existing.status})"
             )
             return existing.id
+
+    # Resolve the latency class up front — both the cap and the enqueue key
+    # on it. When RQ_QUEUE_PREFIX is unset this is still the routing label
+    # used for the counter; the queue itself collapses to the single shared
+    # queue (back-compat).
+    queue_class = _KIND_QUEUE.get(kind, _DEFAULT_QUEUE_CLASS)
+
+    # P2-3 per-tenant fairness: this is a genuinely NEW in-flight job (no
+    # active/terminal dedup hit above), so it counts against the tenant's
+    # cap. Refuse with TenantQueueFull when at/over the cap. Disabled (cap
+    # <= 0) and any Redis error both fall open (over=False) — we never block
+    # real work on a counter problem.
+    over, in_flight, cap = _over_inflight_cap(user_id, queue_class)
+    if over:
+        logger.warning(
+            f"queue: tenant {user_id} at in-flight cap kind={kind} "
+            f"class={queue_class} ({in_flight}/{cap}) — refusing enqueue"
+        )
+        raise TenantQueueFull(user_id, queue_class, cap, in_flight)
 
     run = create_run(
         user_id=user_id,
@@ -253,6 +454,14 @@ def _enqueue_or_dedup(
         payload=payload,
         idempotency_key=key,
     )
+
+    # Count this fresh active job against the tenant's cap. INCR happens
+    # AFTER create_run so we only ever count a run that actually exists; the
+    # worker DECRs once it reaches a terminal state (success or failure). On
+    # any Redis error this fails open (returns None) and the enqueue still
+    # proceeds — a counter blip must never block real work.
+    if _cap_enabled(cap):
+        incr_inflight(user_id, queue_class)
 
     # 2026-05-12: in-process fallback when Redis is unreachable.
     # Production reported `redis.exceptions.ConnectionError: Error 111
@@ -264,9 +473,9 @@ def _enqueue_or_dedup(
     # is the user's goal RIGHT NOW. The jobs_runs row is still created
     # so the UI can poll for status.
     try:
-        # Route to the latency class for this kind. When RQ_QUEUE_PREFIX is
-        # unset this still resolves to the single shared queue (back-compat).
-        queue_class = _KIND_QUEUE.get(kind, _DEFAULT_QUEUE_CLASS)
+        # `queue_class` was resolved above (it also keys the per-tenant cap).
+        # When RQ_QUEUE_PREFIX is unset this still resolves to the single
+        # shared queue (back-compat).
         q = _get_queue(queue_class)
         q.enqueue(
             worker_func,
