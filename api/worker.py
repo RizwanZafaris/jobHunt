@@ -34,6 +34,22 @@ WORKER_CONCURRENCY env var:
     isn't suitable for a long-lived worker; we use plain Worker.work()
     in a single process and rely on Railway's replicas for true
     horizontal scaling).
+
+WORKER_QUEUES env var (P2-1):
+    Comma-separated latency classes this worker consumes. Default = all
+    classes ('interactive,batch,cron') so a single worker still drains
+    everything exactly as before. Split the fleet by running a
+    worker-interactive pool (WORKER_QUEUES=interactive) and a worker-batch
+    pool (WORKER_QUEUES=batch,cron). NOTE: when RQ_QUEUE_PREFIX is unset
+    every class resolves to the one 'jobhunt' queue, so this var is inert
+    until the split is enabled — back-compat is preserved.
+
+RQ_RUN_SCHEDULER env var (P2-2):
+    "1" to run RQ's embedded scheduler in this worker (for scheduled/
+    deferred jobs), else "0". Default "0". Exactly ONE worker in the fleet
+    should set it to "1"; otherwise scaling worker replicas double-fires
+    scheduled jobs — the queue-side analogue of the API's SCHEDULER_ENABLED
+    leader gate.
 """
 from __future__ import annotations
 
@@ -690,9 +706,37 @@ def _on_sigterm(signum: int, frame: Any) -> None:
 # ─── Worker entrypoint ────────────────────────────────────────────────────
 
 
+def _worker_queues():
+    """Resolve the list of RQ Queue objects this worker should consume.
+
+    Reads WORKER_QUEUES (comma-separated latency classes). Default = all
+    classes, so a lone worker drains everything exactly as before. Classes
+    are resolved to concrete RQ Queue objects via api.queue._get_queue,
+    which means when RQ_QUEUE_PREFIX is unset they all collapse onto the
+    single 'jobhunt' queue — we de-dup by name so the Worker isn't handed
+    the same queue three times. Order is preserved: the first listed class
+    has scheduling priority within the worker's pop loop (P2-1).
+    """
+    from api.queue import QUEUE_CLASSES, _get_queue
+
+    raw = os.environ.get("WORKER_QUEUES") or ",".join(QUEUE_CLASSES)
+    classes = [c.strip() for c in raw.split(",") if c.strip()]
+    if not classes:
+        classes = list(QUEUE_CLASSES)
+
+    queues = []
+    seen_names: set[str] = set()
+    for cls in classes:
+        q = _get_queue(cls)
+        if q.name not in seen_names:
+            queues.append(q)
+            seen_names.add(q.name)
+    return queues
+
+
 def _start_worker():
     """Boot one RQ worker in this process and block on .work()."""
-    from api.queue import _get_queue, _get_redis
+    from api.queue import _get_redis
     try:
         from rq import Worker
     except ImportError as e:
@@ -701,7 +745,7 @@ def _start_worker():
             "(see _pending_deps_queue.txt for the pinned version)."
         ) from e
 
-    queue = _get_queue()
+    queues = _worker_queues()
     redis_conn = _get_redis()
 
     # Sanity probe — fail fast if Redis is unreachable rather than
@@ -724,11 +768,18 @@ def _start_worker():
     except Exception:
         pass  # Windows or restricted environments
 
+    # P2-2: only one worker in the fleet should run the embedded RQ
+    # scheduler, else scaling worker replicas double-fires scheduled jobs.
+    # Default OFF — the worker-interactive pool (railway.toml) sets it to 1.
+    run_scheduler = os.getenv("RQ_RUN_SCHEDULER", "0") == "1"
+
+    queue_names = ", ".join(q.name for q in queues)
     logger.info(
-        f"jobHunt worker starting (queue={queue.name}, redis={redis_conn})"
+        f"jobHunt worker starting (queues=[{queue_names}], "
+        f"with_scheduler={run_scheduler}, redis={redis_conn})"
     )
-    worker = Worker([queue], connection=redis_conn)
-    worker.work(with_scheduler=True)
+    worker = Worker(queues, connection=redis_conn)
+    worker.work(with_scheduler=run_scheduler)
 
 
 def _start_worker_pool(concurrency: int):

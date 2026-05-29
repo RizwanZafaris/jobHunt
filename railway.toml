@@ -25,29 +25,71 @@ START_MODE = "api"
 # api/queue.py to enqueue work.
 # REDIS_URL = "${REDIS_URL}"   # supplied by Redis plugin
 
-# ── Worker service ──────────────────────────────────────────────────────
-# Headless RQ worker that consumes the 'jobhunt' queue. Independent of
-# the API: redeploys of the API don't restart the worker (and vice
-# versa). Scale this horizontally in Railway (replicas=2-4) when peak
-# resume-build throughput becomes a constraint.
+# ── Worker pools (queue split by latency class) ──────────────────────────
+# Headless RQ workers, independent of the API: redeploying the API doesn't
+# restart them (and vice versa). ALWAYS (not ON_FAILURE) so a worker self-
+# heals after a Redis/DB outage clears: api/worker.py pings Redis on boot and
+# exits if it's down, so ON_FAILURE + a low retry cap would exhaust retries
+# on a sustained outage and leave the worker permanently dead with no auto-
+# recovery and no alert. (Scale audit 2026-05-29.)
+#
+# Two pools split work by latency class (P2-1) so a backlog of cheap batch
+# jobs (scout's per-job g5_score + legitimacy_check fan-out) can't head-of-
+# line-block a user waiting on a resume build:
+#   - worker-interactive: drains the 'interactive' class (resume/interview/
+#     LinkedIn/story/voice). Scale 1-2 replicas. OWNS the RQ scheduler
+#     (RQ_RUN_SCHEDULER=1) — keep this pool at exactly 1 replica, or move the
+#     scheduler to a dedicated single-replica worker, so scheduled jobs fire
+#     once across the fleet (P2-2, the queue-side analogue of SCHEDULER_ENABLED).
+#   - worker-batch: drains 'batch' + 'cron'. Scale horizontally (2-4 replicas).
+#     RQ_RUN_SCHEDULER=0 so replicas don't double-fire scheduled jobs.
+#
+# Activating the split requires setting RQ_QUEUE_PREFIX on the API + both
+# pools (e.g. "jobhunt") so enqueues and workers agree on the per-class queue
+# names. Until RQ_QUEUE_PREFIX is set, every class resolves to the single
+# 'jobhunt' queue and both pools simply drain it — behavior is identical to
+# the old single 'worker' service, so this is safe to deploy before flipping
+# the prefix on. WORKER_QUEUES defaults to all classes in api/worker.py, so
+# even an un-split worker drains everything.
 [[services]]
-name = "worker"
+name = "worker-interactive"
 [services.build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile.worker"
 [services.deploy]
-# No HTTP port — RQ worker is headless. Railway watches the process
-# for liveness. ALWAYS (not ON_FAILURE) so the worker self-heals after a
-# Redis/DB outage clears: api/worker.py pings Redis on boot and exits if it's
-# down, so with ON_FAILURE + a low retry cap a sustained dependency outage
-# would exhaust retries and leave the worker permanently dead with no
-# auto-recovery and no alert. (Scale audit 2026-05-29.)
+# No HTTP port — RQ worker is headless. Railway watches the process for
+# liveness. ALWAYS for self-healing (see header above).
 restartPolicyType = "ALWAYS"
 [services.variables]
 START_MODE = "worker"
 # REDIS_URL = "${REDIS_URL}"   # supplied by Redis plugin (REQUIRED)
 WORKER_CONCURRENCY = "1"
 RQ_QUEUE_NAME = "jobhunt"
+WORKER_QUEUES = "interactive"
+# This pool OWNS the embedded RQ scheduler — keep it at 1 replica (P2-2).
+RQ_RUN_SCHEDULER = "1"
+# Enable the queue split by uncommenting on ALL of api + both worker pools:
+# RQ_QUEUE_PREFIX = "jobhunt"
+
+[[services]]
+name = "worker-batch"
+[services.build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.worker"
+[services.deploy]
+# No HTTP port — headless. ALWAYS for self-healing (see header above).
+restartPolicyType = "ALWAYS"
+[services.variables]
+START_MODE = "worker"
+# REDIS_URL = "${REDIS_URL}"   # supplied by Redis plugin (REQUIRED)
+WORKER_CONCURRENCY = "1"
+RQ_QUEUE_NAME = "jobhunt"
+WORKER_QUEUES = "batch,cron"
+# Replicas of this pool must NOT run the scheduler, or scheduled jobs
+# double-fire across the fleet (P2-2).
+RQ_RUN_SCHEDULER = "0"
+# Enable the queue split by uncommenting on ALL of api + both worker pools:
+# RQ_QUEUE_PREFIX = "jobhunt"
 
 # ── Reaper (optional) ───────────────────────────────────────────────────
 # The orphan reaper can run either:
