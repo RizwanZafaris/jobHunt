@@ -1,12 +1,15 @@
 """
-Regression tests for Stream B (2026-05-13): phantom-company filtering
-across the /today action queue + CompanyAgent worker.
+Regression tests for the CompanyAgent phantom-company guard.
 
 Covers:
-  1. _phantom_company_names returns a frozenset scoped to user
-  2. _build_job_actions drops rows whose company is in the phantom set
-  3. _build_job_actions still surfaces legitimate rows
-  4. CompanyAgent refuses to instantiate when DB flags the name phantom
+  - CompanyAgent refuses to instantiate when the DB flags the name phantom
+  - CompanyAgent allows a real company through the DB guard
+
+Note: the older /today phantom filter (`_phantom_company_names` in
+api/actions.py) was retired 2026-05-29. It queried `company_personas.is_phantom`
+— a column that actually lives on `companies` (BUG-013) — so the query always
+raised 42703 and the filter silently no-op'd. The surviving phantom filter is
+`_build_incoming_jobs` (queries the correct `companies` table).
 """
 from __future__ import annotations
 
@@ -96,44 +99,7 @@ def _mock_db(*, phantom_personas: list[dict] | None = None, job_rows: list[dict]
     return _Client()
 
 
-# ── 1. _phantom_company_names returns lowercase frozenset ──────────────
-
-
-def test_phantom_company_names_returns_lowercased_frozenset(monkeypatch):
-    from api import actions
-
-    db = _mock_db(phantom_personas=[
-        {"company_name": "Adyen Careers", "is_phantom": True},
-        {"company_name": "SuperApp", "is_phantom": True},
-        {"company_name": "Real Co", "is_phantom": False},  # not flagged
-    ])
-    monkeypatch.setattr(actions, "get_supabase", lambda: db, raising=False)
-
-    out = actions._phantom_company_names(_USER)
-    assert isinstance(out, frozenset)
-    assert "adyen careers" in out
-    assert "superapp" in out
-    assert "real co" not in out
-
-
-def test_phantom_company_names_handles_db_failure(monkeypatch):
-    """DB error → empty set, no exception (defensive)."""
-    from api import actions
-
-    def boom():
-        raise RuntimeError("simulated DB outage")
-
-    class _Client:
-        def table(self, name):
-            raise RuntimeError("simulated DB outage")
-
-    monkeypatch.setattr(actions, "get_supabase", lambda: _Client(), raising=False)
-
-    out = actions._phantom_company_names(_USER)
-    assert out == frozenset()
-
-
-# ── 2. CompanyAgent refuses to instantiate when DB flags name phantom ──
+# ── CompanyAgent refuses to instantiate when DB flags name phantom ──
 
 
 def test_company_agent_refuses_phantom_via_db_flag(monkeypatch):
