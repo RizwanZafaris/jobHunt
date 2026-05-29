@@ -34,6 +34,19 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# ── Observability (P3-2) ──────────────────────────────────────────────────────
+# Opt-in error tracking / tracing / structured logs. Each initializer is a hard
+# NO-OP unless its env var is set (LOG_JSON / SENTRY_DSN /
+# OTEL_EXPORTER_OTLP_ENDPOINT), so dev + single-user prod boot byte-for-byte
+# unchanged. init_otel() MUST run here — BEFORE the add_middleware() calls below
+# — because the FastAPI instrumentation installs its own ASGI middleware and
+# must sit outermost on the stack. (This block deliberately precedes CORS/GZip/
+# SlowAPI for that reason; do not reorder.)
+from api.observability import init_logging, init_sentry, init_otel  # noqa: E402
+init_logging()
+init_sentry()
+init_otel(app)
+
 
 # BUG-053 fix: APScheduler runs INSIDE this FastAPI process so a single
 # Railway service handles both API + cron. See main.start_scheduler_background.
@@ -281,9 +294,63 @@ async def root():
 
 
 @app.get("/health")
+@limiter.exempt
 async def health():
-    """Railway health check endpoint."""
+    """Railway liveness check — static and cheap (NO I/O).
+
+    Hit every few seconds by the platform; must never touch Redis/DB or it
+    becomes a self-inflicted load source. Readiness (dependency reachability)
+    lives in /ready instead.
+    """
     return {"status": "healthy", "timestamp": date.today().isoformat()}
+
+
+@app.get("/ready")
+@limiter.exempt
+async def ready():
+    """Readiness probe (P3-3): shallow Redis PING + 1-row DB probe.
+
+    Returns 200 only when BOTH dependencies answer; 503 (with a per-dependency
+    breakdown) if either is down, so a load balancer can drain this replica
+    while keeping /health (liveness) green. supabase-py and redis-py are both
+    synchronous, so the blocking probes run in the threadpool to avoid stalling
+    the event loop. Each probe is wrapped — one slow/failed dependency reports
+    `down` rather than throwing.
+    """
+    from fastapi.concurrency import run_in_threadpool
+
+    checks: dict[str, str] = {}
+
+    # Redis: cheapest possible round-trip (PING).
+    def _redis_ping() -> bool:
+        from api.queue import _get_redis
+        return bool(_get_redis().ping())
+
+    try:
+        await run_in_threadpool(_redis_ping)
+        checks["redis"] = "ok"
+    except Exception as e:
+        logger.warning("/ready: redis probe failed: %s: %s", type(e).__name__, e)
+        checks["redis"] = "down"
+
+    # DB: a single-row read against a tiny, always-present table.
+    def _db_probe() -> bool:
+        from db.client import get_supabase
+        get_supabase().table("rizwan_profile").select("id").limit(1).execute()
+        return True
+
+    try:
+        await run_in_threadpool(_db_probe)
+        checks["db"] = "ok"
+    except Exception as e:
+        logger.warning("/ready: db probe failed: %s: %s", type(e).__name__, e)
+        checks["db"] = "down"
+
+    ok = checks["redis"] == "ok" and checks["db"] == "ok"
+    body = {"status": "ready" if ok else "not_ready", "checks": checks}
+    if not ok:
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.get("/debug/apify-check")
