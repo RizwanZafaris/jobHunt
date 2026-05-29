@@ -465,6 +465,19 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
 
     vectors = await asyncio.gather(*[_safe_embed(c) for _, c in cleaned])
 
+    # DB-1 (2026-05-29): company_knowledge uniqueness is now composite
+    # (user_id, company_name, section). The conflict target below must
+    # include user_id AND every row must carry it — switching the arbiter
+    # without writing user_id would turn a silent cross-tenant clobber into a
+    # hard 23502 on first insert. No user context here (deep-research runs
+    # from cron / on-demand), so fall back to the seed-user UUID via env
+    # override, mirroring db.client.upsert_company_knowledge.
+    import os
+    user_id = os.environ.get(
+        "RIZWAN_USER_ID",
+        "00000000-0000-0000-0000-000000000001",
+    )
+
     # Build rows; embedding may be None for a few but content still goes in
     now_iso = datetime.now(timezone.utc).isoformat()
     payload: list[dict] = []
@@ -475,6 +488,7 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
             "content": content,
             "scraped_at": now_iso,
             "metadata": {"source": "deep_research"},
+            "user_id": user_id,
         }
         if vec is not None:
             row["embedding"] = vec
@@ -486,7 +500,7 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
     try:
         result = (
             db.table("company_knowledge")
-            .upsert(payload, on_conflict="company_name,section")
+            .upsert(payload, on_conflict="user_id,company_name,section")
             .execute()
         )
         n = len(result.data or [])
@@ -503,7 +517,7 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
     for row in payload:
         try:
             db.table("company_knowledge").upsert(
-                row, on_conflict="company_name,section"
+                row, on_conflict="user_id,company_name,section"
             ).execute()
             written += 1
         except Exception as e:
@@ -579,6 +593,20 @@ def _upsert_persona(
         logger.warning(f"_upsert_persona: get_supabase failed: {e}")
         return {}
 
+    # DB-1 (2026-05-29): company_personas uniqueness is now composite
+    # (user_id, company_name). This writer uses an explicit lookup→update/
+    # insert (not on_conflict), so make it tenant-correct directly: scope the
+    # existing-row lookup by user_id (else tenant B's deep research could
+    # match — and then UPDATE — tenant A's persona row), and stamp user_id on
+    # the payload so the INSERT branch satisfies the NOT NULL user_id column.
+    # No user context here (cron/on-demand), so fall back to the seed-user
+    # UUID via env override, mirroring db.client.upsert_company.
+    import os
+    user_id = os.environ.get(
+        "RIZWAN_USER_ID",
+        "00000000-0000-0000-0000-000000000001",
+    )
+
     # system_prompt is NOT NULL on the table — fall back to a stub if
     # the LLM somehow returned empty so the upsert doesn't fail
     if not system_prompt or not system_prompt.strip():
@@ -593,6 +621,7 @@ def _upsert_persona(
             db.table("company_personas")
             .select("id, persona_version")
             .eq("company_name", company)
+            .eq("user_id", user_id)
             .limit(1)
             .execute()
             .data or []
@@ -610,6 +639,7 @@ def _upsert_persona(
     }
     payload = {
         "company_name": company,
+        "user_id": user_id,
         "system_prompt_template": system_prompt,
         "ats_keyword_bank": ats_keyword_bank or {},
         "success_patterns": success_patterns or [],

@@ -158,6 +158,25 @@ def check_persona_quality_gate(
 # Process-wide compiled graph (with checkpointer if available)
 _GRAPH = None
 
+# ─── LangGraph runaway guard (Phase 1, Finding 4) ───────────────────────
+# The G2 writer↔critic loop runs at most settings.g2_max_iterations (3)
+# times. Each iteration is a writer super-step plus a THREE-way critic
+# fan-out → merge → orchestrator. With the entry/expert/advocate/meta
+# preamble and the polisher/cover_email/export tail, the worst-case
+# super-step count sits right at LangGraph's silent default of 25. We set
+# an EXPLICIT, generous limit (~2.5x expected) so a routing bug raises a
+# controlled GraphRecursionError instead of looping until the default cap
+# trips at an unpredictable point. Bounded blast radius, clear failure.
+G2_RECURSION_LIMIT = 50
+
+
+def _default_user_id() -> str:
+    """Seed-user UUID in single-user mode (mirrors g2_io / g9_run)."""
+    return os.environ.get(
+        "RIZWAN_USER_ID",
+        "00000000-0000-0000-0000-000000000001",
+    )
+
 
 def _get_graph():
     """Lazy graph compile — only happens on first invocation."""
@@ -249,10 +268,31 @@ async def run_g2_graph(
     from resume_agents.g2_io import load_job, finalize_resume_build
     from config.settings import get_settings
 
-    # Resolve company name from the job if not provided
+    # Resolve company name AND the owning user_id from the job row.
+    # We need user_id to tenant-namespace the checkpoint thread_id (Phase 1,
+    # Finding 4): keying the thread on job_id alone means two tenants who
+    # share a job_id collide on the same checkpoint thread once job_id stops
+    # being globally unique. The jobs row carries user_id (NOT NULL since the
+    # multi-tenancy migration); fall back to the single-user seed UUID if the
+    # row predates the column / can't be read.
+    user_id: Optional[str] = None
     if not company_name:
         job = load_job(job_id)
         company_name = job.get("company") or ""
+        user_id = job.get("user_id")
+    else:
+        # company_name was supplied, but we still need the row's user_id.
+        # Best-effort: a failure here must not break the build — degrade to
+        # the seed UUID so single-user behaviour is unchanged.
+        try:
+            job = load_job(job_id)
+            user_id = job.get("user_id")
+        except Exception as e:
+            logger.warning(
+                f"G2 run: could not load job {job_id} for user_id "
+                f"({e}) — using seed user for thread namespacing"
+            )
+    user_id = str(user_id) if user_id else _default_user_id()
 
     canonical = _canonicalize_company(company_name)
     cap = (
@@ -261,7 +301,8 @@ async def run_g2_graph(
     )
     has_warm_start = bool(warm_start_md and warm_start_md.strip())
     logger.info(
-        f"G2 run start: job_id={job_id} company={company_name!r} → canonical={canonical!r}"
+        f"G2 run start: job_id={job_id} user_id={user_id} company={company_name!r}"
+        f" → canonical={canonical!r}"
         f" cost_cap=${cap:.2f}"
         f" warm_start={'yes' if has_warm_start else 'no'}"
         f" edit_intent={'yes' if edit_intent else 'no'}"
@@ -290,16 +331,25 @@ async def run_g2_graph(
         initial_state["current_draft"] = warm_start_md
     if edit_intent:
         initial_state["edit_intent"] = edit_intent
-    thread_id = f"g2-job-{job_id}"
+    # Tenant-namespace the checkpoint thread_id with user_id (Phase 1,
+    # Finding 4). In single-user mode user_id is the seed UUID, so the
+    # thread_id stays deterministic and behaviour is unchanged.
+    thread_id = f"g2-{user_id}-job-{job_id}"
     if has_warm_start:
         # Distinct thread namespace so checkpointer state doesn't collide
         # with a parallel cold-start build for the same job.
-        thread_id = f"g2-job-{job_id}-rebuild"
+        thread_id = f"g2-{user_id}-job-{job_id}-rebuild"
 
     graph = _get_graph()
     try:
-        # ainvoke supports both checkpointed (with config) and stateless modes
-        config = {"configurable": {"thread_id": thread_id}}
+        # ainvoke supports both checkpointed (with config) and stateless modes.
+        # recursion_limit is set EXPLICITLY (Phase 1, Finding 4) so a routing
+        # bug raises GraphRecursionError at a known bound rather than relying
+        # on LangGraph's silent default of 25.
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": G2_RECURSION_LIMIT,
+        }
         final_state = await graph.ainvoke(initial_state, config=config)
         logger.info(
             f"G2 run done: job_id={job_id} score={final_state.get('final_score')} "

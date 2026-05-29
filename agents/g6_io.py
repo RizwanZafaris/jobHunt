@@ -27,6 +27,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_USER_ID = "00000000-0000-0000-0000-000000000001"
 
+# ─── LangGraph runaway guard (Phase 1, Finding 4) ───────────────────────
+# G6 has a bounded draft-revision loop (merge_critique → draft_generator,
+# capped at _MAX_DRAFT_RETRIES+1 = 3 attempts). Worst-case super-step count
+# sits near LangGraph's silent default of 25, so we set an EXPLICIT limit
+# with headroom — a routing/loop-counter bug raises a controlled
+# GraphRecursionError instead of running away. G6 isn't checkpointed (no
+# thread_id), so this is the only config it carries.
+_G6_RECURSION_LIMIT = 40
+
 
 def _resolve_user_id(explicit: Optional[str] = None) -> str:
     """Multi-tenant-safe user_id resolution.
@@ -360,7 +369,9 @@ async def run_g6_for_application(
     }
 
     graph = build_g6_graph()
-    final_state = await graph.ainvoke(initial_state)
+    final_state = await graph.ainvoke(
+        initial_state, config={"recursion_limit": _G6_RECURSION_LIMIT}
+    )
 
     return {
         "application_id": application_id,
