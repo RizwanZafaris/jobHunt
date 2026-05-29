@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 # Process-wide compiled graph (with checkpointer if available)
 _GRAPH = None
 
+# ─── LangGraph runaway guard (Phase 1, Finding 4) ───────────────────────
+# G9 is a fixed-shape graph with no loops (cost is bounded by structure),
+# so it never approaches LangGraph's default of 25 super-steps. We set an
+# EXPLICIT limit anyway so a future edge that introduces a cycle fails
+# with a controlled GraphRecursionError instead of silently looping.
+# (The thread_id is already tenant-namespaced with user_id below.)
+G9_RECURSION_LIMIT = 25
+
 
 def _default_user_id() -> str:
     return os.environ.get(
@@ -83,11 +91,16 @@ async def run_g9(
         "total_latency_ms": 0,
         "persona_warnings": [],
     }
+    # thread_id is already tenant-namespaced with user_id (uid prefix).
     thread_id = f"g9-{uid[:8]}-{cv_hash[:8]}"
     graph = _get_graph()
 
     try:
-        config = {"configurable": {"thread_id": thread_id}}
+        # recursion_limit set EXPLICITLY (Phase 1, Finding 4).
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": G9_RECURSION_LIMIT,
+        }
         final_state = await graph.ainvoke(initial_state, config=config)
         logger.info(
             f"G9 run done: user_id={uid} "
