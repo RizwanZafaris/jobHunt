@@ -15,8 +15,9 @@ ready, G4 LinkedIn engine with image briefs, G5 letter-grade A-F + G6
 follow-up cadence + G7 application-form assist + G8 offer-evaluation
 (all live), `/insights?tab=analytics` for pattern analytics,
 `/insights?tab=traces` for LangGraph debugging, embedded APScheduler in
-the API process (no separate worker on Railway needed), 41 migrations
-applied.
+the API process (now gated by `SCHEDULER_ENABLED` + a dedicated `scheduler`
+service so the API can scale horizontally without cron double-firing — see
+[`docs/SCALABILITY.md`](docs/SCALABILITY.md)), migrations 001–039 applied.
 
 **Since 2026-05-14:** `/today` redesigned into per-kind sections with a
 résumé-scored **Recommended** list (`/today/recommended`); a JobScout
@@ -76,8 +77,10 @@ Backend (FastAPI on Railway, port 8080)
   agents/                  ◄── 18 graphs / workers (see Agents table)
 
 Database (Supabase Postgres + pgvector)
-  Multi-tenant from day 1: 32 user-owned tables, RLS enforced
-  30+ migrations applied (see db/migrations/)
+  Multi-tenant schema: 32 user-owned tables with RLS policies — but the API
+  uses the service-role key, which BYPASSES RLS, so tenant isolation is
+  app-side only today (harden before a 2nd tenant — see docs/SCALABILITY.md)
+  Migrations 001–039 (see db/migrations/)
 
 Dashboard (Next.js 15 App Router on Vercel)
   /today /targets /applications /network /insights /admin
@@ -86,9 +89,32 @@ Dashboard (Next.js 15 App Router on Vercel)
   /insights?tab=analytics + /insights?tab=traces
 ```
 
-Deep docs: [`docs/AUDIT_360_SYNTHESIS.md`](docs/AUDIT_360_SYNTHESIS.md) (6-expert audit + P0/P1/P2 roadmap) · [`docs/SPRINT_1_STATUS.md`](docs/SPRINT_1_STATUS.md) (decisions log) · [`docs/AUDIT_2026_05_10.md`](docs/AUDIT_2026_05_10.md) (cost + quality audit) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/G2_RESUME_BUILDER_GRAPH.md`](docs/G2_RESUME_BUILDER_GRAPH.md) · [`docs/G3_INTERVIEW_PREP_GRAPH.md`](docs/G3_INTERVIEW_PREP_GRAPH.md) · [`docs/SECURITY.md`](docs/SECURITY.md)
+Deep docs: [`docs/SCALABILITY.md`](docs/SCALABILITY.md) (scalability audit + multi-tenant roadmap) · [`docs/AUDIT_360_SYNTHESIS.md`](docs/AUDIT_360_SYNTHESIS.md) (6-expert audit + P0/P1/P2 roadmap) · [`docs/SPRINT_1_STATUS.md`](docs/SPRINT_1_STATUS.md) (decisions log) · [`docs/AUDIT_2026_05_10.md`](docs/AUDIT_2026_05_10.md) (cost + quality audit) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/G2_RESUME_BUILDER_GRAPH.md`](docs/G2_RESUME_BUILDER_GRAPH.md) · [`docs/G3_INTERVIEW_PREP_GRAPH.md`](docs/G3_INTERVIEW_PREP_GRAPH.md) · [`docs/SECURITY.md`](docs/SECURITY.md)
 
 API surface docs: [`api/AUTH.md`](api/AUTH.md) · [`api/QUEUE.md`](api/QUEUE.md) · [`api/WORKSPACE.md`](api/WORKSPACE.md) · [`api/INTERVIEW_STUDIO.md`](api/INTERVIEW_STUDIO.md) · [`api/LINKEDIN.md`](api/LINKEDIN.md) · [`api/NETWORK.md`](api/NETWORK.md)
+
+---
+
+## Scaling & production readiness
+
+jobHunt runs **single-user in production today** and is built to become a
+multi-tenant SaaS. A full CTO-level scalability audit — what breaks going from
+1 user to thousands of tenants + concurrent agent workloads, graded P0/P1/P2
+with a sequenced roadmap — lives in **[`docs/SCALABILITY.md`](docs/SCALABILITY.md)**.
+
+**Hardened (2026-05-29):** the embedded cron scheduler is gated
+(`SCHEDULER_ENABLED`) and has a dedicated single-replica `scheduler` service, so
+the API can scale out without cron double-firing; the orphan-reaper crash that
+silently disabled job recovery is fixed; GZip compression and worker
+self-healing (`restartPolicy=ALWAYS`) are in; and a migration captures the
+drifted recommendation columns + adds `/today` hot-path indexes.
+
+**Before onboarding a 2nd paying tenant (audit Phase 1):** drop the global
+`UNIQUE` constraints that let one tenant overwrite another's rows, add per-user
+JWT auth through the dashboard proxy, scope every `server.py` query by
+`user_id`, and actually enforce RLS (the API uses the service-role key, which
+bypasses it today). **Phase 2 (throughput):** async data layer, queue split +
+worker autoscaling, connection pooler, per-tenant spend caps.
 
 ---
 
@@ -327,6 +353,7 @@ python -m agents.linkedin_voice_extractor --user-id 00000000-0000-0000-0000-0000
 | `SLACK_WEBHOOK_URL` | Cost-alert dispatch | optional |
 | `SENDGRID_API_KEY` · `SENDGRID_FROM_EMAIL` | Email alerts | optional |
 | `WORKER_CONCURRENCY` | RQ worker pool size (default `1`) | optional |
+| `SCHEDULER_ENABLED` | `1` (default) runs the embedded cron in this process; set `0` on the API service when running a dedicated `scheduler` service so cron fires once | optional |
 | `PERPLEXITY_MODEL_RECENCY` · `PERPLEXITY_MODEL_STRATEGIC` | Override Sonar / Sonar-pro | optional |
 | `APOLLO_BASE_URL` · `APOLLO_HTTP_TIMEOUT` | Apollo HTTP defaults | optional |
 | `JOB_VALIDATOR_STALE_HOURS` | Validator cache (default `6`) | optional |
@@ -354,6 +381,13 @@ Full reference: [`.env.example`](.env.example)
 4. **Redis plugin** — provides `REDIS_URL`
 
 All four services share the same env vars (set once at the project level).
+
+> **Cron must run in exactly one place.** By default the 6 cron jobs are
+> embedded in the API process (`SCHEDULER_ENABLED` defaults on), so a minimal
+> one-service deploy still runs cron. When you scale the API to **>1 replica**,
+> deploy the dedicated `scheduler` service (above) **and set
+> `SCHEDULER_ENABLED=0` on the API service**, otherwise every replica
+> double-fires all 6 jobs (N× LLM spend). See [`docs/SCALABILITY.md`](docs/SCALABILITY.md).
 
 ### Vercel — dashboard
 
