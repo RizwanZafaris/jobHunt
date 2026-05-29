@@ -222,7 +222,7 @@ app.include_router(linkedin_buffer_router)
 from api.auth import verify_service_secret  # noqa: E402  (re-exported for cron/worker/admin use)
 from api.context import get_current_user, require_admin  # noqa: E402  (tenant + admin gates)
 from api.users import User  # noqa: E402
-from db.client import get_supabase  # noqa: E402  (module-level: tenant endpoints + tests monkeypatch this)
+from db.client import get_supabase, aexecute  # noqa: E402  (module-level: tenant endpoints + tests monkeypatch this; aexecute = P2-a async seam)
 
 
 # ── Phase 1, finding 2: tenant scoping (feat/endpoint-user-scoping) ─────────────
@@ -654,7 +654,7 @@ async def list_jobs(
         if grades:
             query = query.in_("letter_grade", grades)
 
-    result = query.execute()
+    result = await aexecute(query)
     return {"jobs": result.data or [], "count": len(result.data or [])}
 
 
@@ -693,14 +693,13 @@ async def list_my_jobs(
     Multi-tenant mode: anon-key client carrying the caller's JWT, so RLS limits
     the result to the caller's rows even if the explicit .eq() were ever dropped.
     """
-    result = (
+    result = await aexecute(
         db.table("jobs")
         .select("id, title, company, location, match_score, status, url, discovered_at")
         .eq("user_id", str(user.id))
         .gte("match_score", min_score)
         .order("match_score", desc=True)
         .limit(limit)
-        .execute()
     )
     return {"jobs": result.data or [], "count": len(result.data or [])}
 
@@ -725,13 +724,12 @@ async def get_me(user: "User" = Depends(get_current_user)):
 async def get_job(job_id: int, user: "User" = Depends(get_current_user)):
     """Get full job details (scoped to the caller's tenant)."""
     db = get_supabase()
-    result = (
+    result = await aexecute(
         db.table("jobs")
         .select("*")
         .eq("id", job_id)
         .eq("user_id", str(user.id))
         .limit(1)
-        .execute()
     )
     rows = result.data or []
     if not rows:
@@ -746,13 +744,12 @@ async def list_companies(user: "User" = Depends(get_current_user)):
     BUG-013: filter out `is_phantom=true` rows (scraping artifacts).
     """
     db = get_supabase()
-    result = (
+    result = await aexecute(
         db.table("companies")
         .select("*")
         .eq("user_id", str(user.id))
         .eq("is_phantom", False)
         .order("name")
-        .execute()
     )
     return {"companies": result.data or []}
 
@@ -2304,8 +2301,8 @@ async def get_job_detail(job_id: int, user: "User" = Depends(get_current_user)):
     """Full job detail including artifacts paths + fit details (caller's tenant)."""
     db = get_supabase()
     uid = str(user.id)
-    result = (
-        db.table("jobs").select("*").eq("id", job_id).eq("user_id", uid).limit(1).execute()
+    result = await aexecute(
+        db.table("jobs").select("*").eq("id", job_id).eq("user_id", uid).limit(1)
     )
     rows = result.data or []
     if not rows:
@@ -2352,15 +2349,14 @@ async def get_job_detail(job_id: int, user: "User" = Depends(get_current_user)):
     # Without this synthesis the Cover-email + Interview-prep ArtifactCards
     # always render "missing" after a successful build.
     try:
-        rb_rows = (
+        rb_rows = (await aexecute(
             db.table("resume_builds")
             .select("status, cover_email_md, created_at")
             .eq("user_id", uid)
             .eq("job_id", job_id)
             .order("created_at", desc=True)
             .limit(10)
-            .execute()
-        ).data or []
+        )).data or []
         # Prefer converged build's cover_email_md; fall back to latest.
         cover_md = None
         converged = next(
@@ -2386,15 +2382,14 @@ async def get_job_detail(job_id: int, user: "User" = Depends(get_current_user)):
         )
 
     try:
-        ip_rows = (
+        ip_rows = (await aexecute(
             db.table("interview_prep")
             .select("status, prep_pack_url, prep_pack_md, created_at")
             .eq("user_id", uid)
             .eq("job_id", job_id)
             .order("created_at", desc=True)
             .limit(5)
-            .execute()
-        ).data or []
+        )).data or []
         prep = next(
             (r for r in ip_rows
              if r.get("status") == "converged"
@@ -2434,13 +2429,12 @@ async def get_job_detail(job_id: int, user: "User" = Depends(get_current_user)):
         )
 
     # Application status (if any) — scoped to the caller's tenant.
-    apps = (
+    apps = await aexecute(
         db.table("applications")
         .select("*")
         .eq("user_id", uid)
         .eq("job_id", job_id)
         .limit(1)
-        .execute()
     )
     application = (apps.data or [None])[0]
     return {"job": job, "artifacts": artifacts, "application": application}
@@ -2475,12 +2469,11 @@ async def list_applications(user: "User" = Depends(get_current_user)):
     settings = get_settings()
     db = get_supabase()
     uid = str(user.id)
-    apps = (
+    apps = await aexecute(
         db.table("applications")
         .select("*")
         .eq("user_id", uid)
         .order("created_at", desc=True)
-        .execute()
     )
     apps_data = apps.data or []
     apply_threshold = int(getattr(settings, "apply_threshold", 85) or 85)
@@ -2489,12 +2482,11 @@ async def list_applications(user: "User" = Depends(get_current_user)):
     if apps_data:
         job_ids = list({a["job_id"] for a in apps_data if a.get("job_id")})
         if job_ids:
-            jobs = (
+            jobs = await aexecute(
                 db.table("jobs")
                 .select("id, title, company, location, match_score, url")
                 .eq("user_id", uid)
                 .in_("id", job_ids)
-                .execute()
             )
             job_map = {j["id"]: j for j in (jobs.data or [])}
             for a in apps_data:
@@ -3800,15 +3792,14 @@ async def get_application_by_job(
     mode that resolves to the seed owner, so behaviour is unchanged).
     """
     db = get_supabase()
-    rows = (
+    rows = (await aexecute(
         db.table("applications")
         .select("id, job_id, status, created_at")
         .eq("user_id", str(user.id))
         .eq("job_id", job_id)
         .order("created_at", desc=True)
         .limit(1)
-        .execute()
-    ).data or []
+    )).data or []
     if not rows:
         raise HTTPException(status_code=404, detail="no_application_for_job")
     return rows[0]
