@@ -26,7 +26,25 @@ Why RQ (and not Celery)?
 ENV vars:
   - REDIS_URL           connection string (default redis://localhost:6379/0)
   - RQ_QUEUE_NAME       queue name (default 'jobhunt')
+  - RQ_QUEUE_PREFIX     OPTIONAL latency-class queue split (default = RQ_QUEUE_NAME).
+                        When set, work is routed to `{prefix}:{class}` queues
+                        ('interactive' / 'batch' / 'cron') so separate worker
+                        pools can drain them independently. When UNSET, every
+                        enqueue lands on the single RQ_QUEUE_NAME queue exactly
+                        as before — single-user prod is unchanged. (P2-1.)
   - WORKER_CONCURRENCY  read by api/worker.py, NOT here
+
+Queue latency classes (P2-1):
+  Each `kind` maps to a latency class via `_KIND_QUEUE`:
+    - interactive  user is waiting (resume build, interview prep, LinkedIn
+                   draft, story extract, voice calibration)
+    - batch        fire-and-forget background work (scoring, legitimacy,
+                   persona deep-research) — must never starve interactive
+    - cron         reserved for per-tenant jobs fanned out by scheduled cron
+                   (no `kind` routes here yet; the batch worker pool also
+                   drains it)
+  Unmapped kinds default to 'batch'. This mapping is INERT until
+  RQ_QUEUE_PREFIX is set — see `_get_queue`.
 
 Job retry policy:
   - timeout=900s        (15 min — G2 worst-case is ~5 min, G1 ~3 min)
@@ -55,9 +73,34 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
+# ─── Queue latency-class registry ──────────────────────────────────────────
+# The three latency classes. 'cron' has no `kind` mapped to it today; it
+# exists so scheduled-cron fan-out (a later PR) can target a low-priority
+# pool, and so the batch worker can be told to also drain it.
+QUEUE_CLASSES = ("interactive", "batch", "cron")
+_DEFAULT_QUEUE_CLASS = "batch"
+
+# kind → latency class. Anything not listed defaults to 'batch'.
+_KIND_QUEUE: dict[str, str] = {
+    # interactive — a human is blocked on the result
+    "g2_resume": "interactive",
+    "g3_interview": "interactive",
+    "g4_linkedin_post": "interactive",
+    "g9_story_extract": "interactive",
+    "g11_voice_calibration": "interactive",
+    # batch — fire-and-forget; must not starve interactive
+    "g5_score": "batch",
+    "legitimacy_check": "batch",
+    "g1_discovery": "batch",
+}
+
+
 # ─── Redis + RQ singletons ─────────────────────────────────────────────────
 _redis = None
-_queue = None
+# RQ Queue cache. Keyed by the resolved RQ queue NAME so that when the split
+# is OFF every class collapses to the same single-queue object (today's
+# behavior) and when it's ON each class gets its own cached Queue.
+_queues: dict[str, Any] = {}
 
 
 def _get_redis():
@@ -81,10 +124,44 @@ def _get_redis():
     return _redis
 
 
-def _get_queue():
-    """Singleton RQ Queue."""
-    global _queue
-    if _queue is None:
+def _resolve_queue_name(queue_class: str | None = None) -> str:
+    """Map a latency class to the actual RQ queue name.
+
+    CRITICAL back-compat: if `RQ_QUEUE_PREFIX` is unset, the class is
+    ignored entirely and we return the single `RQ_QUEUE_NAME` (default
+    'jobhunt') — identical to pre-split behavior. The queue split only
+    activates once an operator sets `RQ_QUEUE_PREFIX` AND brings up the
+    matching worker pools (railway.toml's worker-interactive/worker-batch);
+    until then everything funnels through one queue so nothing can be
+    enqueued onto a class no worker is listening on.
+
+    When the prefix IS set, the name is `{prefix}:{class}`, e.g.
+    'jobhunt:interactive'.
+    """
+    base = os.environ.get("RQ_QUEUE_NAME", "jobhunt")
+    prefix = os.environ.get("RQ_QUEUE_PREFIX")
+    if not prefix:
+        # Split disabled → single shared queue (today's behavior).
+        return base
+    cls = queue_class or _DEFAULT_QUEUE_CLASS
+    return f"{prefix}:{cls}"
+
+
+def _get_queue(queue_class: str | None = None):
+    """Singleton RQ Queue for a latency class.
+
+    `queue_class` is one of `QUEUE_CLASSES` (or None → the default 'batch').
+    Callers that pass nothing keep getting the single queue when the split
+    is off, so existing call sites (admin queue-health, orphan reaper) are
+    unaffected.
+
+    Queues are cached by resolved NAME, so with the split OFF every class
+    resolves to the same name and shares one Queue object — preserving the
+    old single-`_queue` singleton semantics.
+    """
+    name = _resolve_queue_name(queue_class)
+    q = _queues.get(name)
+    if q is None:
         try:
             from rq import Queue
         except ImportError as e:
@@ -92,9 +169,9 @@ def _get_queue():
                 "rq is not installed. Add `rq>=2.0` to requirements.txt "
                 "(see _pending_deps_queue.txt)."
             ) from e
-        name = os.environ.get("RQ_QUEUE_NAME", "jobhunt")
-        _queue = Queue(name, connection=_get_redis())
-    return _queue
+        q = Queue(name, connection=_get_redis())
+        _queues[name] = q
+    return q
 
 
 def _idempotency_key(user_id: UUID | str, kind: str, payload: dict[str, Any]) -> str:
@@ -187,7 +264,10 @@ def _enqueue_or_dedup(
     # is the user's goal RIGHT NOW. The jobs_runs row is still created
     # so the UI can poll for status.
     try:
-        q = _get_queue()
+        # Route to the latency class for this kind. When RQ_QUEUE_PREFIX is
+        # unset this still resolves to the single shared queue (back-compat).
+        queue_class = _KIND_QUEUE.get(kind, _DEFAULT_QUEUE_CLASS)
+        q = _get_queue(queue_class)
         q.enqueue(
             worker_func,
             run.id,
@@ -198,8 +278,8 @@ def _enqueue_or_dedup(
             meta={"run_id": run.id, "kind": kind, "user_id": str(user_id)},
         )
         logger.info(
-            f"queue: enqueued kind={kind} run_id={run.id} user_id={user_id} "
-            f"key={key[:12]}… (via Redis)"
+            f"queue: enqueued kind={kind} class={queue_class} queue={q.name} "
+            f"run_id={run.id} user_id={user_id} key={key[:12]}… (via Redis)"
         )
         return run.id
     except Exception as e:
