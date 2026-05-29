@@ -13,6 +13,10 @@ restartPolicyMaxRetries = 3
 # The FastAPI server. Public-facing.
 [[services]]
 name = "api"
+# Horizontal scaling: when running >1 replica of this service, set
+# SCHEDULER_ENABLED=0 here and deploy the single-replica `scheduler` service
+# below — otherwise every replica runs the embedded APScheduler and all 6
+# cron jobs double-fire (N x LLM spend + duplicate writes). (Scale audit 2026-05-29.)
 [services.variables]
 START_MODE = "api"
 # Worker queue lives on the same Redis Railway adds via the Redis plugin.
@@ -33,11 +37,12 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile.worker"
 [services.deploy]
 # No HTTP port — RQ worker is headless. Railway watches the process
-# for liveness. ON_FAILURE restart so a single crash doesn't take down
-# the worker permanently; 5 retries is enough to clear a transient
-# Redis blip but not enough to mask a misconfiguration.
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 5
+# for liveness. ALWAYS (not ON_FAILURE) so the worker self-heals after a
+# Redis/DB outage clears: api/worker.py pings Redis on boot and exits if it's
+# down, so with ON_FAILURE + a low retry cap a sustained dependency outage
+# would exhaust retries and leave the worker permanently dead with no
+# auto-recovery and no alert. (Scale audit 2026-05-29.)
+restartPolicyType = "ALWAYS"
 [services.variables]
 START_MODE = "worker"
 # REDIS_URL = "${REDIS_URL}"   # supplied by Redis plugin (REQUIRED)
@@ -66,9 +71,24 @@ RQ_QUEUE_NAME = "jobhunt"
 # # REDIS_URL = "${REDIS_URL}"
 # LOG_LEVEL = "INFO"
 
-# ── Scheduler (existing — unchanged) ────────────────────────────────────
-# To add a second service for the scheduler daemon:
-# [[services]]
-# name = "scheduler"
-# [services.variables]
-# START_MODE = "scheduler"
+# ── Scheduler service ───────────────────────────────────────────────────
+# Runs the 6 APScheduler cron jobs (job_scout, boss_agent, persona_synthesis,
+# daily cost alert, weekly cost digest, g6_followup) as ONE dedicated process.
+# Deploy at exactly 1 replica.
+#
+# The same cron is ALSO embedded in the `api` service by default
+# (SCHEDULER_ENABLED defaults on) so a one-service deployment still runs cron
+# (BUG-053). The moment you scale `api` to >1 replica, deploy THIS service and
+# set SCHEDULER_ENABLED=0 on `api`, so cron fires exactly once across the fleet.
+[[services]]
+name = "scheduler"
+[services.build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+[services.deploy]
+startCommand = "python main.py --scheduler"
+restartPolicyType = "ALWAYS"
+[services.variables]
+START_MODE = "scheduler"
+SCHEDULER_ENABLED = "1"
+# REDIS_URL = "${REDIS_URL}"   # supplied by Redis plugin

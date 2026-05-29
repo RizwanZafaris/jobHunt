@@ -47,6 +47,20 @@ async def _startup_scheduler():
     global _scheduler_started
     if _scheduler_started:
         return
+
+    # SCALE-GUARD (2026-05-29 audit): the embedded scheduler must run on
+    # EXACTLY ONE process. With a single `api` replica (today) that's this
+    # process, so SCHEDULER_ENABLED defaults ON — preserving the BUG-053 fix.
+    # When scaling the API to >1 replica, run cron as a dedicated single-
+    # replica `scheduler` service (START_MODE=scheduler — see railway.toml)
+    # and set SCHEDULER_ENABLED=0 here, otherwise every replica double-fires
+    # all 6 cron jobs (N x LLM spend + duplicate writes/emails/digests).
+    if os.getenv("SCHEDULER_ENABLED", "1").strip().lower() in ("0", "false", "no", "off"):
+        logger.info(
+            "[scheduler] SCHEDULER_ENABLED off — not starting embedded cron "
+            "in this process (expecting a dedicated scheduler service)"
+        )
+        return
     try:
         from main import start_scheduler_background
         scheduler = start_scheduler_background()
@@ -77,6 +91,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Compress large JSON responses (jobs lists, cost rows, analytics funnels).
+# minimum_size skips the CPU cost of compressing tiny payloads. Cuts egress
+# and TTFB on the fat list/analytics endpoints as per-tenant data grows.
+from fastapi.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 # ── Rate limiting (P1-3) ─────────────────────────────────────────────────────

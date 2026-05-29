@@ -32,7 +32,11 @@ Job retry policy:
   - timeout=900s        (15 min — G2 worst-case is ~5 min, G1 ~3 min)
   - result_ttl=86400    (1 day — surface results to UI for a day)
   - failure_ttl=604800  (7 days — keep failure detail around for triage)
-  - max_retries=3       handled by api/worker.py via Retry(max=3, intervals=[60, 240, 960])
+  - max_retries=3       NOT via RQ-native Retry (it is not wired). Recovery is
+                        the orphan reaper (api/orphan_reaper.py): the worker
+                        marks the row failed(retry=True) -> status back to
+                        'queued', attempts++, and the reaper re-enqueues stuck
+                        'queued'/'running' rows up to 3 attempts each tick.
 
 Idempotency rule:
   Two enqueues of the same (user_id, kind, payload) within the same
