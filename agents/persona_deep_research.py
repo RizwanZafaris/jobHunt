@@ -42,10 +42,19 @@ from typing import Any, Optional
 
 import httpx
 
+from agents.concurrency import gather_bounded
 from agents.llm_router import get_router, _parse_json_loose
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Concurrency caps for the two per-item fan-outs in this module
+# (SCALABILITY.md P1 — bound unbounded asyncio.gather fan-outs).
+# Apify rag-web-browser is an external paid HTTP API; keep it modest.
+RESEARCH_QUERY_CONCURRENCY = 4
+# Embedding calls hit the LLM embeddings endpoint, one per knowledge
+# section (<= 13). Cap so a wide persona doesn't fire 13 at once.
+EMBED_CONCURRENCY = 5
 
 
 # ─── 13 company_knowledge sections (must match agents/company_agent.py) ──
@@ -188,8 +197,14 @@ async def gather_research(
 
     if queries is None:
         queries = build_queries(company)
-    tasks = [_fetch_apify(token, q[1], max_results=max_per_query) for q in queries]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Bounded fan-out: cap concurrent Apify HTTP calls (was an unbounded
+    # gather firing all ~8 queries at once). Order is preserved so the
+    # zip(queries, results) below stays aligned.
+    results = await gather_bounded(
+        [lambda q=q: _fetch_apify(token, q[1], max_results=max_per_query) for q in queries],
+        limit=RESEARCH_QUERY_CONCURRENCY,
+        return_exceptions=True,
+    )
 
     sources: list[ResearchSource] = []
     for (label, _query), res in zip(queries, results):
@@ -463,7 +478,14 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
             logger.warning(f"embed failed (len={len(text)}): {type(e).__name__}: {str(e)[:200]}")
             return None
 
-    vectors = await asyncio.gather(*[_safe_embed(c) for _, c in cleaned])
+    # Bounded fan-out: cap concurrent embedding calls (was an unbounded
+    # gather firing one per section, up to 13). _safe_embed swallows its
+    # own errors (returns None), so no return_exceptions needed. Order is
+    # preserved to stay aligned with `cleaned`.
+    vectors = await gather_bounded(
+        [lambda c=c: _safe_embed(c) for _, c in cleaned],
+        limit=EMBED_CONCURRENCY,
+    )
 
     # DB-1 (2026-05-29): company_knowledge uniqueness is now composite
     # (user_id, company_name, section). The conflict target below must
