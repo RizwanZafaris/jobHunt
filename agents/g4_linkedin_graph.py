@@ -1146,6 +1146,12 @@ async def run_g4_graph(
         cv_md = voice_profile.get("profile_md") or ""
 
     # ── compile + run ────────────────────────────────────────────────
+    # G4 is a strictly linear 6-node graph (no loops / conditional edges)
+    # and is NOT checkpointed at this call site, so there's no checkpoint
+    # thread_id to tenant-namespace. We still set an EXPLICIT recursion_limit
+    # (Phase 1, Finding 4) so a future cyclic edge fails with a controlled
+    # GraphRecursionError rather than relying on LangGraph's silent default.
+    G4_RECURSION_LIMIT = 25
     graph = build_g4_graph()
     state: LinkedInState = {
         "user_id": user_id,
@@ -1162,7 +1168,9 @@ async def run_g4_graph(
         "cost_cap_usd": float(max_cost_usd),
         "cost_capped": False,
     }
-    final_state: LinkedInState = await graph.ainvoke(state)
+    final_state: LinkedInState = await graph.ainvoke(
+        state, config={"recursion_limit": G4_RECURSION_LIMIT}
+    )
 
     cost = float(final_state.get("cost_usd_total", 0.0) or 0.0)
     if final_state.get("cost_capped"):
