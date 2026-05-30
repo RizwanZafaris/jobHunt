@@ -720,6 +720,94 @@ async def get_me(user: "User" = Depends(get_current_user)):
     }
 
 
+# ── Onboarding (Phase 4 — first-run flow) ──────────────────────────────────
+
+class OnboardingUpdate(BaseModel):
+    step: Optional[str] = None   # 'welcome' | 'profile' | 'plan' | 'done'
+    complete: bool = False       # True → stamp onboarded_at = now()
+
+
+@app.get("/me/onboarding")
+async def get_me_onboarding(user: "User" = Depends(get_current_user)):
+    """Onboarding state for the current user (Phase 4).
+
+    Returns ``{onboarded, step, signup_source}``; the dashboard routes a user
+    with ``onboarded=false`` to /onboarding.
+
+    Defensive: if migration 045 isn't applied yet (columns absent) or the read
+    fails, reports ``onboarded=true`` (with ``degraded=true``) so nobody is
+    blocked or wrongly routed — the live single-user owner sees no change.
+    """
+    db = get_supabase()
+    try:
+        rows = (await aexecute(
+            db.table("users")
+            .select("onboarded_at, onboarding_step, signup_source")
+            .eq("id", str(user.id))
+            .limit(1)
+        )).data or []
+    except Exception as e:
+        logger.info("onboarding state read fell back to onboarded=true: %s", e)
+        return {"onboarded": True, "step": "done",
+                "signup_source": None, "degraded": True}
+    row = rows[0] if rows else {}
+    return {
+        "onboarded": row.get("onboarded_at") is not None,
+        "step": row.get("onboarding_step"),
+        "signup_source": row.get("signup_source"),
+    }
+
+
+@app.post("/me/onboarding")
+async def update_me_onboarding(
+    payload: OnboardingUpdate,
+    user: "User" = Depends(get_current_user),
+):
+    """Advance or complete the current user's onboarding (Phase 4).
+
+    - ``step``: persist the resumable cursor (optional).
+    - ``complete=true``: stamp ``onboarded_at`` (idempotent — preserves the
+      first timestamp on re-complete) and set ``step='done'``.
+
+    Scoped to the caller (``user_id``). Returns the updated onboarding state.
+    """
+    db = get_supabase()
+    update: dict = {}
+    if payload.step is not None:
+        update["onboarding_step"] = payload.step[:32]
+    if payload.complete:
+        update["onboarded_at"] = datetime.now(timezone.utc).isoformat()
+        update["onboarding_step"] = "done"
+    if not update:
+        raise HTTPException(
+            status_code=400,
+            detail="nothing to update (provide step and/or complete)",
+        )
+    try:
+        # Preserve the first onboarded_at on re-complete: only stamp when NULL.
+        if "onboarded_at" in update:
+            existing = (await aexecute(
+                db.table("users").select("onboarded_at")
+                .eq("id", str(user.id)).limit(1)
+            )).data or []
+            if existing and existing[0].get("onboarded_at"):
+                update["onboarded_at"] = existing[0]["onboarded_at"]
+        await aexecute(
+            db.table("users").update(update).eq("id", str(user.id))
+        )
+    except Exception as e:
+        logger.warning("onboarding update failed (migration 045 applied?): %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail="onboarding storage unavailable (migration 045 may be unapplied)",
+        )
+    return {
+        "ok": True,
+        "step": update.get("onboarding_step"),
+        "onboarded": "onboarded_at" in update,
+    }
+
+
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: int, user: "User" = Depends(get_current_user)):
     """Get full job details (scoped to the caller's tenant)."""
