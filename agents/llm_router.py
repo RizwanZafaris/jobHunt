@@ -285,6 +285,7 @@ class LLMRouter:
         temperature: float = 0.3,
         tools: Optional[list] = None,
         agent_name: Optional[str] = None,
+        user_id: Optional[str] = None,
         json_response: bool = False,
         cache_system: Optional[bool] = None,
         **provider_kwargs: Any,
@@ -310,6 +311,12 @@ class LLMRouter:
                Honoured only when provider="anthropic" AND
                ANTHROPIC_PROMPT_CACHE_ENABLED is not "0".
         """
+        # Per-tenant spend cap (Phase 3). No-op when PER_TENANT_BUDGET_ENABLED is
+        # off (default) — one env check. When on, raises BudgetExceeded BEFORE any
+        # spend, so an over-budget tenant never reaches a provider.
+        from agents.budget_gate import enforce_budget
+        await enforce_budget(user_id, agent_name=agent_name)
+
         start = time.perf_counter()
         try:
             if provider == "anthropic":
