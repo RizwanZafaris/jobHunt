@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 
 from api.context import get_current_user
 from api.users import User
-from db.client import get_supabase
+from db.client import aexecute, get_supabase
 from integrations.buffer_client import (
     BufferAPIError,
     BufferConfigError,
@@ -190,27 +190,25 @@ async def buffer_connect_callback(
             "connected_at": _utcnow().isoformat(),
         }
         try:
-            db.table("buffer_oauth_tokens").upsert(
+            await aexecute(db.table("buffer_oauth_tokens").upsert(
                 row, on_conflict="user_id,buffer_profile_id"
-            ).execute()
+            ))
             saved.append({"profile_id": p.id, "name": row["buffer_profile_name"]})
         except Exception:
             logger.exception("Buffer token persist failed for profile %s", p.id)
 
     # If user has no default profile set, default to the first connected one.
     try:
-        pm = (
+        pm = (await aexecute(
             db.table("profile_master")
             .select("buffer_default_profile_id")
             .eq("user_id", str(user.id))
             .limit(1)
-            .execute()
-            .data
-        ) or []
+        )).data or []
         if pm and not pm[0].get("buffer_default_profile_id") and saved:
-            db.table("profile_master").update({
+            await aexecute(db.table("profile_master").update({
                 "buffer_default_profile_id": saved[0]["profile_id"]
-            }).eq("user_id", str(user.id)).execute()
+            }).eq("user_id", str(user.id)))
     except Exception:
         logger.exception("default profile assignment failed (non-fatal)")
 
@@ -341,15 +339,13 @@ async def schedule_draft_to_buffer(
 
     # Gate 3
     db = get_supabase()
-    draft_rows = (
+    draft_rows = (await aexecute(
         db.table("linkedin_drafts")
         .select("id, body, hook, status, buffer_post_id, buffer_status")
         .eq("user_id", str(user.id))
         .eq("id", draft_id)
         .limit(1)
-        .execute()
-        .data
-    ) or []
+    )).data or []
     if not draft_rows:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
     d = draft_rows[0]
@@ -375,14 +371,12 @@ async def schedule_draft_to_buffer(
     # Resolve profile id
     profile_id = body.buffer_profile_id
     if not profile_id:
-        pm = (
+        pm = (await aexecute(
             db.table("profile_master")
             .select("buffer_default_profile_id")
             .eq("user_id", str(user.id))
             .limit(1)
-            .execute()
-            .data
-        ) or []
+        )).data or []
         if pm:
             profile_id = pm[0].get("buffer_default_profile_id")
     if not profile_id:
@@ -417,10 +411,10 @@ async def schedule_draft_to_buffer(
         )
     except BufferAPIError as e:
         # Persist the failure so the dashboard can surface it.
-        db.table("linkedin_drafts").update({
+        await aexecute(db.table("linkedin_drafts").update({
             "buffer_status": "failed",
             "buffer_error": str(e)[:1000],
-        }).eq("id", draft_id).execute()
+        }).eq("id", draft_id))
         raise HTTPException(status_code=502, detail=f"Buffer rejected the post: {e}")
 
     if not updates:
@@ -428,17 +422,17 @@ async def schedule_draft_to_buffer(
     u = updates[0]
 
     # Persist Buffer state on the draft.
-    db.table("linkedin_drafts").update({
+    await aexecute(db.table("linkedin_drafts").update({
         "buffer_post_id": u.id,
         "buffer_status": "scheduled" if body.scheduled_at else "pending",
         "buffer_scheduled_at": body.scheduled_at,
         "buffer_error": None,
-    }).eq("id", draft_id).execute()
+    }).eq("id", draft_id))
 
     # Stamp last_used_at on the token row.
-    db.table("buffer_oauth_tokens").update({
+    await aexecute(db.table("buffer_oauth_tokens").update({
         "last_used_at": _utcnow().isoformat(),
-    }).eq("id", tok["id"]).execute()
+    }).eq("id", tok["id"]))
 
     return {
         "ok": True,
@@ -455,15 +449,13 @@ async def cancel_buffer_post(
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
     db = get_supabase()
-    rows = (
+    rows = (await aexecute(
         db.table("linkedin_drafts")
         .select("id, buffer_post_id, buffer_status")
         .eq("user_id", str(user.id))
         .eq("id", draft_id)
         .limit(1)
-        .execute()
-        .data
-    ) or []
+    )).data or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"draft {draft_id} not found")
     d = rows[0]
@@ -483,7 +475,7 @@ async def cancel_buffer_post(
         raise HTTPException(status_code=502, detail=f"Buffer cancel failed: {e}")
 
     if cancelled:
-        db.table("linkedin_drafts").update({
+        await aexecute(db.table("linkedin_drafts").update({
             "buffer_status": "cancelled",
-        }).eq("id", draft_id).execute()
+        }).eq("id", draft_id))
     return {"ok": True, "cancelled": cancelled}

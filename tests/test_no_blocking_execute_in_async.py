@@ -106,26 +106,6 @@ def _keys(sites: dict[str, list[tuple[str, int]]]) -> set[str]:
 # `.execute()` is essentially never correct — convert it instead).
 # ---------------------------------------------------------------------------
 ALLOWLIST: set[str] = {
-    # ── Other routers (not yet converted) ──────────────────────────────────
-    "buffer.py::buffer_connect_callback",
-    "buffer.py::cancel_buffer_post",
-    "buffer.py::schedule_draft_to_buffer",
-    "interview_studio.py::_credit_stories_for_outcome",
-    "interview_studio.py::post_log_outcome",
-    "linkedin.py::approve_draft",
-    "linkedin.py::copy_draft",
-    "linkedin.py::get_posting_schedule",
-    "linkedin.py::get_voice_profile",
-    "linkedin.py::list_drafts",
-    "linkedin.py::patch_draft",
-    "linkedin.py::put_posting_schedule",
-    "linkedin.py::put_voice_profile",
-    "linkedin.py::reject_draft",
-    "network.py::draft_intro",
-    "perplexity.py::strategic_posture",
-    "traces.py::recent_errors",
-    "traces.py::recent_runs",
-    "traces.py::trace_detail",
     # ── server.py (not yet converted) ──────────────────────────────────────
     # PR #1 (feat/p2a-async-reads-1) converted the read backbone:
     #   list_jobs, list_my_jobs, get_job, list_companies, get_job_detail,
