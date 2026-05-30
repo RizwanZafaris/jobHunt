@@ -68,3 +68,48 @@ def get_plan(plan_name: Optional[str]) -> Plan:
     if not plan_name:
         return DEFAULT_PLAN
     return PLANS.get(plan_name.strip().lower(), DEFAULT_PLAN)
+
+
+def compute_margin(plan_name: Optional[str], spend_usd: float) -> dict:
+    """Pure margin math for one tenant's month-to-date spend.
+
+    Returns a JSON-serialisable dict the admin ``/admin/margin`` report rows are
+    built from. Kept here (no I/O) so the arithmetic is unit-testable without a
+    DB. ``revenue − cost = margin``; ``margin_pct`` is margin as a share of
+    revenue. For unlimited/unpriced plans (owner/admin, free) revenue is 0 so
+    ``margin_pct`` is None (undefined) — those tenants are cost centres by
+    design, not margin-bearing.
+
+    ``allowance_used_pct`` shows how close the tenant is to the spend cap
+    (None for unlimited plans, which have no cap). ``over_allowance`` flags a
+    tenant whose spend has reached/exceeded the cap — with the gate enabled this
+    can only be transiently true (the cap halts further spend), but it surfaces
+    a misconfiguration or a pre-enablement overspend.
+    """
+    plan = get_plan(plan_name)
+    spend = round(float(spend_usd or 0), 6)
+    revenue = plan.price_usd_month
+    margin = round(revenue - spend, 6)
+    margin_pct = (
+        None if revenue <= 0 else round(100.0 * margin / revenue, 1)
+    )
+    allowance = plan.monthly_cost_allowance_usd
+    if plan.unlimited:
+        allowance_used_pct = None
+        over_allowance = False
+    else:
+        allowance_used_pct = (
+            None if allowance <= 0 else round(100.0 * spend / allowance, 1)
+        )
+        over_allowance = spend >= allowance if allowance > 0 else spend > 0
+    return {
+        "plan": plan.name,
+        "unlimited": plan.unlimited,
+        "revenue_usd": round(revenue, 2),
+        "cost_usd": spend,
+        "margin_usd": margin,
+        "margin_pct": margin_pct,
+        "allowance_usd": round(allowance, 2),
+        "allowance_used_pct": allowance_used_pct,
+        "over_allowance": over_allowance,
+    }

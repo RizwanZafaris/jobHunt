@@ -3760,3 +3760,76 @@ async def get_application_by_job(
     if not rows:
         raise HTTPException(status_code=404, detail="no_application_for_job")
     return rows[0]
+
+
+# ── Per-tenant margin report (Phase 3 — billing/margin) ────────────────────
+
+@app.get("/admin/margin")
+async def admin_margin(_admin: "User" = Depends(require_admin)):
+    """Per-tenant gross-margin report for the current calendar month (admin).
+
+    Joins every user's plan (``users.plan``) with their month-to-date LLM COGS
+    (``SUM(agent_call_log.cost_usd)`` since the 1st, served by the
+    migration-040 ``(user_id, called_at DESC)`` index) and computes
+    revenue − cost = margin via ``config.plans.compute_margin``. Rows are sorted
+    worst-margin-first so a loss-making tenant surfaces at the top. This is the
+    visibility companion to the spend cap (P3-1): the cap *prevents* a tenant
+    going margin-negative; this report *shows* where each tenant stands.
+
+    Admin-only (``require_admin``). Read-only. In single-user mode the only row
+    is the owner (unlimited plan → margin undefined, which is correct).
+    """
+    from collections import defaultdict
+    from config.plans import compute_margin
+
+    db = get_supabase()
+    month_start = datetime.now(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    ).isoformat()
+
+    # 1. All tenants + their plan.
+    users = (await aexecute(
+        db.table("users").select("id, email, plan, is_admin")
+    )).data or []
+
+    # 2. Month-to-date cost per tenant. One scan of this month's rows; summed
+    #    in Python (a SQL GROUP BY RPC is the scale-up, noted in SCALABILITY.md).
+    cost_rows = (await aexecute(
+        db.table("agent_call_log")
+        .select("user_id, cost_usd")
+        .gte("called_at", month_start)
+    )).data or []
+    spend_by_user: dict[str, float] = defaultdict(float)
+    for r in cost_rows:
+        uid = r.get("user_id")
+        if uid is not None:
+            spend_by_user[str(uid)] += float(r.get("cost_usd") or 0)
+
+    # 3. Build a margin row per tenant.
+    rows = []
+    for u in users:
+        uid = str(u.get("id"))
+        m = compute_margin(u.get("plan"), spend_by_user.get(uid, 0.0))
+        rows.append({
+            "user_id": uid,
+            "email": u.get("email"),
+            "is_admin": bool(u.get("is_admin")),
+            **m,
+        })
+
+    # Worst margin first. Unlimited/undefined-margin rows (margin_pct=None) sort
+    # last — they're cost centres by design, not the signal we're hunting.
+    rows.sort(key=lambda r: (r["margin_pct"] is None, r["margin_pct"]))
+
+    priced = [r for r in rows if r["revenue_usd"] > 0]
+    totals = {
+        "tenants": len(rows),
+        "paying_tenants": len(priced),
+        "revenue_usd": round(sum(r["revenue_usd"] for r in rows), 2),
+        "cost_usd": round(sum(r["cost_usd"] for r in rows), 6),
+        "margin_usd": round(
+            sum(r["revenue_usd"] for r in rows) - sum(r["cost_usd"] for r in rows), 6
+        ),
+        "margin_negative_tenants": sum(1 for r in rows if r["margin_usd"] < 0),
+    }
+    return {"month_start": month_start, "totals": totals, "tenants": rows}
