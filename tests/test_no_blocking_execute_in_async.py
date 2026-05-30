@@ -99,18 +99,15 @@ def _keys(sites: dict[str, list[tuple[str, int]]]) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# ALLOWLIST — the not-yet-converted async `.execute()` sites, "<file>::<qual>".
+# ALLOWLIST — async `.execute()` sites NOT yet on the seam, keyed "<file>::<qual>".
 #
-# Seeded from the pre-P2-a scan. SHRINK this as handlers move onto the seam;
-# do NOT add to it without a deliberate reason (a genuinely loop-safe async
-# `.execute()` is essentially never correct — convert it instead).
+# P2-a is COMPLETE (PRs #171–#174): every async handler under api/ now runs its
+# DB call through db/client.py::aexecute, so this is empty and the guard enforces
+# ZERO loop-blocking `.execute()` anywhere. Only add an entry with a deliberate,
+# documented reason — a genuinely loop-safe async `.execute()` is almost never
+# correct; convert it to `await aexecute(...)` instead.
 # ---------------------------------------------------------------------------
-ALLOWLIST: set[str] = {
-    # ── server.py (not yet converted) ──────────────────────────────────────
-    # PR #1 (feat/p2a-async-reads-1) converted the read backbone:
-    #   list_jobs, list_my_jobs, get_job, list_companies, get_job_detail,
-    #   list_applications, get_application_by_job — so they are NOT listed here.
-}
+ALLOWLIST: set[str] = set()
 
 
 def test_no_new_blocking_execute_in_async_handlers() -> None:
