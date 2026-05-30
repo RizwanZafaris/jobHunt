@@ -782,12 +782,11 @@ async def generate_interview_prep(
     # tenant's job (the legacy db.client.get_job() had no user filter).
     db = get_supabase()
     job_rows = (
-        db.table("jobs")
+        (await aexecute(db.table("jobs")
         .select("*")
         .eq("id", request.job_id)
         .eq("user_id", str(user.id))
-        .limit(1)
-        .execute()
+        .limit(1)))
     ).data or []
     job = job_rows[0] if job_rows else None
     if not job:
@@ -817,11 +816,10 @@ async def get_latest_digest(_auth=Depends(verify_service_secret)):
     """Get the latest daily digest (boss_audit_log is admin/global, un-tenanted)."""
     from db.client import get_supabase
     db = get_supabase()
-    result = db.table("boss_audit_log") \
+    result = await aexecute(db.table("boss_audit_log") \
         .select("*") \
         .order("created_at", desc=True) \
-        .limit(1) \
-        .execute()
+        .limit(1))
     if result.data:
         return result.data[0]
     return {"message": "No digest available yet"}
@@ -1276,14 +1274,13 @@ async def save_resume_build_edit(
         raise HTTPException(status_code=400, detail="resume too large (>200KB)")
 
     result = (
-        db.table("resume_builds")
+        await aexecute(db.table("resume_builds")
         .update({
             "user_edited_md": payload.user_edited_md,
             "user_edited_at": datetime.now(timezone.utc).isoformat(),
         })
         .eq("id", build_id)
-        .eq("user_id", str(user.id))
-        .execute()
+        .eq("user_id", str(user.id)))
     )
     if not result.data:
         raise HTTPException(status_code=404, detail="Resume build not found")
@@ -1315,11 +1312,10 @@ async def save_resume_build_feedback(
         update["user_feedback"] = payload.user_feedback[:5000]  # cap
 
     result = (
-        db.table("resume_builds")
+        await aexecute(db.table("resume_builds")
         .update(update)
         .eq("id", build_id)
-        .eq("user_id", str(user.id))
-        .execute()
+        .eq("user_id", str(user.id)))
     )
     if not result.data:
         raise HTTPException(status_code=404, detail="Resume build not found")
@@ -1543,11 +1539,10 @@ async def update_profile_master(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     result = (
-        db.table("profile_master")
+        await aexecute(db.table("profile_master")
         .update(updates)
         .eq("user_id", str(user.id))
-        .eq("id", 1)
-        .execute()
+        .eq("id", 1))
     )
     # ─── Phase 1.2: re-extract STAR+R stories after a master-CV change ──
     # G9 is idempotent on (user_id, cv_hash); if nothing relevant changed
@@ -1570,11 +1565,10 @@ async def update_profile_experience(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     result = (
-        db.table("profile_experience")
+        await aexecute(db.table("profile_experience")
         .update(updates)
         .eq("user_id", str(user.id))
-        .eq("id", exp_id)
-        .execute()
+        .eq("id", exp_id))
     )
     rows = result.data or []
     if not rows:
@@ -1659,9 +1653,9 @@ async def update_recommendation(
 ):
     """Dismiss/restore a recommendation (caller's tenant)."""
     db = get_supabase()
-    result = db.table("profile_recommendation").update(
+    result = await aexecute(db.table("profile_recommendation").update(
         {"dismissed": payload.dismissed}
-    ).eq("user_id", str(user.id)).eq("id", rec_id).execute()
+    ).eq("user_id", str(user.id)).eq("id", rec_id))
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail=f"Recommendation {rec_id} not found")
@@ -1708,14 +1702,13 @@ async def list_target_companies(user: "User" = Depends(get_current_user)):
     """
     db = get_supabase()
     result = (
-        db.table("companies")
+        await aexecute(db.table("companies")
         .select("*")
         .eq("user_id", str(user.id))
         .eq("is_target", True)
         .eq("is_phantom", False)
         .order("priority", desc=False)
-        .order("name")
-        .execute()
+        .order("name"))
     )
     companies = result.data or []
     by_cat: dict[str, list] = {}
@@ -1750,9 +1743,9 @@ async def add_target_company(
         "target_added_at": datetime.now(timezone.utc).isoformat(),
         "user_id": str(user.id),
     }
-    result = db.table("companies").upsert(
+    result = await aexecute(db.table("companies").upsert(
         row, on_conflict="user_id,name"
-    ).execute()
+    ))
     return {"created": True, "row": (result.data or [None])[0]}
 
 
@@ -1768,11 +1761,10 @@ async def update_company(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     result = (
-        db.table("companies")
+        await aexecute(db.table("companies")
         .update(updates)
         .eq("user_id", str(user.id))
-        .eq("id", company_id)
-        .execute()
+        .eq("id", company_id))
     )
     rows = result.data or []
     if not rows:
@@ -1788,11 +1780,10 @@ async def remove_target_company(
     """Remove from targets (soft: just sets is_target=false) (caller's tenant)."""
     db = get_supabase()
     result = (
-        db.table("companies")
+        await aexecute(db.table("companies")
         .update({"is_target": False})
         .eq("user_id", str(user.id))
-        .eq("id", company_id)
-        .execute()
+        .eq("id", company_id))
     )
     return {"removed": True, "row": (result.data or [None])[0]}
 
@@ -1857,13 +1848,13 @@ async def get_company_knowledge(
     uid = str(user.id)
     # Look up company record (tenant-scoped)
     company = (
-        db.table("companies").select("*").eq("user_id", uid).eq("name", company_name).limit(1).execute()
+        await aexecute(db.table("companies").select("*").eq("user_id", uid).eq("name", company_name).limit(1))
     )
     company_row = (company.data or [None])[0]
     # Pull all knowledge sections (tenant-scoped)
-    knowledge = db.table("company_knowledge").select(
+    knowledge = await aexecute(db.table("company_knowledge").select(
         "section, content, source_url, scraped_at"
-    ).eq("user_id", uid).eq("company_name", company_name).execute()
+    ).eq("user_id", uid).eq("company_name", company_name))
     knowledge_rows = knowledge.data or []
     # BUG-011: strip hard-coded LLM disclaimers from every section's content.
     for row in knowledge_rows:
@@ -1873,12 +1864,11 @@ async def get_company_knowledge(
     last_synthesized_at: str | None = None
     try:
         persona = (
-            db.table("company_personas")
+            await aexecute(db.table("company_personas")
             .select("last_synthesized_at")
             .eq("user_id", uid)
             .eq("company_name", company_name)
-            .limit(1)
-            .execute()
+            .limit(1))
         )
         persona_row = (persona.data or [None])[0]
         if persona_row:
@@ -1923,7 +1913,7 @@ async def trigger_company_research(
             q = db.table("companies").select("name").eq("is_target", True)
             if request.priority:
                 q = q.eq("priority", request.priority)
-            names = [c["name"] for c in (q.execute().data or [])]
+            names = [c["name"] for c in ((await aexecute(q)).data or [])]
 
         # Run with concurrency limit
         sem = asyncio.Semaphore(3)
@@ -1963,7 +1953,7 @@ async def run_pipeline_targets(
         from pipeline import JobHuntPipeline
         from db.client import get_supabase
         db = get_supabase()
-        targets = db.table("companies").select("name").eq("is_target", True).execute()
+        targets = await aexecute(db.table("companies").select("name").eq("is_target", True))
         target_names = [t["name"] for t in (targets.data or [])]
         pipeline = JobHuntPipeline()
         await pipeline.scout_only(target_names=target_names)
@@ -1991,7 +1981,7 @@ async def reclassify_existing_jobs(
         q = db.table("jobs").select("id, title, company, location, description, match_score, archetype")
         if only_missing:
             q = q.is_("archetype", "null")
-        rows = (q.execute().data) or []
+        rows = ((await aexecute(q)).data) or []
         if not rows:
             logger.info("No jobs to reclassify")
             return
@@ -2009,11 +1999,11 @@ async def reclassify_existing_jobs(
                 for j in rescored:
                     if j.get("id") and j.get("archetype"):
                         # Don't overwrite match_score — only add archetype + legitimacy
-                        db.table("jobs").update({
+                        await aexecute(db.table("jobs").update({
                             "archetype": j.get("archetype"),
                             "legitimacy_tier": j.get("legitimacy_tier"),
                             "legitimacy_signals": j.get("legitimacy_signals", []),
-                        }).eq("id", j["id"]).execute()
+                        }).eq("id", j["id"]))
             except Exception as e:
                 logger.error(f"Reclassify batch failed: {e}")
 
@@ -2118,9 +2108,9 @@ async def generate_resume_for_job(
         pipeline = JobHuntPipeline()
         try:
             await pipeline._process_single_job(job)
-            db.table("jobs").update({
+            await aexecute(db.table("jobs").update({
                 "resume_generated_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", job_id).eq("user_id", str(user.id)).execute()
+            }).eq("id", job_id).eq("user_id", str(user.id)))
         except Exception as e:
             logger.error(f"Resume generation failed for job {job_id}: {e}")
 
@@ -2198,13 +2188,12 @@ async def prep_interview_for_job(
     resolved_application_id = application_id
     if not resolved_application_id:
         apps = (
-            db.table("applications")
+            await aexecute(db.table("applications")
             .select("id, status, created_at")
             .eq("user_id", str(user.id))
             .eq("job_id", job_id)
             .order("created_at", desc=True)
-            .limit(1)
-            .execute()
+            .limit(1))
         )
         if not apps.data:
             raise HTTPException(
@@ -2513,7 +2502,7 @@ async def create_application(
     db = get_supabase()
     uid = str(user.id)
     job_result = (
-        db.table("jobs").select("*").eq("id", payload.job_id).eq("user_id", uid).limit(1).execute()
+        await aexecute(db.table("jobs").select("*").eq("id", payload.job_id).eq("user_id", uid).limit(1))
     )
     job_rows = job_result.data or []
     if not job_rows:
@@ -2532,7 +2521,7 @@ async def create_application(
         "company_id": job.get("company_id"),
         "user_id": uid,
     }
-    result = db.table("applications").insert(row).execute()
+    result = await aexecute(db.table("applications").insert(row))
     return {"created": True, "row": (result.data or [None])[0]}
 
 
@@ -2552,11 +2541,10 @@ async def update_application(
         from datetime import date
         updates["applied_date"] = date.today().isoformat()
     result = (
-        db.table("applications")
+        await aexecute(db.table("applications")
         .update(updates)
         .eq("user_id", str(user.id))
-        .eq("id", app_id)
-        .execute()
+        .eq("id", app_id))
     )
     rows = result.data or []
     if not rows:
@@ -2598,13 +2586,12 @@ async def get_outcome_by_job(job_id: int, user: "User" = Depends(get_current_use
     """
     db = get_supabase()
     result = (
-        db.table("resume_outcomes")
+        await aexecute(db.table("resume_outcomes")
         .select("*")
         .eq("user_id", str(user.id))
         .eq("job_id", job_id)
         .order("logged_at", desc=True)
-        .limit(1)
-        .execute()
+        .limit(1))
     )
     rows = result.data or []
     return {"outcome": rows[0] if rows else None}
@@ -2639,12 +2626,11 @@ async def upsert_outcome(
     # Case 1: resume_build_id provided — find by it (tenant-scoped)
     if payload_dict.get("resume_build_id"):
         existing = (
-            db.table("resume_outcomes")
+            await aexecute(db.table("resume_outcomes")
             .select("id")
             .eq("user_id", uid)
             .eq("resume_build_id", payload_dict["resume_build_id"])
-            .limit(1)
-            .execute()
+            .limit(1))
         )
         if existing.data:
             target_id = existing.data[0]["id"]
@@ -2652,24 +2638,22 @@ async def upsert_outcome(
     # Case 2: fall back to job_id-based update (tenant-scoped)
     elif payload_dict.get("job_id"):
         existing = (
-            db.table("resume_outcomes")
+            await aexecute(db.table("resume_outcomes")
             .select("id")
             .eq("user_id", uid)
             .eq("job_id", payload_dict["job_id"])
             .order("logged_at", desc=True)
-            .limit(1)
-            .execute()
+            .limit(1))
         )
         if existing.data:
             target_id = existing.data[0]["id"]
 
     if target_id:
         result = (
-            db.table("resume_outcomes")
+            await aexecute(db.table("resume_outcomes")
             .update(payload_dict)
             .eq("user_id", uid)
-            .eq("id", target_id)
-            .execute()
+            .eq("id", target_id))
         )
         return {"updated": True, "row": (result.data or [None])[0]}
 
@@ -2678,18 +2662,17 @@ async def upsert_outcome(
     # persona aggregation.
     if not payload_dict.get("company_name") and payload_dict.get("job_id"):
         job_lookup = (
-            db.table("jobs")
+            await aexecute(db.table("jobs")
             .select("company")
             .eq("user_id", uid)
             .eq("id", payload_dict["job_id"])
-            .limit(1)
-            .execute()
+            .limit(1))
         )
         if job_lookup.data:
             payload_dict["company_name"] = job_lookup.data[0]["company"]
 
     payload_dict["user_id"] = uid
-    result = db.table("resume_outcomes").insert(payload_dict).execute()
+    result = await aexecute(db.table("resume_outcomes").insert(payload_dict))
     return {"created": True, "row": (result.data or [None])[0]}
 
 
@@ -2704,12 +2687,11 @@ async def patch_outcome(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     result = (
-        get_supabase()
+        await aexecute(get_supabase()
         .table("resume_outcomes")
         .update(updates)
         .eq("user_id", str(user.id))
-        .eq("id", outcome_id)
-        .execute()
+        .eq("id", outcome_id))
     )
     rows = result.data or []
     if not rows:
@@ -2731,7 +2713,7 @@ async def get_conversion_funnel(_auth=Depends(verify_service_secret)):
     """
     from db.client import get_supabase
     try:
-        result = get_supabase().table("v_company_conversion_funnel").select("*").execute()
+        result = await aexecute(get_supabase().table("v_company_conversion_funnel").select("*"))
         return {"funnel": result.data or []}
     except Exception as e:
         # View may not exist yet on dev DBs that haven't run multi_llm_schema
@@ -2775,10 +2757,9 @@ async def trigger_persona_synthesis(
     if quality_filter and not company_name:
         from db.client import get_supabase
         rows = (
-            get_supabase()
+            (await aexecute(get_supabase()
             .table("company_personas")
-            .select("company_name, metadata")
-            .execute()
+            .select("company_name, metadata")))
             .data
         ) or []
         filtered_names = [
@@ -2963,12 +2944,11 @@ async def trigger_refresh_news(
 
     # All targets — BUG-013: exclude phantoms from the news-refresh roster.
     rows = (
-        get_supabase()
+        (await aexecute(get_supabase()
         .table("companies")
         .select("name")
         .eq("is_target", True)
-        .eq("is_phantom", False)
-        .execute()
+        .eq("is_phantom", False)))
         .data or []
     )
     company_names = [r["name"] for r in rows]
@@ -3024,14 +3004,13 @@ async def trigger_deep_research_batch(
     )
     if priority:
         q = q.eq("priority", priority)
-    rows = q.execute().data or []
+    rows = (await aexecute(q)).data or []
     company_names = [r["name"] for r in rows]
 
     if only_missing:
         existing = (
-            db.table("company_personas")
-            .select("company_name")
-            .execute()
+            (await aexecute(db.table("company_personas")
+            .select("company_name")))
             .data or []
         )
         have = {r["company_name"] for r in existing}
@@ -3075,24 +3054,22 @@ async def list_personas(user: "User" = Depends(get_current_user)):
     db = get_supabase()
     uid = str(user.id)
     result = (
-        db.table("company_personas")
+        await aexecute(db.table("company_personas")
         .select(
             "company_name, persona_version, n_examples_used, "
             "last_synthesized_at, metadata, ats_keyword_bank"
         )
         .eq("user_id", uid)
-        .order("last_synthesized_at", desc=True)
-        .execute()
+        .order("last_synthesized_at", desc=True))
     )
     rows = result.data or []
     phantom_names = {
         r["name"]
         for r in (
-            db.table("companies")
+            (await aexecute(db.table("companies")
             .select("name")
             .eq("user_id", uid)
-            .eq("is_phantom", True)
-            .execute()
+            .eq("is_phantom", True)))
             .data
             or []
         )
@@ -3109,13 +3086,12 @@ async def list_personas(user: "User" = Depends(get_current_user)):
 async def get_persona(company_name: str, user: "User" = Depends(get_current_user)):
     """Full persona row for a single company (incl. system_prompt_template) — caller's tenant."""
     result = (
-        get_supabase()
+        await aexecute(get_supabase()
         .table("company_personas")
         .select("*")
         .eq("user_id", str(user.id))
         .eq("company_name", company_name)
-        .limit(1)
-        .execute()
+        .limit(1))
     )
     rows = result.data or []
     if not rows:
@@ -3171,10 +3147,9 @@ async def costs_summary(_auth=Depends(verify_service_secret)):
 
     try:
         rows_30d = (
-            db.table("agent_call_log")
+            (await aexecute(db.table("agent_call_log")
             .select("called_at, cost_usd, input_tokens, output_tokens, latency_ms, resume_build_id")
-            .gte("called_at", (now - timedelta(days=30)).isoformat())
-            .execute()
+            .gte("called_at", (now - timedelta(days=30)).isoformat())))
             .data
         ) or []
     except Exception as e:
@@ -3225,11 +3200,10 @@ async def costs_daily(days: int = 30, _auth=Depends(verify_service_secret)):
 
     try:
         result = (
-            db.table("v_daily_llm_cost")
+            await aexecute(db.table("v_daily_llm_cost")
             .select("*")
             .gte("day", cutoff)
-            .order("day", desc=False)
-            .execute()
+            .order("day", desc=False))
         )
         return {"days": days, "rows": result.data or []}
     except Exception as e:
@@ -3250,9 +3224,9 @@ async def costs_by_provider(days: int = 7, _auth=Depends(verify_service_secret))
     """
     from db.client import get_supabase
     try:
-        result = get_supabase().rpc(
+        result = await aexecute(get_supabase().rpc(
             "cost_by_provider_window", {"days_back": days}
-        ).execute()
+        ))
         rows = result.data or []
         # cost_usd comes back as numeric → JSON string in some configs;
         # coerce to float for predictable shape
@@ -3267,7 +3241,7 @@ async def costs_by_provider(days: int = 7, _auth=Depends(verify_service_secret))
         )
 
     # Fallback: legacy Python aggregation
-    rows = _cost_window_query(days).execute().data or []
+    rows = (await aexecute(_cost_window_query(days))).data or []
     agg: dict[str, dict] = {}
     for r in rows:
         p = r.get("provider") or "(unknown)"
@@ -3298,9 +3272,9 @@ async def costs_by_agent(days: int = 7, _auth=Depends(verify_service_secret)):
     """
     from db.client import get_supabase
     try:
-        result = get_supabase().rpc(
+        result = await aexecute(get_supabase().rpc(
             "cost_by_agent_window", {"days_back": days}
-        ).execute()
+        ))
         rows = result.data or []
         for r in rows:
             r["cost_usd"] = float(r.get("cost_usd") or 0)
@@ -3316,7 +3290,7 @@ async def costs_by_agent(days: int = 7, _auth=Depends(verify_service_secret)):
         )
 
     # Fallback: legacy Python aggregation
-    rows = _cost_window_query(days).execute().data or []
+    rows = (await aexecute(_cost_window_query(days))).data or []
     agg: dict[str, dict] = {}
     for r in rows:
         a_name = r.get("agent_name") or "(unknown)"
@@ -3356,7 +3330,7 @@ async def costs_health(_auth=Depends(verify_service_secret)):
     from db.client import get_supabase
     try:
         result = (
-            get_supabase().table("v_agent_call_health").select("*").execute()
+            await aexecute(get_supabase().table("v_agent_call_health").select("*"))
         )
         rows = result.data or []
         # Coerce numerics for predictable JSON shape
@@ -3389,7 +3363,7 @@ async def costs_log_stats(_auth=Depends(verify_service_secret)):
     from db.client import get_supabase
     try:
         result = (
-            get_supabase().table("v_agent_call_log_stats").select("*").execute()
+            await aexecute(get_supabase().table("v_agent_call_log_stats").select("*"))
         )
         rows = result.data or []
         if not rows:
@@ -3420,9 +3394,9 @@ async def costs_cleanup(
     """
     from db.client import get_supabase
     try:
-        result = get_supabase().rpc(
+        result = await aexecute(get_supabase().rpc(
             "cleanup_agent_call_log", {"days_to_keep": request.days_to_keep}
-        ).execute()
+        ))
         deleted = result.data
         if isinstance(deleted, list):
             deleted = deleted[0] if deleted else 0
@@ -3482,13 +3456,12 @@ async def get_last_alerts(_auth=Depends(verify_service_secret)):
     from db.client import get_supabase
     try:
         result = (
-            get_supabase()
+            await aexecute(get_supabase()
             .table("boss_audit_log")
             .select("id, run_date, digest_content, digest_sent, created_at")
             .ilike("digest_content", "%cost-alerter:%")
             .order("created_at", desc=True)
-            .limit(10)
-            .execute()
+            .limit(10))
         )
         return {"alerts": result.data or []}
     except Exception as e:
@@ -3505,7 +3478,7 @@ async def costs_by_resume_build(limit: int = 20, _auth=Depends(verify_service_se
     from db.client import get_supabase
     db = get_supabase()
     # Pull rows that have a resume_build_id in the last 90 days, aggregate in Python
-    rows = _cost_window_query(90).execute().data or []
+    rows = (await aexecute(_cost_window_query(90))).data or []
     agg: dict[str, dict] = {}
     for r in rows:
         rb = r.get("resume_build_id")
@@ -3524,10 +3497,9 @@ async def costs_by_resume_build(limit: int = 20, _auth=Depends(verify_service_se
     if agg:
         try:
             build_rows = (
-                db.table("resume_builds")
+                (await aexecute(db.table("resume_builds")
                 .select("id, company_name, polisher_score, status, ats_score_a, ats_score_b, iterations, created_at")
-                .in_("id", list(agg.keys()))
-                .execute()
+                .in_("id", list(agg.keys()))))
                 .data
             ) or []
             build_map = {b["id"]: b for b in build_rows}
@@ -3584,7 +3556,7 @@ async def costs_recent_calls(
         q = q.is_("error", "null")
 
     try:
-        result = q.execute()
+        result = await aexecute(q)
         return {"calls": result.data or []}
     except Exception as e:
         logger.warning(f"recent-calls query failed: {e}")
@@ -3686,28 +3658,25 @@ async def admin_worker_status(_admin: "User" = Depends(require_admin)):
     db = get_supabase()
 
     # Last dequeued job
-    last_dequeued = (db.table("jobs_runs")
+    last_dequeued = (await aexecute(db.table("jobs_runs")
         .select("started_at")
         .not_.is_("started_at", "null")
         .order("started_at", desc=True)
-        .limit(1)
-        .execute())
+        .limit(1)))
     last_dequeued_at = last_dequeued.data[0]["started_at"] if last_dequeued.data else None
 
     # Currently running jobs
-    running = (db.table("jobs_runs")
+    running = (await aexecute(db.table("jobs_runs")
         .select("id, kind, started_at, attempts, status")
-        .eq("status", "running")
-        .execute())
+        .eq("status", "running")))
 
     # Queued jobs older than 60 min
     cutoff_60 = (datetime.now(timezone.utc) - timedelta(minutes=60)).isoformat()
-    old_queued = (db.table("jobs_runs")
+    old_queued = (await aexecute(db.table("jobs_runs")
         .select("count", head=True)
         .eq("status", "queued")
         .is_("started_at", "null")
-        .lt("created_at", cutoff_60)
-        .execute())
+        .lt("created_at", cutoff_60)))
 
     return {
         "redis_ping": redis_ping,
@@ -3735,13 +3704,12 @@ async def admin_requeue_stuck(_admin: "User" = Depends(require_admin)):
     db = get_supabase()
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
 
-    rows = (db.table("jobs_runs")
+    rows = (await aexecute(db.table("jobs_runs")
         .select("id, kind, payload, attempts, user_id")
         .eq("status", "queued")
         .is_("started_at", "null")
         .lt("created_at", cutoff)
-        .lt("attempts", 3)
-        .execute())
+        .lt("attempts", 3)))
 
     from api.queue import _get_queue  # local: avoids module-load cycle
     from api.orphan_reaper import _KIND_TO_WORKER
@@ -3755,9 +3723,9 @@ async def admin_requeue_stuck(_admin: "User" = Depends(require_admin)):
         try:
             q = _get_queue()
             q.enqueue(worker_func, row["id"])
-            db.table("jobs_runs").update({
+            await aexecute(db.table("jobs_runs").update({
                 "attempts": (row.get("attempts") or 0) + 1,
-            }).eq("id", row["id"]).execute()
+            }).eq("id", row["id"]))
             requeued += 1
         except Exception as e:
             logger.error("B1: failed to requeue jobs_run %s: %s", row["id"], e)
