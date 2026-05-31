@@ -3130,6 +3130,96 @@ async def trigger_deep_research_batch(
     }
 
 
+@app.post("/admin/personas/rebuild-all")
+async def admin_rebuild_personas(
+    background_tasks: BackgroundTasks,
+    below: str = "medium",
+    include_missing: bool = True,
+    limit: int = 200,
+    _admin: "User" = Depends(require_admin),
+):
+    """Re-run deep-research for every target company whose persona quality is
+    below `below` (default 'medium' → rebuilds 'low' + 'unknown'), plus any
+    target company with NO persona when include_missing=True.
+
+    This is the "improve persona quality of all companies" batch: it's what
+    unblocks G2 resume builds that the persona-quality gate refuses. Admin-only.
+    Runs sequentially in the background; returns the planned roster + each
+    company's CURRENT quality so you can see what's being upgraded.
+
+    IMPORTANT: deep-research pulls web data via Apify. If APIFY_TOKEN is
+    missing/expired/out-of-credit, every rebuild produces another 'low' persona
+    and burns LLM spend for nothing — confirm /debug/apify-check first. The
+    response echoes a reminder.
+    """
+    from db.client import get_supabase
+
+    QUALITY_RANK = {"low": 0, "medium": 1, "high": 2}
+    threshold = QUALITY_RANK.get((below or "medium").lower(), 1)
+
+    db = get_supabase()
+    # All non-phantom target companies.
+    targets = (await aexecute(
+        db.table("companies")
+        .select("name")
+        .eq("is_target", True)
+        .eq("is_phantom", False)
+    )).data or []
+    target_names = [r["name"] for r in targets if r.get("name")]
+
+    # Current persona quality per company (from metadata.persona_quality).
+    personas = (await aexecute(
+        db.table("company_personas").select("company_name, metadata")
+    )).data or []
+    quality_by_company: dict[str, str] = {}
+    for p in personas:
+        meta = p.get("metadata") or {}
+        q = (meta.get("persona_quality") or "unknown").lower()
+        quality_by_company[p.get("company_name")] = q
+
+    plan: list[dict] = []
+    for name in target_names:
+        cur = quality_by_company.get(name)
+        if cur is None:
+            if include_missing:
+                plan.append({"company": name, "current_quality": "missing"})
+            continue
+        rank = QUALITY_RANK.get(cur, -1)  # 'unknown' → -1, always below
+        if rank < threshold:
+            plan.append({"company": name, "current_quality": cur})
+
+    plan = plan[: max(0, limit)]
+    rebuild_names = [p["company"] for p in plan]
+
+    async def _run():
+        from agents.persona_deep_research import deep_research_persona
+        for name in rebuild_names:
+            try:
+                r = await deep_research_persona(name)
+                logger.info(
+                    "[rebuild-all] %s: quality=%s sources=%s cost=$%.4f",
+                    name, r.persona_quality, r.sources_count, r.cost_usd,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[rebuild-all] %s failed: %s", name, e)
+
+    background_tasks.add_task(_run)
+    return {
+        "status": "started",
+        "below_threshold": below,
+        "include_missing": include_missing,
+        "targets_total": len(target_names),
+        "rebuild_count": len(rebuild_names),
+        "plan": plan,
+        "est_minutes": len(rebuild_names) * 2,
+        "reminder": (
+            "Deep-research uses Apify. If personas still come back 'low', "
+            "check /debug/apify-check — APIFY_TOKEN is likely missing/expired/"
+            "out-of-credit."
+        ),
+    }
+
+
 @app.get("/personas")
 async def list_personas(user: "User" = Depends(get_current_user)):
     """List all company_personas with quality + version info (caller's tenant).
