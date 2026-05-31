@@ -156,6 +156,7 @@ ALLOWLIST = frozenset({
     ("server.py", "trigger_persona_synthesis"),    # [cron/system batch] PersonaSynthesizer across companies
     ("server.py", "trigger_refresh_news"),         # [cron/system batch] daily news refresh across targets
     ("server.py", "trigger_deep_research_batch"),  # [cron/system batch] deep-research roster across targets
+    ("server.py", "admin_rebuild_personas"),       # [admin] system-wide persona rebuild across all target companies (require_admin)
     # ── api/server.py — global cost observability (verify_service_secret) ──
     ("server.py", "_cost_window_query"),           # [helper] agent_call_log window builder for /costs/*
     ("server.py", "costs_summary"),                # [global obs] agent_call_log rollup
