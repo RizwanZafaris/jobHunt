@@ -73,6 +73,10 @@ async def entry_node(state: InterviewPrepState) -> dict:
         company_name=company_name,
         round_type=round_type,
         round_number=round_number,
+        # Forward the tenant resolved by g3_run (falls back to the seed UUID
+        # inside create_interview_prep if absent) so interview_prep.user_id —
+        # which is NOT NULL — is always set and the row is retrievable.
+        user_id=state.get("user_id"),
     )
 
     return {
