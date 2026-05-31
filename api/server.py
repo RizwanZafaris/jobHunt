@@ -1230,9 +1230,17 @@ class ResumeBuildFeedback(BaseModel):
     user_feedback: Optional[str] = None
 
 
-def _safe_resume_build_row(row: dict) -> dict:
-    """Strip noisy fields; return a UI-shaped dict."""
-    return {
+def _safe_resume_build_row(row: dict, *, include_md: bool = False) -> dict:
+    """Strip noisy fields; return a UI-shaped dict.
+
+    2026-05-31: now surfaces the build scores (polisher/ATS) always, and
+    the full resume markdown when `include_md=True`. The heavy resume_md
+    blob (~7KB/build) is gated so the by-job LIST endpoint stays lean,
+    while the single-build GET returns it for inline preview. Before this
+    fix the resume text was never exposed at all, so even a converged
+    build looked empty in the dashboard.
+    """
+    out = {
         "id":                row.get("id"),
         "job_id":            row.get("job_id"),
         "company_name":      row.get("company_name"),
@@ -1242,6 +1250,9 @@ def _safe_resume_build_row(row: dict) -> dict:
         "latency_ms_total":  row.get("latency_ms_total"),
         "resume_pdf_url":    row.get("resume_pdf_url"),
         "resume_docx_url":   row.get("resume_docx_url"),
+        "polisher_score":    row.get("polisher_score"),
+        "ats_score_a":       row.get("ats_score_a"),
+        "ats_score_b":       row.get("ats_score_b"),
         "cover_email_md":    row.get("cover_email_md"),
         "user_rating":       row.get("user_rating"),
         "user_feedback":     row.get("user_feedback"),
@@ -1250,7 +1261,13 @@ def _safe_resume_build_row(row: dict) -> dict:
         "created_at":        row.get("created_at"),
         "finalized_at":      row.get("finalized_at"),
         "error":             row.get("error"),
+        # Convenience flag so the UI can render a "view/download" affordance
+        # without shipping the whole blob in list responses.
+        "has_resume_md":     bool(row.get("resume_md")),
     }
+    if include_md:
+        out["resume_md"] = row.get("resume_md")
+    return out
 
 
 @app.get("/resume-builds/by-job/{job_id}")
@@ -1287,7 +1304,7 @@ async def get_resume_build(build_id: str, user: "User" = Depends(get_current_use
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Resume build not found")
-    return _safe_resume_build_row(rows[0])
+    return _safe_resume_build_row(rows[0], include_md=True)
 
 
 @app.get("/resume-builds/{build_id}/markdown")
@@ -1304,7 +1321,7 @@ async def get_resume_build_markdown(
     db = get_supabase()
     rb = (await aexecute(
         db.table("resume_builds")
-        .select("id, job_id, user_edited_md, user_edited_at")
+        .select("id, job_id, user_edited_md, user_edited_at, resume_md")
         .eq("id", build_id)
         .eq("user_id", str(user.id))
         .limit(1)
@@ -1318,7 +1335,17 @@ async def get_resume_build_markdown(
         md = rb["user_edited_md"]
         return {"markdown": md, "source": "user_edit", "byte_size": len(md.encode("utf-8"))}
 
-    # 2. Fall back to canonical Storage URL on the jobs row (also user-scoped).
+    # 2. Canonical DB column — always populated by finalize_resume_build on a
+    #    converged build. 2026-05-31: this is now the primary source, ahead of
+    #    the Storage URL round-trip below, which only ever held a copy and was
+    #    frequently null (the upload depended on pandoc/Storage that silently
+    #    failed). Reading the column makes preview reliable + avoids a network
+    #    hop on every open.
+    if rb.get("resume_md"):
+        md = rb["resume_md"]
+        return {"markdown": md, "source": "db_column", "byte_size": len(md.encode("utf-8"))}
+
+    # 3. Fall back to canonical Storage URL on the jobs row (also user-scoped).
     job = (await aexecute(
         db.table("jobs")
         .select("resume_path")
@@ -1418,26 +1445,35 @@ async def download_resume_build(
 ):
     """Download a resume in the chosen format.
 
-    Currently supports:
-      - md (markdown, the canonical format)
+    Supports:
+      - md   markdown (canonical format)
+      - docx Word document, rendered on-demand from the markdown via
+             python-docx (no pandoc, no Storage round-trip)
+      - pdf  PDF, rendered on-demand via reportlab
 
-    docx/pdf are deliberately not implemented yet — they need a
-    pandoc/python-docx pipeline. Track at GH issue when you need them.
-    For now copy-paste the markdown into Pages/Word; the Phase 2.0
-    typography is intentionally clean enough to render verbatim.
+    2026-05-31: docx/pdf are now rendered live from the resume markdown.
+    Source precedence for the markdown is:
+        1. resume_builds.user_edited_md  (the user's saved override)
+        2. resume_builds.resume_md       (canonical DB column — always
+           populated by finalize_resume_build on a converged build)
+        3. jobs.resume_path Storage URL  (legacy fallback only)
+    Previously this hard-400'd on docx/pdf and read only from the flaky
+    Storage URL, which is why converged builds appeared to produce
+    nothing downloadable. See resume_agents/render.py for the why.
     """
     import httpx
     fmt = (fmt or "md").lower()
-    if fmt != "md":
+    SUPPORTED = {"md", "docx", "pdf"}
+    if fmt not in SUPPORTED:
         raise HTTPException(
             status_code=400,
-            detail=f"format '{fmt}' not yet supported — only 'md' for now",
+            detail=f"format '{fmt}' not supported — choose one of {sorted(SUPPORTED)}",
         )
 
     db = get_supabase()
     rb = (await aexecute(
         db.table("resume_builds")
-        .select("id, job_id, company_name, user_edited_md")
+        .select("id, job_id, company_name, user_edited_md, resume_md")
         .eq("id", build_id)
         .eq("user_id", str(user.id))
         .limit(1)
@@ -1446,8 +1482,8 @@ async def download_resume_build(
         raise HTTPException(status_code=404, detail="Resume build not found")
     rb = rb[0]
 
-    # Source: user edit if present, else canonical Storage URL (user-scoped).
-    md = rb.get("user_edited_md")
+    # Source precedence: user edit → canonical DB column → legacy Storage URL.
+    md = rb.get("user_edited_md") or rb.get("resume_md")
     if not md:
         job = (await aexecute(
             db.table("jobs")
@@ -1470,11 +1506,34 @@ async def download_resume_build(
         raise HTTPException(status_code=404, detail="No resume content to download")
 
     company = (rb.get("company_name") or "company").lower().replace(" ", "-")
-    filename = f"resume_{company}_{rb['id'][:8]}.md"
+    stem = f"resume_{company}_{rb['id'][:8]}"
+
+    if fmt == "md":
+        return Response(
+            content=md,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.md"'},
+        )
+
+    # docx / pdf — render on demand from the markdown.
+    from resume_agents.render import markdown_to_docx_bytes, markdown_to_pdf_bytes
+    if fmt == "docx":
+        data = markdown_to_docx_bytes(md)
+        media = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    else:  # pdf
+        data = markdown_to_pdf_bytes(md)
+        media = "application/pdf"
+
+    if not data:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{fmt.upper()} rendering unavailable; retry with fmt=md",
+        )
+
     return Response(
-        content=md,
-        media_type="text/markdown",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        content=data,
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{stem}.{fmt}"'},
     )
 
 

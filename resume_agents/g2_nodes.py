@@ -2103,36 +2103,40 @@ async def export_node(state: ResumeState) -> dict:
     else:
         status = "converged"
 
-    # ─── Render DOCX (via existing helper if present) ────────────────
+    # ─── Render DOCX + PDF and upload artifacts ──────────────────────
+    # 2026-05-31: switched from a pandoc subprocess (never installed in the
+    # API/worker images → always returned b"" → docx_url stayed None) to
+    # the pure-Python renderers in resume_agents/render.py (python-docx +
+    # reportlab, both already pinned). The canonical resume_md is persisted
+    # to the DB by finalize_resume_build regardless, and the download
+    # endpoint renders on-demand too — so these uploads are now a
+    # best-effort convenience, not the only path to a usable resume.
     docx_url = None
+    pdf_url = None
     md_url = None
     try:
         from db.client import upload_artifact
+        from resume_agents.render import markdown_to_docx_bytes, markdown_to_pdf_bytes
         import os, tempfile
 
-        # Markdown upload
+        slug = company_name.lower().replace(" ", "-")
+
+        # Markdown upload (legacy compatibility; resume_md DB column is canonical)
         with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8") as f:
             f.write(resume_md)
             md_path = f.name
         try:
             md_url = upload_artifact(
                 local_path=md_path,
-                remote_path=f"resumes/{company_name.lower().replace(' ', '-')}/{resume_build_id}.md",
+                remote_path=f"resumes/{slug}/{resume_build_id}.md",
                 content_type="text/markdown",
             )
         finally:
             if os.path.exists(md_path):
                 os.unlink(md_path)
 
-        # DOCX via pandoc — reuse the helper from pipeline.py if it lives there
-        try:
-            from pipeline import JobHuntPipeline
-            docx_bytes = JobHuntPipeline._md_to_docx_bytes(resume_md) if hasattr(
-                JobHuntPipeline, "_md_to_docx_bytes"
-            ) else _local_md_to_docx(resume_md)
-        except Exception:
-            docx_bytes = _local_md_to_docx(resume_md)
-
+        # DOCX via python-docx (no system deps)
+        docx_bytes = markdown_to_docx_bytes(resume_md)
         if docx_bytes:
             with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
                 f.write(docx_bytes)
@@ -2140,12 +2144,28 @@ async def export_node(state: ResumeState) -> dict:
             try:
                 docx_url = upload_artifact(
                     local_path=docx_path,
-                    remote_path=f"resumes/{company_name.lower().replace(' ', '-')}/{resume_build_id}.docx",
+                    remote_path=f"resumes/{slug}/{resume_build_id}.docx",
                     content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
             finally:
                 if os.path.exists(docx_path):
                     os.unlink(docx_path)
+
+        # PDF via reportlab (no system deps)
+        pdf_bytes = markdown_to_pdf_bytes(resume_md)
+        if pdf_bytes:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                f.write(pdf_bytes)
+                pdf_path = f.name
+            try:
+                pdf_url = upload_artifact(
+                    local_path=pdf_path,
+                    remote_path=f"resumes/{slug}/{resume_build_id}.pdf",
+                    content_type="application/pdf",
+                )
+            finally:
+                if os.path.exists(pdf_path):
+                    os.unlink(pdf_path)
     except Exception as e:
         logger.warning(f"G2 export upload failed: {e}")
 
@@ -2159,7 +2179,7 @@ async def export_node(state: ResumeState) -> dict:
         polisher_score=state.get("final_score"),
         resume_md=resume_md,
         resume_docx_url=docx_url,
-        resume_pdf_url=None,
+        resume_pdf_url=pdf_url,
         cover_email_md=cover_email_md,
         agent_transcript=state.get("transcript", []),
         cost_usd_total=state.get("cost_usd_total", 0),
@@ -2170,8 +2190,13 @@ async def export_node(state: ResumeState) -> dict:
     try:
         from db.client import get_supabase
         from datetime import datetime, timezone
+        # resume_path is consumed as TEXT (httpx .get(...).text) by the
+        # markdown + download endpoints, so it must point at the markdown
+        # object, not the DOCX. Prefer md_url; fall back to docx only if the
+        # md upload failed (the endpoints now read the resume_md DB column
+        # first anyway, so this is a tertiary safety net).
         get_supabase().table("jobs").update({
-            "resume_path": docx_url or md_url,
+            "resume_path": md_url or docx_url,
             "resume_generated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", job_id).execute()
     except Exception as e:
@@ -2179,6 +2204,7 @@ async def export_node(state: ResumeState) -> dict:
 
     return {
         "resume_docx_url": docx_url,
+        "resume_pdf_url": pdf_url,
         "transcript": [
             make_turn(
                 node="export",
@@ -2187,6 +2213,7 @@ async def export_node(state: ResumeState) -> dict:
                     "iterations": iteration,
                     "polisher_score": state.get("final_score"),
                     "docx_url": docx_url,
+                    "pdf_url": pdf_url,
                     "md_url": md_url,
                 },
             )
@@ -2194,23 +2221,7 @@ async def export_node(state: ResumeState) -> dict:
     }
 
 
-def _local_md_to_docx(md: str) -> bytes:
-    """Local pandoc fallback. Returns empty bytes if pandoc unavailable."""
-    import subprocess, tempfile, os
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8") as f:
-            f.write(md)
-            md_path = f.name
-        docx_path = md_path.replace(".md", ".docx")
-        subprocess.run(
-            ["pandoc", md_path, "-o", docx_path],
-            check=True, capture_output=True, timeout=30,
-        )
-        with open(docx_path, "rb") as f:
-            data = f.read()
-        os.unlink(md_path)
-        os.unlink(docx_path)
-        return data
-    except Exception as e:
-        logger.warning(f"pandoc unavailable for DOCX render: {e}")
-        return b""
+# NOTE: the former `_local_md_to_docx` pandoc-subprocess helper was removed
+# 2026-05-31. pandoc was never installed in the API/worker images, so it
+# always raised and returned b"". DOCX/PDF rendering now lives in
+# resume_agents/render.py (pure-Python python-docx + reportlab).
