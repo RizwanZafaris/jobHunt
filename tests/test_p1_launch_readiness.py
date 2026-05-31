@@ -116,8 +116,9 @@ def test_b11_target_coverage_returns_empty_on_no_targets(monkeypatch):
     fake_user = SimpleNamespace(id=uuid4())
 
     stub_db = _StubQuery(results_by_table={"companies": []})
-    from db import client as db_client
-    monkeypatch.setattr(db_client, "get_supabase", lambda: stub_db)
+    # Patch where the name is looked up: api.network imported get_supabase at
+    # module load, so patching db.client.get_supabase would not rebind it.
+    monkeypatch.setattr("api.network.get_supabase", lambda: stub_db)
 
     out = target_coverage(user=fake_user)
     assert out == []
