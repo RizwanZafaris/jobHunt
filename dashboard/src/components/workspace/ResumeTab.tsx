@@ -31,6 +31,7 @@ import {
   downloadResumeHref,
   fetchJobsRun,
   fetchWorkspace,
+  ResumeBuildGateError,
 } from '@/lib/api/workspace'
 import type { ResumeArtifact } from '@/lib/types/workspace'
 
@@ -60,6 +61,9 @@ export function ResumeTab({ jobId, resume, onResumeUpdated }: ResumeTabProps) {
   const [buildStatus, setBuildStatus] = useState<string>('')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [statusMsg, setStatusMsg] = useState<string>('')
+  // A retryable build gate (persona quality / posting closed / validation) —
+  // when set, we show the backend's reason + a "Build anyway" (force) button.
+  const [gate, setGate] = useState<ResumeBuildGateError | null>(null)
   // Local override of resume (so a save updates the view immediately).
   const [localResume, setLocalResume] = useState<ResumeArtifact | null>(resume)
   useEffect(() => {
@@ -94,18 +98,24 @@ export function ResumeTab({ jobId, resume, onResumeUpdated }: ResumeTabProps) {
     setStatusMsg('Resume edits saved')
   }, [onResumeUpdated])
 
-  const handleBuild = useCallback(async () => {
+  const handleBuild = useCallback(async (opts?: { force?: boolean }) => {
     setBuilding(true)
     setErrorMsg(null)
+    setGate(null)
     setBuildStatus('Queueing G2 build…')
     try {
-      const queued = await buildResume(jobId)
+      const queued = await buildResume(jobId, { force: opts?.force })
       pollStarted.current = Date.now()
       pollRun(queued.run_id)
     } catch (err) {
       setBuilding(false)
       setBuildStatus('')
-      setErrorMsg(err instanceof Error ? err.message : String(err))
+      if (err instanceof ResumeBuildGateError && err.retryWithForce) {
+        // Surface the real reason + offer a force retry instead of a dead end.
+        setGate(err)
+      } else {
+        setErrorMsg(err instanceof Error ? err.message : String(err))
+      }
     }
     // pollRun handles unwind on success/failure.
     function pollRun(runId: string) {
@@ -158,8 +168,42 @@ export function ResumeTab({ jobId, resume, onResumeUpdated }: ResumeTabProps) {
     }
   }, [jobId, onResumeUpdated])
 
+  // Reusable "Build anyway" gate panel — shown when the backend refuses a
+  // build for a reason the user can override with force=true (low-quality
+  // persona, closed posting, failed validation).
+  const gatePanel = gate ? (
+    <Card tone="warning" padding="sm">
+      <div className="flex flex-col gap-2">
+        <div className="flex items-start gap-2">
+          <Icon name="alert-triangle" size={14} className="mt-0.5 text-warning" />
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-fg">Build paused — needs your OK</p>
+            <p className="mt-0.5 text-2xs text-fg-muted leading-relaxed">{gate.message}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="warning"
+            size="sm"
+            onClick={() => handleBuild({ force: true })}
+            loading={building}
+          >
+            <Icon name="rocket" size={12} />
+            Build anyway
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setGate(null)} disabled={building}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </Card>
+  ) : null
+
   // ── No resume yet ─────────────────────────────────────────────
   if (!localResume) {
+    if (gate && !building) {
+      return <div className="flex flex-col gap-3">{gatePanel}</div>
+    }
     return (
       <Card padding="md">
         {building ? (
