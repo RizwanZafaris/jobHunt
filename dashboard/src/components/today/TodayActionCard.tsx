@@ -128,21 +128,6 @@ function isUntrustworthyCompanyChip(value: string): boolean {
   return false
 }
 
-function handleStubClick(kind: TodayAction['primary']['onClick']) {
-  // TODO: replace with real handlers (POST /jobs/:id/build, POST /applications/:id/outcome, copy-to-clipboard)
-  if (typeof window === 'undefined') return
-  const message = kind === 'copy'
-    ? 'Copy handler not yet wired — see _pending_endpoints.md'
-    : kind === 'kickoff_g2'
-    ? 'G2 kickoff endpoint not yet wired — see _pending_endpoints.md'
-    : kind === 'log_outcome'
-    ? 'Outcome logger endpoint not yet wired — see _pending_endpoints.md'
-    : 'Handler not yet wired'
-  // Use alert for now — replace with toast/LiveRegion when those land.
-  // eslint-disable-next-line no-alert
-  window.alert(message)
-}
-
 export interface TodayActionCardProps {
   action: TodayAction
 }
@@ -338,13 +323,17 @@ export function TodayActionCard({ action }: TodayActionCardProps) {
               <Icon name="arrow-right" size={12} />
             </Link>
           ) : (
+            // No wired endpoint yet → disabled affordance with a quiet "Soon"
+            // badge, instead of an enabled button that fired window.alert().
             <button
               type="button"
-              onClick={() => handleStubClick(primary.onClick)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-2xs font-semibold bg-accent text-accent-fg hover:bg-accent-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent transition-colors min-h-9"
+              disabled
+              aria-disabled="true"
+              title="Coming soon"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-2xs font-semibold bg-surface-raised text-fg-subtle opacity-60 cursor-not-allowed min-h-9"
             >
               {primary.label}
-              <Icon name="arrow-right" size={12} />
+              <span className="ml-1 rounded bg-surface px-1 py-0.5 text-3xs text-fg-subtle">Soon</span>
             </button>
           )}
         </div>

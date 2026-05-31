@@ -65,19 +65,28 @@ class TestNetworkClient:
         assert "MOCK_INTRO_DRAFT" not in src, "NetworkClient still references MOCK_INTRO_DRAFT"
 
 
-class TestLinkedInImportButton:
-    def test_does_not_import_mock_summary(self):
-        src = _read("components/network/LinkedInImportButton.tsx")
-        assert "MOCK_IMPORT_SUMMARY" not in src, "LinkedInImportButton still imports MOCK_IMPORT_SUMMARY"
+class TestPeopleFinder:
+    """Network discovery uses the Apollo people-finder against real backend
+    routes — the LinkedIn CSV upload was removed (2026-05-31)."""
 
-    def test_uses_real_fetch(self):
-        src = _read("components/network/LinkedInImportButton.tsx")
-        assert "/api/proxy/network/import/linkedin-csv" in src, "LinkedInImportButton doesn't use real endpoint"
-        assert "fetch(" in src, "LinkedInImportButton missing fetch call"
+    def test_finder_posts_to_real_endpoints(self):
+        src = _read("components/network/PeopleFinderModal.tsx")
+        assert "/api/proxy/apollo/search-people" in src, "finder doesn't call Apollo search"
+        assert "/api/proxy/network/people" in src, "finder doesn't add via /network/people"
 
-    def test_no_mock_delay(self):
-        src = _read("components/network/LinkedInImportButton.tsx")
-        assert "setTimeout" not in src, "LinkedInImportButton still uses artificial delay"
+    def test_no_mock_fallback(self):
+        src = _read("components/network/PeopleFinderModal.tsx")
+        assert "MOCK_IMPORT_SUMMARY" not in src
+        assert "setTimeout" not in src
+
+    def test_csv_upload_button_is_gone(self):
+        # The old CSV component must not exist, and no surface may reference it.
+        assert _read("components/network/LinkedInImportButton.tsx") == ""
+        for rel in ("components/network/NetworkClient.tsx",
+                    "components/workspace/NetworkTab.tsx"):
+            src = _read(rel)
+            assert "LinkedInImportButton" not in src
+            assert "import/linkedin-csv" not in src
 
 
 class TestLibApi:

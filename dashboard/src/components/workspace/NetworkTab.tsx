@@ -1,88 +1,236 @@
 /**
- * NetworkTab — warm-intro paths to THIS company, inside the workspace.
+ * NetworkTab — warm-intro paths to THIS specific company.
  *
- * Shows referral paths scoped to the application's company + a "Find people"
- * action (Apollo discovery, pre-filled to this company) when the graph is empty.
+ * The workspace bundle ships the top-N paths in `warm_intro_paths`. We
+ * render them inline with the path-finder UI from /network's
+ * NetworkClient (BestIntroRow), and reuse <IntroDraftModal> for the
+ * "Draft intro" button.
+ *
+ * Three empty states:
+ *   1. User has zero people on file → "Import LinkedIn CSV" CTA. The
+ *      target company isn't relevant yet because there's nothing to
+ *      match against.
+ *   2. User has people but no target_companies row for this company →
+ *      "This company isn't in your target list yet" — link to /companies.
+ *   3. Target resolved but no paths → "No warm intros yet — N contacts
+ *      on file" with the import button so the user can add more.
  */
 'use client'
 
-import { useRouter } from 'next/navigation'
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { Button } from '@/components/ui/Button'
-import { Icon } from '@/components/ui/Icon'
 import { Card } from '@/components/ui/Card'
+import { Icon } from '@/components/ui/Icon'
+import { Pill } from '@/components/ui/Pill'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { PeopleFinderModal } from '@/components/network/PeopleFinderModal'
 import { IntroDraftModal } from '@/components/network/IntroDraftModal'
-import type { ReferralPath } from '@/lib/types/network'
+import { PeopleFinderModal } from '@/components/network/PeopleFinderModal'
+import { submitDraftIntro } from '@/lib/api'
+import type { IntroDraft, ReferralPath } from '@/lib/types/network'
+
+const KIND_LABEL: Record<string, string> = {
+  me_first_degree: '1°',
+  colleague: 'colleague',
+  classmate: 'classmate',
+  friend: 'friend',
+  family: 'family',
+  introduced_by: 'intro',
+  same_company_overlap: 'overlap',
+  referenced_in_outreach: 'outreach',
+}
+
+// B9: real draft intro via POST /network/draft-intro. Mirrors the wiring
+// in NetworkClient — same shape, same backend call, same UX on both surfaces.
+async function draftIntroForPath(path: ReferralPath): Promise<IntroDraft> {
+  return submitDraftIntro({
+    target_company_id: path.target_company_id,
+    introducer_person_id: path.path[1].id,
+  })
+}
 
 export interface NetworkTabProps {
-  jobId: number
   companyName: string
   paths: ReferralPath[]
+  networkSize: number
+  targetResolved: boolean
+  onNetworkRefresh?: () => void
 }
 
-export function NetworkTab({ jobId, companyName, paths }: NetworkTabProps) {
+export function NetworkTab({
+  companyName,
+  paths,
+  networkSize,
+  targetResolved,
+  onNetworkRefresh,
+}: NetworkTabProps) {
   const router = useRouter()
-  const [introTarget, setIntroTarget] = useState<{ personId: string; personName: string } | null>(null)
+  const [activePath, setActivePath] = useState<ReferralPath | null>(null)
   const [finderOpen, setFinderOpen] = useState(false)
 
-  const hasPaths = paths.length > 0
+  const handleFinderAdded = () => {
+    onNetworkRefresh?.()
+    router.refresh()
+  }
+  const finderButton = (
+    <Button variant="primary" size="md" onClick={() => setFinderOpen(true)}>
+      <Icon name="search" size={14} />
+      Find people
+    </Button>
+  )
 
-  return (
-    <div className="flex flex-col gap-4">
-      {!hasPaths ? (
+  // Empty state 1: zero people on file.
+  if (networkSize === 0) {
+    return (
+      <>
+        <Card padding="md">
+          <EmptyState
+            icon="users"
+            title={`Find people at ${companyName}`}
+            description={`Search Apollo for people who work at ${companyName} and add them to your network to surface warm referral paths.`}
+            action={finderButton}
+          />
+        </Card>
+        {finderOpen && (
+          <PeopleFinderModal company={companyName} onClose={() => setFinderOpen(false)} onAdded={handleFinderAdded} />
+        )}
+      </>
+    )
+  }
+
+  // Empty state 2: target not in the user's target_companies list.
+  if (!targetResolved) {
+    return (
+      <Card padding="md">
         <EmptyState
-          icon="users"
-          title={`Find people at ${companyName}`}
-          description={`Search Apollo for people who work at ${companyName} and add them to your network to surface warm referral paths.`}
+          icon="target"
+          title={`${companyName} isn't in your target list yet`}
+          description={`Add ${companyName} to your targets so we can map your network onto it.`}
           action={
-            <Button variant="primary" size="md" onClick={() => setFinderOpen(true)}>
-              <Icon name="search" size={14} />
-              Find people
-            </Button>
+            <Link
+              href="/companies"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-2xs font-semibold bg-accent text-accent-fg hover:bg-accent-hover transition-colors min-h-9"
+            >
+              Open targets
+              <Icon name="arrow-right" size={12} />
+            </Link>
           }
+          hint={`${networkSize} contacts on file — ready to match once the target is added.`}
         />
-      ) : (
-        <div className="flex flex-col gap-3">
-          <div className="flex justify-end">
+      </Card>
+    )
+  }
+
+  // Empty state 3: target resolved but zero paths.
+  if (paths.length === 0) {
+    return (
+      <>
+        <Card padding="md">
+          <EmptyState
+            icon="users"
+            title={`No warm intros to ${companyName} yet`}
+            description={`We checked your ${networkSize} contacts — no one currently works there, and no two-hop introducer connects you. Find more people at ${companyName} or apply cold this round.`}
+            action={finderButton}
+          />
+        </Card>
+        {finderOpen && (
+          <PeopleFinderModal company={companyName} onClose={() => setFinderOpen(false)} onAdded={handleFinderAdded} />
+        )}
+      </>
+    )
+  }
+
+  // Happy path — render the ranked path list.
+  return (
+    <>
+      <section aria-labelledby="warm-intros-title" className="space-y-3">
+        <header className="flex items-baseline justify-between gap-3 flex-wrap">
+          <h2 id="warm-intros-title" className="text-base font-semibold text-fg tracking-tight">
+            Warm intros to {companyName}
+          </h2>
+          <div className="flex items-center gap-3">
+            <p className="text-2xs text-fg-subtle">
+              {paths.length} path{paths.length === 1 ? '' : 's'} from your {networkSize}-person network
+            </p>
             <Button variant="secondary" size="sm" onClick={() => setFinderOpen(true)}>
               <Icon name="search" size={14} />
-              Find more people
+              Find more
             </Button>
           </div>
+        </header>
+        <ol className="flex flex-col gap-2" aria-label="Warm-intro paths">
           {paths.map((p) => (
-            <Card key={p.person_id} padding="md">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-sm font-medium text-fg truncate">{p.person_name}</p>
-                  <p className="text-2xs text-fg-muted truncate">{p.reasoning}</p>
-                </div>
-                <button
-                  onClick={() => setIntroTarget({ personId: p.person_id, personName: p.person_name })}
-                  className="shrink-0 text-2xs text-accent hover:underline"
-                >
-                  Draft intro
-                </button>
-              </div>
-            </Card>
+            <li key={`${p.target_company_id}-${p.target_employee.id}`}>
+              <PathRow path={p} onDraft={() => setActivePath(p)} />
+            </li>
           ))}
-        </div>
-      )}
+        </ol>
+      </section>
+
+      <IntroDraftModal
+        open={activePath !== null}
+        path={activePath}
+        draftIntro={draftIntroForPath}
+        onClose={() => setActivePath(null)}
+      />
+
       {finderOpen && (
-        <PeopleFinderModal
-          company={companyName}
-          onClose={() => setFinderOpen(false)}
-          onAdded={() => router.refresh()}
-        />
+        <PeopleFinderModal company={companyName} onClose={() => setFinderOpen(false)} onAdded={handleFinderAdded} />
       )}
-      {introTarget && (
-        <IntroDraftModal
-          personId={introTarget.personId}
-          personName={introTarget.personName}
-          onClose={() => setIntroTarget(null)}
-        />
-      )}
-    </div>
+    </>
   )
 }
+
+function PathRow({ path, onDraft }: { path: ReferralPath; onDraft: () => void }) {
+  const target = path.target_employee
+  return (
+    <article className="flex items-center gap-3 rounded-lg border border-border bg-surface px-4 py-3 hover:border-border-strong transition-colors">
+      <span
+        aria-hidden
+        className="inline-flex items-center justify-center w-9 h-9 rounded-md bg-surface-raised text-fg-muted shrink-0"
+      >
+        <Icon name="building" size={16} />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-semibold text-fg leading-snug truncate">
+          {target.full_name}
+          {target.current_role && (
+            <span className="text-fg-muted font-normal"> · {target.current_role}</span>
+          )}
+        </p>
+        <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+          {path.path.map((node, i) => (
+            <span key={`${node.id}-${i}`} className="flex items-center gap-1.5">
+              <Pill
+                tone={i === 0 ? 'accent' : i === path.path.length - 1 ? 'success' : 'neutral'}
+                size="xs"
+              >
+                {node.full_name}
+              </Pill>
+              {i < path.path.length - 1 && (
+                <span className="text-fg-subtle text-2xs">
+                  →
+                  {path.edge_kinds[i] && (
+                    <span className="ml-1">{KIND_LABEL[path.edge_kinds[i]] ?? path.edge_kinds[i]}</span>
+                  )}
+                </span>
+              )}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="text-right shrink-0">
+        <p className="text-2xs text-fg-subtle tnum">
+          {path.hop_count} hop{path.hop_count === 1 ? '' : 's'} ·{' '}
+          {(path.total_strength * 100).toFixed(0)}% trust
+        </p>
+        <Button variant="primary" size="xs" onClick={onDraft} className="mt-1">
+          Draft intro
+        </Button>
+      </div>
+    </article>
+  )
+}
+
+export default NetworkTab

@@ -223,7 +223,7 @@ export function ResumeTab({ jobId, resume, onResumeUpdated }: ResumeTabProps) {
             title="No resume built yet"
             description="Run G2 to build a tailored markdown resume against this role's persona. ~5 minutes, ~$1."
             action={
-              <Button variant="primary" size="md" onClick={handleBuild}>
+              <Button variant="primary" size="md" onClick={() => handleBuild()}>
                 <Icon name="rocket" size={14} />
                 Build my resume
               </Button>
@@ -324,7 +324,7 @@ export function ResumeTab({ jobId, resume, onResumeUpdated }: ResumeTabProps) {
             <Button
               variant="secondary"
               size="sm"
-              onClick={handleBuild}
+              onClick={() => handleBuild()}
               loading={building}
               disabled={building}
             >
