@@ -66,7 +66,7 @@ export default async function ApplicationsPage() {
             {incoming.map((j) => (
               <li
                 key={j.job_id}
-                className="rounded-md border border-border bg-card p-3"
+                className="rounded-md border border-border bg-surface p-3"
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-mono text-3xs uppercase text-fg-subtle tracking-wider">
