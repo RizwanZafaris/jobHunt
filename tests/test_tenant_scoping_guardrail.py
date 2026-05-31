@@ -146,6 +146,7 @@ ALLOWLIST = frozenset({
     # runs with no authenticated request user. There is deliberately no
     # `.eq("user_id")`: the probe must work before/without any auth context.
     ("server.py", "ready.<locals>._db_probe"),     # [system/probe] readiness DB reachability check; not user data
+    ("server.py", "admin_selftest.<locals>._db"),  # [system/probe] admin /admin/selftest DB reachability check; not user data (require_admin)
     # ── api/server.py — cron / system batch (verify_service_secret) ──
     # NOTE: trigger_company_research / run_pipeline_targets /
     # reclassify_existing_jobs do their tenant queries inside a background `_run`
