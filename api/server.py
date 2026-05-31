@@ -3850,6 +3850,73 @@ async def get_application_by_job(
     return rows[0]
 
 
+# ── Diagnostic self-test (Phase 4 E2E) ─────────────────────────────────────
+
+@app.get("/admin/selftest")
+async def admin_selftest(_admin: "User" = Depends(require_admin)):
+    """One-call health probe of the dependencies resume (G2) + interview (G3)
+    generation share, so a single request pinpoints why they fail.
+
+    Checks: Redis (queue), LLM provider (a tiny live call), Supabase DB, and
+    the budget-gate flag. Each check is isolated — one failure never breaks the
+    others. Admin-only, read-only (the LLM check spends a few tokens).
+    """
+    from fastapi.concurrency import run_in_threadpool
+    import os as _os
+    checks: dict = {}
+
+    # 1. Redis — the queue both features enqueue onto.
+    def _redis() -> str:
+        from api.queue import _get_redis
+        return "ok" if _get_redis().ping() else "down"
+    try:
+        checks["redis"] = await run_in_threadpool(_redis)
+    except Exception as e:
+        checks["redis"] = f"down: {type(e).__name__}: {str(e)[:120]}"
+
+    # 2. LLM provider — a minimal live call via the shared router.
+    try:
+        from agents.llm_router import get_router
+        r = get_router()
+        provider = "anthropic" if r.has_key("anthropic") else (
+            "openai" if r.has_key("openai") else None)
+        if not provider:
+            checks["llm"] = "down: no provider key configured"
+        else:
+            model = "claude-haiku-4-5" if provider == "anthropic" else "gpt-4.1"
+            res = await r.ask(
+                provider=provider, model=model, system="ping",
+                messages=[{"role": "user", "content": "Reply with: ok"}],
+                max_tokens=5, agent_name="debug.selftest",
+            )
+            checks["llm"] = f"ok ({provider}, {len((res.text or '').strip())} chars)"
+    except Exception as e:
+        checks["llm"] = f"down: {type(e).__name__}: {str(e)[:160]}"
+
+    # 3. Supabase DB — a 1-row read (Storage uses the same client/creds).
+    def _db() -> str:
+        from db.client import get_supabase
+        get_supabase().table("rizwan_profile").select("id").limit(1).execute()
+        return "ok"
+    try:
+        checks["db"] = await run_in_threadpool(_db)
+    except Exception as e:
+        checks["db"] = f"down: {type(e).__name__}: {str(e)[:120]}"
+
+    # 4. Budget gate — surface the flag (a stray "1" can block all LLM calls).
+    checks["budget_gate_enabled"] = _os.environ.get(
+        "PER_TENANT_BUDGET_ENABLED", "0") == "1"
+
+    ok = all(
+        isinstance(v, str) and v.startswith("ok")
+        for k, v in checks.items() if k in ("redis", "llm", "db")
+    )
+    body = {"ok": ok, "checks": checks}
+    if not ok:
+        return JSONResponse(status_code=503, content=body)
+    return body
+
+
 # ── Per-tenant margin report (Phase 3 — billing/margin) ────────────────────
 
 @app.get("/admin/margin")
