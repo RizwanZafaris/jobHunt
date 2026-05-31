@@ -36,6 +36,11 @@ class TranscriptTurn(TypedDict, total=False):
 class InterviewPrepState(TypedDict, total=False):
     # ─── Inputs (set at entry) ──────────────────────────────────────────
     application_id: str             # uuid, public.applications.id
+    user_id: Optional[str]          # owning tenant (public.users.id); seeded by
+                                    # g3_run from the application row and forwarded
+                                    # to create_interview_prep so the NOT-NULL
+                                    # interview_prep.user_id is set. Falls back to
+                                    # the seed UUID inside g3_io if absent.
     application: dict               # full row from public.applications
     job_id: int                     # public.jobs.id (INTEGER)
     job: dict                       # full row from public.jobs

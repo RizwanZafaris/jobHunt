@@ -168,6 +168,7 @@ async def run_g3_graph(
 
     initial_state = {
         "application_id": application_id,
+        "user_id": user_id,
         "company_name": canonical,
         "round_type": round_type,
         "round_number": round_number,
