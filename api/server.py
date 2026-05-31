@@ -1230,9 +1230,17 @@ class ResumeBuildFeedback(BaseModel):
     user_feedback: Optional[str] = None
 
 
-def _safe_resume_build_row(row: dict) -> dict:
-    """Strip noisy fields; return a UI-shaped dict."""
-    return {
+def _safe_resume_build_row(row: dict, *, include_md: bool = False) -> dict:
+    """Strip noisy fields; return a UI-shaped dict.
+
+    2026-05-31: now surfaces the build scores (polisher/ATS) always, and
+    the full resume markdown when `include_md=True`. The heavy resume_md
+    blob (~7KB/build) is gated so the by-job LIST endpoint stays lean,
+    while the single-build GET returns it for inline preview. Before this
+    fix the resume text was never exposed at all, so even a converged
+    build looked empty in the dashboard.
+    """
+    out = {
         "id":                row.get("id"),
         "job_id":            row.get("job_id"),
         "company_name":      row.get("company_name"),
@@ -1242,6 +1250,9 @@ def _safe_resume_build_row(row: dict) -> dict:
         "latency_ms_total":  row.get("latency_ms_total"),
         "resume_pdf_url":    row.get("resume_pdf_url"),
         "resume_docx_url":   row.get("resume_docx_url"),
+        "polisher_score":    row.get("polisher_score"),
+        "ats_score_a":       row.get("ats_score_a"),
+        "ats_score_b":       row.get("ats_score_b"),
         "cover_email_md":    row.get("cover_email_md"),
         "user_rating":       row.get("user_rating"),
         "user_feedback":     row.get("user_feedback"),
@@ -1250,7 +1261,13 @@ def _safe_resume_build_row(row: dict) -> dict:
         "created_at":        row.get("created_at"),
         "finalized_at":      row.get("finalized_at"),
         "error":             row.get("error"),
+        # Convenience flag so the UI can render a "view/download" affordance
+        # without shipping the whole blob in list responses.
+        "has_resume_md":     bool(row.get("resume_md")),
     }
+    if include_md:
+        out["resume_md"] = row.get("resume_md")
+    return out
 
 
 @app.get("/resume-builds/by-job/{job_id}")
@@ -1287,7 +1304,7 @@ async def get_resume_build(build_id: str, user: "User" = Depends(get_current_use
     rows = result.data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Resume build not found")
-    return _safe_resume_build_row(rows[0])
+    return _safe_resume_build_row(rows[0], include_md=True)
 
 
 @app.get("/resume-builds/{build_id}/markdown")
@@ -1304,7 +1321,7 @@ async def get_resume_build_markdown(
     db = get_supabase()
     rb = (await aexecute(
         db.table("resume_builds")
-        .select("id, job_id, user_edited_md, user_edited_at")
+        .select("id, job_id, user_edited_md, user_edited_at, resume_md")
         .eq("id", build_id)
         .eq("user_id", str(user.id))
         .limit(1)
@@ -1318,7 +1335,17 @@ async def get_resume_build_markdown(
         md = rb["user_edited_md"]
         return {"markdown": md, "source": "user_edit", "byte_size": len(md.encode("utf-8"))}
 
-    # 2. Fall back to canonical Storage URL on the jobs row (also user-scoped).
+    # 2. Canonical DB column — always populated by finalize_resume_build on a
+    #    converged build. 2026-05-31: this is now the primary source, ahead of
+    #    the Storage URL round-trip below, which only ever held a copy and was
+    #    frequently null (the upload depended on pandoc/Storage that silently
+    #    failed). Reading the column makes preview reliable + avoids a network
+    #    hop on every open.
+    if rb.get("resume_md"):
+        md = rb["resume_md"]
+        return {"markdown": md, "source": "db_column", "byte_size": len(md.encode("utf-8"))}
+
+    # 3. Fall back to canonical Storage URL on the jobs row (also user-scoped).
     job = (await aexecute(
         db.table("jobs")
         .select("resume_path")
