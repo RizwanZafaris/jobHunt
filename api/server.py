@@ -1437,71 +1437,79 @@ async def save_resume_build_feedback(
     return _safe_resume_build_row(result.data[0])
 
 
+from resume_agents.render import markdown_to_docx_bytes, markdown_to_pdf_bytes
+
+
+async def _load_resume_build_row(build_id: str, user_id: str) -> dict | None:
+    """Fetch one resume_builds row scoped to the user, incl. the heavy md.
+
+    Shared by the JSON preview endpoint and the file-download endpoint so
+    they always agree on column list + tenant scoping.
+    """
+    db = get_supabase()
+    rows = (await aexecute(
+        db.table("resume_builds")
+        .select("id, job_id, company_name, user_edited_md, resume_md")
+        .eq("id", build_id)
+        .eq("user_id", user_id)
+        .limit(1)
+    )).data or []
+    return rows[0] if rows else None
+
+
+# Map download formats to (renderer, media_type, extension). md is special-cased.
+_RESUME_RENDERERS = {
+    "docx": (markdown_to_docx_bytes,
+             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+             "docx"),
+    "pdf": (markdown_to_pdf_bytes, "application/pdf", "pdf"),
+}
+
+
 @app.get("/resume-builds/{build_id}/download")
 async def download_resume_build(
     build_id: str,
     fmt: str = "md",
     user: "User" = Depends(get_current_user),
 ):
-    """Download a resume in the chosen format.
+    """Download a resume build as md (canonical), or docx/pdf rendered on the fly.
 
-    Currently supports:
-      - md (markdown, the canonical format)
-
-    docx/pdf are deliberately not implemented yet — they need a
-    pandoc/python-docx pipeline. Track at GH issue when you need them.
-    For now copy-paste the markdown into Pages/Word; the Phase 2.0
-    typography is intentionally clean enough to render verbatim.
+    Source precedence: user_edited_md (manual edits) → resume_md (generated).
+    docx/pdf are rendered from that markdown with resume_agents.render
+    (python-docx + reportlab — no pandoc, no network).
     """
-    import httpx
     fmt = (fmt or "md").lower()
-    if fmt != "md":
+    if fmt != "md" and fmt not in _RESUME_RENDERERS:
         raise HTTPException(
             status_code=400,
-            detail=f"format '{fmt}' not yet supported — only 'md' for now",
+            detail=f"format '{fmt}' not supported — use md, docx, or pdf",
         )
 
-    db = get_supabase()
-    rb = (await aexecute(
-        db.table("resume_builds")
-        .select("id, job_id, company_name, user_edited_md")
-        .eq("id", build_id)
-        .eq("user_id", str(user.id))
-        .limit(1)
-    )).data or []
-    if not rb:
+    rb_row = await _load_resume_build_row(build_id, str(user.id))
+    if not rb_row:
         raise HTTPException(status_code=404, detail="Resume build not found")
-    rb = rb[0]
 
-    # Source: user edit if present, else canonical Storage URL (user-scoped).
-    md = rb.get("user_edited_md")
-    if not md:
-        job = (await aexecute(
-            db.table("jobs")
-            .select("resume_path")
-            .eq("id", rb["job_id"])
-            .eq("user_id", str(user.id))
-            .limit(1)
-        )).data or []
-        url = (job[0] if job else {}).get("resume_path")
-        if url and url.startswith("http"):
-            try:
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    r = await client.get(url)
-                    if r.status_code == 200:
-                        md = r.text
-            except Exception:
-                pass
-
+    # Prefer explicit user edits, else the canonical generated markdown.
+    md = (rb_row or {}).get("user_edited_md") or (rb_row or {}).get("resume_md")
     if not md:
         raise HTTPException(status_code=404, detail="No resume content to download")
 
-    company = (rb.get("company_name") or "company").lower().replace(" ", "-")
-    filename = f"resume_{company}_{rb['id'][:8]}.md"
+    company = (rb_row.get("company_name") or "company").lower().replace(" ", "-")
+    stem = f"resume_{company}_{rb_row['id'][:8]}"
+
+    if fmt == "md":
+        return Response(
+            content=md,
+            media_type="text/markdown",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.md"'},
+        )
+
+    renderer, media_type, ext = _RESUME_RENDERERS[fmt]
+    data = renderer(md)
     return Response(
-        content=md,
-        media_type="text/markdown",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        content=data,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'},
     )
 
 
