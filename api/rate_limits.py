@@ -1,10 +1,19 @@
 """
-api/rate_limits.py — Centralised rate-limit tiers for the FastAPI surface.
+api/rate_limits.py — Centralised slowapi Limiter + rate-limit tier table.
 
-The Limiter itself lives in api/server.py (it must be on app.state so
-SlowAPIMiddleware can find it). This module is just the lookup table —
-import RATE_LIMITS where you need to apply a specific tier and the limiter
-instance from `api.server` to call `@limiter.limit(RATE_LIMITS["..."])`.
+The Limiter is instantiated here (not in api/server.py) so the per-router
+files (api/workspace.py, api/linkedin.py, api/network.py, …) can import it
+without circular dependencies on `api.server`. api/server.py then attaches
+the same instance onto `app.state.limiter` so SlowAPIMiddleware can find it.
+
+Usage in routers:
+
+    from api.rate_limits import limiter, RATE_LIMITS
+
+    @router.post("/...")
+    @limiter.limit(RATE_LIMITS["llm_generation"])
+    async def handler(request: Request, ...):
+        ...
 
 Tier rationale
 ==============
@@ -44,6 +53,9 @@ docs/AUDIT_REVIEW_EXTERNAL_2026_05_12.md §3.6 (P1-3).
 """
 from __future__ import annotations
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 RATE_LIMITS: dict[str, str] = {
     "llm_generation": "5/minute; 30/hour",
     "background_jobs": "2/minute; 10/hour",
@@ -51,3 +63,11 @@ RATE_LIMITS: dict[str, str] = {
     "auth": "5/minute",
     "default": "60/minute",
 }
+
+# Single shared Limiter instance. api/server.py attaches this onto
+# app.state.limiter so SlowAPIMiddleware can locate it; routers import this
+# directly to decorate their routes.
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[RATE_LIMITS["default"]],
+)

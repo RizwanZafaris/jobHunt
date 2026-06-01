@@ -24,7 +24,7 @@ import logging
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents.referral_graph import (
@@ -35,6 +35,7 @@ from agents.referral_graph import (
     ReferralPath,
 )
 from api.context import get_current_user
+from api.rate_limits import RATE_LIMITS, limiter
 from api.users import User
 from db.client import aexecute, get_supabase
 
@@ -214,9 +215,14 @@ def create_person(
 # requiring a manual LinkedIn export.
 #
 # Returning 410 Gone (semantically: this resource intentionally deleted)
-# so existing clients fail loudly instead of silently 404-ing.
+# so existing clients fail loudly instead of silently 404-ing. The
+# data_import rate-limit decorator (from the slowapi PR on main) stays on
+# the stub so the route is still bounded; slowapi requires `request:
+# Request` as a parameter to read the client address.
 @router.post("/import/linkedin-csv", deprecated=True)
+@limiter.limit(RATE_LIMITS["data_import"])
 async def import_linkedin_csv_removed(
+    request: Request,
     user: User = Depends(get_current_user),
 ) -> None:
     raise HTTPException(

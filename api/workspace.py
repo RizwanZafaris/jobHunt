@@ -48,7 +48,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
@@ -65,6 +65,7 @@ from agents.resume_edit_assistant import (
 )
 from api.context import get_current_user
 from api.queue import enqueue_g2_build
+from api.rate_limits import RATE_LIMITS, limiter
 from api.users import User
 from db.client import get_supabase
 
@@ -671,7 +672,9 @@ async def get_job_score(
 
 # ─── POST /workspace/{job_id}/build-resume ─────────────────────────────────
 @router.post("/{job_id}/build-resume")
+@limiter.limit(RATE_LIMITS["llm_generation"])
 def build_resume(
+    request: Request,
     job_id: int,
     force: bool = Query(default=False),
     max_cost_usd: Optional[float] = Query(default=None, ge=0.5, le=20.0),
@@ -770,7 +773,9 @@ def build_resume(
 
 # ─── POST /workspace/{job_id}/edit-resume ──────────────────────────────────
 @router.post("/{job_id}/edit-resume")
+@limiter.limit(RATE_LIMITS["llm_generation"])
 async def edit_resume(
+    request: Request,
     job_id: int,
     body: EditResumeBody,
     user: User = Depends(get_current_user),
@@ -862,7 +867,9 @@ async def edit_resume(
 
 # ─── POST /workspace/{job_id}/rebuild-section ──────────────────────────────
 @router.post("/{job_id}/rebuild-section")
+@limiter.limit(RATE_LIMITS["llm_generation"])
 async def rebuild_section_endpoint(
+    request: Request,
     job_id: int,
     body: RebuildSectionBody,
     user: User = Depends(get_current_user),
@@ -932,7 +939,9 @@ async def rebuild_section_endpoint(
 
 # ─── POST /workspace/{job_id}/full-rebuild ─────────────────────────────────
 @router.post("/{job_id}/full-rebuild")
+@limiter.limit(RATE_LIMITS["llm_generation"])
 def full_rebuild_endpoint(
+    request: Request,
     job_id: int,
     body: FullRebuildBody,
     user: User = Depends(get_current_user),
