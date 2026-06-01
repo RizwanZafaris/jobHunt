@@ -38,6 +38,7 @@ interface NavItem {
 // said "Companies". Route file has been deleted.
 const PRIMARY: NavItem[] = [
   { href: '/today',        label: 'Today',        icon: 'sun' },
+  { href: '/jobs/rate',    label: 'Rate a Job',   icon: 'search' },
   { href: '/companies',    label: 'Targets',      icon: 'target' },
   { href: '/applications', label: 'Applications', icon: 'clipboard-list' },
   { href: '/linkedin',     label: 'LinkedIn',     icon: 'sparkles' },
