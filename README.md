@@ -8,15 +8,20 @@
 Built for **Rizwan Zafar** (single-user, lifetime plan) today; the schema,
 auth layer, and rate limiter are multi-tenant-ready for tomorrow.
 
-**Status — 2026-05-29.** The production stack is live: FastAPI on Railway
+**Status — 2026-05-31.** The production stack is live: FastAPI on Railway
 (API + embedded scheduler + RQ worker), Supabase Postgres + pgvector, and a
 Next.js 15 dashboard on Vercel. The system currently tracks ~68 target
 companies with several thousand rows of synthesized company knowledge.
-Shipping today: the multi-stage **G2** resume graph (~$1 / ~5 min per build),
-**G3** interview studio + tutor, **G4** LinkedIn engine with image briefs,
-**G5** A–F letter-grade fit scoring, **G6** follow-up cadence, **G7**
-application-form assist, **G8** offer evaluation, and **G9** STAR+R story
-bank. 38 forward-only migrations are in `db/migrations/`.
+Shipping today: the multi-stage **G2** resume graph (~$1 / ~5 min per build,
+now with on-the-fly DOCX/PDF export), **G3** interview studio + tutor, **G4**
+LinkedIn engine with image briefs, **G5** A–F letter-grade fit scoring, **G6**
+follow-up cadence, **G7** application-form assist, **G8** offer evaluation, and
+**G9** STAR+R story bank, plus `/insights?tab=analytics` pattern analytics and
+`/insights?tab=traces` LangGraph debugging. The embedded APScheduler is now
+gated by `SCHEDULER_ENABLED` with a dedicated single-replica `scheduler`
+service so the API can scale horizontally without cron double-firing (see
+[`docs/SCALABILITY.md`](docs/SCALABILITY.md)). 46 forward-only migrations
+(001–045) are in `db/migrations/`.
 
 > Architecture decisions — *why LangGraph, why per-company personas, why
 > Anthropic for the writer, why three-source enrichment* — live in
@@ -29,6 +34,7 @@ bank. 38 forward-only migrations are in `db/migrations/`.
 
 - [What makes this different](#what-makes-this-different)
 - [Architecture](#architecture)
+- [Scaling & production readiness](#scaling--production-readiness)
 - [The agent layer](#the-agent-layer)
 - [LangGraph state machines](#langgraph-state-machines)
 - [Multi-LLM router & model tiering](#multi-llm-router--model-tiering)
@@ -107,6 +113,33 @@ paths from the referral graph, interview prep, and an apply checklist.
 **Interview-studio** layers prep material, a concept ladder, a tutor chat,
 and the outcome logger that closes the loop back into persona evolution.
 LinkedIn posts (G4) ship with an image brief for copy-and-paste.
+
+Deep docs: [`docs/SCALABILITY.md`](docs/SCALABILITY.md) (scalability audit + multi-tenant roadmap) · [`docs/AUDIT_360_SYNTHESIS.md`](docs/AUDIT_360_SYNTHESIS.md) (6-expert audit + P0/P1/P2 roadmap) · [`docs/SPRINT_1_STATUS.md`](docs/SPRINT_1_STATUS.md) (decisions log) · [`docs/AUDIT_2026_05_10.md`](docs/AUDIT_2026_05_10.md) (cost + quality audit) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/G2_RESUME_BUILDER_GRAPH.md`](docs/G2_RESUME_BUILDER_GRAPH.md) · [`docs/G3_INTERVIEW_PREP_GRAPH.md`](docs/G3_INTERVIEW_PREP_GRAPH.md) · [`docs/SECURITY.md`](docs/SECURITY.md)
+
+API surface docs: [`api/AUTH.md`](api/AUTH.md) · [`api/QUEUE.md`](api/QUEUE.md) · [`api/WORKSPACE.md`](api/WORKSPACE.md) · [`api/INTERVIEW_STUDIO.md`](api/INTERVIEW_STUDIO.md) · [`api/LINKEDIN.md`](api/LINKEDIN.md) · [`api/NETWORK.md`](api/NETWORK.md)
+
+---
+
+## Scaling & production readiness
+
+jobHunt runs **single-user in production today** and is built to become a
+multi-tenant SaaS. A full CTO-level scalability audit — what breaks going from
+1 user to thousands of tenants + concurrent agent workloads, graded P0/P1/P2
+with a sequenced roadmap — lives in **[`docs/SCALABILITY.md`](docs/SCALABILITY.md)**.
+
+**Hardened (2026-05-29):** the embedded cron scheduler is gated
+(`SCHEDULER_ENABLED`) and has a dedicated single-replica `scheduler` service, so
+the API can scale out without cron double-firing; the orphan-reaper crash that
+silently disabled job recovery is fixed; GZip compression and worker
+self-healing (`restartPolicy=ALWAYS`) are in; and a migration captures the
+drifted recommendation columns + adds `/today` hot-path indexes.
+
+**Before onboarding a 2nd paying tenant (audit Phase 1):** drop the global
+`UNIQUE` constraints that let one tenant overwrite another's rows, add per-user
+JWT auth through the dashboard proxy, scope every `server.py` query by
+`user_id`, and actually enforce RLS (the API uses the service-role key, which
+bypasses it today). **Phase 2 (throughput):** async data layer, queue split +
+worker autoscaling, connection pooler, per-tenant spend caps.
 
 ---
 
@@ -217,9 +250,9 @@ lexical order by `db/migrations/APPLY.sh`, which records applied filenames in
 a `schema_migrations` table (safe to re-run) and refuses to run against an
 obviously-production `DATABASE_URL` without an explicit confirmation.
 
-The tree currently holds **38 numbered migrations**, from
+The tree currently holds **46 numbered migrations**, from
 `2026_05_10_001_multi_tenancy.sql` through
-`2026_05_26_038_linkedin_buffer_integration.sql`. Highlights:
+`2026_05_31_045_user_onboarding.sql`. Highlights:
 
 - **001–005** — multi-tenancy, status enum, `jobs_runs`, referral graph, LinkedIn drafts
 - **008/009** — outcome credits + `search_company_knowledge` v2 (outcome-conditioned RAG)
@@ -230,6 +263,7 @@ The tree currently holds **38 numbered migrations**, from
 - **028/030/035** — phantom-job cleanup + archival
 - **031/032/033** — RLS on `boss_audit_log`, `security_invoker` views, failed-build error constraint
 - **036–038** — job-card dismissals, surface tracking, Buffer integration
+- **039–045** — recommendation columns + `/today` hot-path indexes, agent cost rollup, pgvector HNSW index, dismissals→job FK, composite-unique indexes, drop of global UNIQUEs, user onboarding
 
 ```bash
 export DATABASE_URL='postgres://...'
@@ -254,7 +288,7 @@ LLM-generation and import routes (`/health` is exempt).
 
 | Method & path | Purpose |
 |---------------|---------|
-| `GET /` · `GET /health` | Service banner · Railway healthcheck |
+| `GET /` · `GET /health` · `GET /ready` | Service banner · Railway healthcheck · readiness probe |
 | `GET /debug/apify-check` · `GET /debug/provider-ping` | Provider/credential diagnostics |
 | `POST /pipeline/run` · `POST /pipeline/evaluate` · `GET /pipeline/stats` | Full pipeline · single-JD eval · stats |
 | `GET /jobs` · `GET /jobs/{id}` | List (open by default; `letter_grade` filter) · detail |
@@ -267,6 +301,8 @@ LLM-generation and import routes (`/health` is exempt).
 | `POST /applications/review` · `GET /applications/pipeline` | Follow-up surfacing · pipeline report |
 | `GET /resumes/{filename}` · `/resume-builds/*` | Download · build view / edit / feedback / download |
 | `GET/PUT /profile` · `/profile/keywords` · `/profile/sources` · `/profile/experience/{id}` · `/profile/recommendations` | Master profile + keyword bank + recommendations |
+| `GET/POST /me/onboarding` | Per-user onboarding state (Phase 4) |
+| `GET /admin/selftest` · `GET /admin/margin` · `POST /admin/personas/rebuild-all` | Dependency self-test · per-tenant gross-margin report · batch persona rebuild |
 
 **Feature routers** (each mounted in `server.py`):
 
@@ -301,6 +337,7 @@ Vercel. Routes:
 | `/profile` · `/profile/keywords` · `/profile/recommendations` · `/profile/sources` | Profile editor + keyword bank + AI recommendations + source docs |
 | `/boss` · `/costs` | Boss chat · cost dashboard |
 | `/insights` (+ `/insights/analytics`) | Pattern analytics + LangGraph trace debugging tabs |
+| `/login` · `/signup` · `/onboarding` | Google OAuth front door + onboarding flow (Phase 4, flag-gated) |
 | `/admin` · `/(legacy)/pipeline` | Admin · legacy pipeline view |
 
 ---
@@ -363,11 +400,11 @@ Grouped, with tiers (✅ required · ➕ recommended · ◦ optional):
 | **Database** | ✅ `SUPABASE_URL`, ✅ `SUPABASE_SERVICE_KEY`; ◦ `SUPABASE_ANON_KEY`, `DATABASE_URL`, `SUPABASE_DB_URL`, `POSTGRES_URL` |
 | **LLM providers** | ✅ `ANTHROPIC_API_KEY`, ✅ `OPENAI_API_KEY`; ➕ `GEMINI_API_KEY`/`GOOGLE_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`/`KIMI_API_KEY`; ➕ `OPENROUTER_API_KEY` (terminal fallback rail) |
 | **Enrichment** | ➕ `APIFY_TOKEN`; ➕ `PERPLEXITY_API_KEY` (+ `PERPLEXITY_MODEL_RECENCY=sonar`, `PERPLEXITY_MODEL_STRATEGIC=sonar-pro`); ◦ `APOLLO_API_KEY` (+ `APOLLO_BASE_URL`, `APOLLO_HTTP_TIMEOUT`); ➕ `SERPER_API_KEY` (+ `USE_SERPER=0`) |
-| **Queue / worker** | ◦ `REDIS_URL` (required for the worker), `WORKER_CONCURRENCY=1`, `RQ_QUEUE_NAME=jobhunt`, `ORPHAN_REAPER_INTERVAL_MIN=5` |
+| **Queue / worker** | ◦ `REDIS_URL` (required for the worker), `WORKER_CONCURRENCY=1`, `RQ_QUEUE_NAME=jobhunt`, `ORPHAN_REAPER_INTERVAL_MIN=5`, `JOB_VALIDATOR_STALE_HOURS=6` |
 | **Auth / mode** | `SUPABASE_JWT_SECRET`, `RIZWAN_SINGLE_USER_MODE=1` |
 | **Graph flags** | `USE_G2_GRAPH=false`, `G2_MAX_COST_USD=5.0`, `G2_MIN_PERSONA_QUALITY=medium` (+ G2 model overrides); `USE_G3_GRAPH=false`, `G3_MAX_COST_USD=3.0` |
 | **Notifications** | `SENDGRID_*`, `DIGEST_EMAIL_TO`; `SLACK_WEBHOOK_URL`, `DAILY_COST_ALERT_USD=20` |
-| **Scheduling** | `JOB_SCOUT_TIME=09:00`, `BOSS_AGENT_TIME=21:00`, `TIMEZONE=Asia/Dubai`, `START_MODE` |
+| **Scheduling** | `JOB_SCOUT_TIME=09:00`, `BOSS_AGENT_TIME=21:00`, `TIMEZONE=Asia/Dubai`, `START_MODE`; `SCHEDULER_ENABLED=1` (set `0` on the API service when a dedicated `scheduler` service runs cron, so it fires once) |
 | **Railway** | ✅ `PORT=8000`, ✅ `ENVIRONMENT`, ✅ `SECRET_KEY` |
 | **Buffer** | `BUFFER_CLIENT_ID`/`SECRET`/`REDIRECT_URI`, `BUFFER_API_BASE=https://api.bufferapp.com/1` |
 | **Eval / cache** | `EVAL_GOLDEN_DIR`, `ANTHROPIC_PROMPT_CACHE_ENABLED` |
@@ -387,6 +424,13 @@ Grouped, with tiers (✅ required · ➕ recommended · ◦ optional):
   reaper runs as an APScheduler thread inside this service.
 
 Redis is supplied by Railway's Redis plugin (`REDIS_URL` auto-injected).
+
+> **Cron must run in exactly one place.** By default the 6 cron jobs are
+> embedded in the API process (`SCHEDULER_ENABLED` defaults on), so a minimal
+> one-service deploy still runs cron. When you scale the API to **>1 replica**,
+> deploy the dedicated `scheduler` service (above) **and set
+> `SCHEDULER_ENABLED=0` on the API service**, otherwise every replica
+> double-fires all 6 jobs (N× LLM spend). See [`docs/SCALABILITY.md`](docs/SCALABILITY.md).
 
 **Vercel** hosts the `dashboard/` Next.js app (`dashboard/vercel.json`),
 calling the Railway API over REST.
@@ -415,11 +459,11 @@ on GPT-4.1 calls, and a cache-aside layer over Perplexity searches.
 
 ## In progress & parked
 
-- **People-finder (Perplexity/Apollo) — unmerged.** Replaces the LinkedIn
-  CSV import for seeding the peer graph. Lives on a feature branch; **the CSV
-  import remains the live mechanism on `main`.**
-- **Resume export (docx/pdf) — not implemented.** `/resume-builds/{id}/download`
-  serves Markdown only; the typography is clean enough to paste verbatim.
+- **People-finder (Perplexity/Apollo) — partly merged.** The `/network` UI
+  now uses an Apollo people-finder modal (the old LinkedIn CSV upload button is
+  gone), but the backend `people_finder_agent` is still on an unmerged feature
+  branch; the `POST /network/import/linkedin-csv` endpoint remains as the live
+  seeding mechanism on `main`.
 - **Multi-tenant cutover — deferred.** The rate limiter keys on remote IP and
   `get_current_user` short-circuits to user #1; both have TODOs for the
   per-user switch once single-user mode is lifted.
@@ -436,7 +480,7 @@ api/               FastAPI server + feature routers (network, linkedin, actions,
                    workspace, interview_studio, apollo, stories, follow_ups, g7,
                    offers, analytics, traces, buffer, queue, worker, …)
 config/            settings.py (model tiering, thresholds), profile.yml
-db/                client, schema files, migrations/ (38 numbered SQL files)
+db/                client, schema files, migrations/ (46 numbered SQL files)
 dashboard/         Next.js 15 App Router frontend (Vercel)
 evals/             golden-set evaluations
 integrations/      external service clients

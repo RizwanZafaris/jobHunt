@@ -14,6 +14,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -22,10 +23,9 @@ import { Icon } from '@/components/ui/Icon'
 import { TextInput } from '@/components/ui/Field'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { IntroDraftModal } from '@/components/network/IntroDraftModal'
-import { LinkedInImportButton } from '@/components/network/LinkedInImportButton'
+import { PeopleFinderModal } from '@/components/network/PeopleFinderModal'
 import { submitDraftIntro } from '@/lib/api'
 import type {
-  ImportSummary,
   IntroDraft,
   Person,
   ReferralPath,
@@ -82,12 +82,12 @@ async function draftIntroForPath(path: ReferralPath): Promise<IntroDraft> {
 }
 
 export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps) {
+  const router = useRouter()
   const [search, setSearch] = useState('')
   const [activePath, setActivePath] = useState<ReferralPath | null>(null)
-  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null)
-  // BUG-020 — disclaim that the loaded names are demo data. Hidden once
-  // the user imports a real CSV (importSummary truthy).
-  const showDemoBanner = importSummary === null && isDemoFixture(people)
+  const [finderOpen, setFinderOpen] = useState(false)
+  // BUG-020 — disclaim that the loaded names are demo data.
+  const showDemoBanner = isDemoFixture(people)
 
   const filteredPeople = useMemo(() => {
     if (!search.trim()) return people
@@ -119,20 +119,11 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <LinkedInImportButton onSummary={setImportSummary} />
+          <Button variant="primary" size="md" onClick={() => setFinderOpen(true)}>
+            <Icon name="search" size={14} />
+            Find people
+          </Button>
         </div>
-        {importSummary && (
-          <p
-            role="status"
-            className="mt-3 text-2xs text-success"
-          >
-            Imported {importSummary.imported} contacts ·{' '}
-            {importSummary.edges_created} edges ·{' '}
-            {importSummary.employments_created} employments
-            {importSummary.skipped ? ` · skipped ${importSummary.skipped}` : ''}
-            {importSummary.errors.length > 0 ? ` · ${importSummary.errors.length} errors` : ''}
-          </p>
-        )}
       </Card>
 
       {/* Best warm intros */}
@@ -284,6 +275,13 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
         draftIntro={draftIntroForPath}
         onClose={() => setActivePath(null)}
       />
+
+      {finderOpen && (
+        <PeopleFinderModal
+          onClose={() => setFinderOpen(false)}
+          onAdded={() => router.refresh()}
+        />
+      )}
     </>
   )
 }

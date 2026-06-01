@@ -47,7 +47,7 @@ from agents.interview_tutor import (
 )
 from api.context import get_current_user
 from api.users import User
-from db.client import get_supabase
+from db.client import aexecute, get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -428,7 +428,7 @@ async def post_log_outcome(
         "conducted_at": body.conducted_at or _utcnow().isoformat(),
     }
     try:
-        result = db.table("interview_outcomes").insert(payload).execute()
+        result = await aexecute(db.table("interview_outcomes").insert(payload))
     except Exception as e:
         # Most likely cause: UNIQUE(application_id, round_number) violation.
         msg = str(e)
@@ -507,15 +507,14 @@ async def _credit_stories_for_outcome(
 
     try:
         db = get_supabase()
-        rows = (
+        rows = (await aexecute(
             db.table("interview_prep")
             .select("id, retrieved_stories")
             .eq("application_id", str(application_id))
             .eq("user_id", str(user_id))
             .order("finalized_at", desc=True, nullsfirst=False)
             .limit(1)
-            .execute()
-        ).data or []
+        )).data or []
     except Exception as e:
         summary["error"] = f"prep_lookup_failed: {type(e).__name__}"
         return summary

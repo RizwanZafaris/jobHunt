@@ -100,7 +100,7 @@ function FunnelCard({ data }: { data: FunnelResponse }) {
         {stages.map(([k, label]) => (
           <li
             key={k as string}
-            className="rounded-md border border-border bg-card px-2 py-1.5"
+            className="rounded-md border border-border bg-surface px-2 py-1.5"
           >
             <div className="text-fg-subtle">{label}</div>
             <div className="font-mono tabular-nums text-fg text-base">
@@ -305,7 +305,7 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="space-y-2 rounded-lg border border-border bg-card p-4">
+    <section className="space-y-2 rounded-lg border border-border bg-surface p-4">
       <div className="flex items-baseline justify-between gap-2">
         <h3 className="text-sm font-semibold text-fg">{title}</h3>
         <code className="text-3xs text-fg-subtle font-mono">{source}</code>

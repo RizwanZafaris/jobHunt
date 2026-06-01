@@ -3,7 +3,11 @@
 #
 # Boots `python -m api.worker` which:
 #   - connects to REDIS_URL
-#   - loops on the 'jobhunt' queue (RQ_QUEUE_NAME env override)
+#   - loops on the 'jobhunt' queue (RQ_QUEUE_NAME env override). With the
+#     queue split (RQ_QUEUE_PREFIX set) it instead drains the latency
+#     classes named in WORKER_QUEUES (default: all). RQ_RUN_SCHEDULER=1
+#     runs the embedded scheduler. All read from env — nothing queue-
+#     related is hardcoded here. (P2-1 / P2-2.)
 #   - dispatches G1 / G2 / G3 jobs to the existing graph code
 #
 # Identical base + deps to the API Dockerfile so the cached layers are

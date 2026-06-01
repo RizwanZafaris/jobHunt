@@ -316,9 +316,22 @@ class PersonaSynthesizer(BaseAgent):
             "n_transcripts_used": len(transcripts),
         }
 
+        # DB-1 (2026-05-29): company_personas uniqueness is now composite
+        # (user_id, company_name). The conflict target must include user_id
+        # AND the row must carry it — switching the arbiter without writing
+        # user_id would turn a silent cross-tenant clobber into a hard 23502
+        # on first insert. No user context here (cron/on-demand synthesis),
+        # so fall back to the seed-user UUID via env override, mirroring
+        # db.client.upsert_company.
+        import os
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
         upsert_payload = {
             "company_id": company_id,
             "company_name": company_name,
+            "user_id": user_id,
             "system_prompt_template": parsed.get(
                 "system_prompt_template", (existing or {}).get("system_prompt_template", "")
             ),
@@ -336,7 +349,7 @@ class PersonaSynthesizer(BaseAgent):
             upsert_payload["persona_version"] = 1
 
         db.table("company_personas").upsert(
-            upsert_payload, on_conflict="company_name"
+            upsert_payload, on_conflict="user_id,company_name"
         ).execute()
 
         return SynthesisResult(

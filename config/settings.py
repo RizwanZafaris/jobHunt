@@ -241,6 +241,49 @@ class Settings(BaseSettings):
         "https://dashboard-rizwanzaffarpk-3779s-projects.vercel.app"
     )
 
+    # ── Scalability flags (Phase 2 — default-neutral) ─────────────────────────
+    # P2-4 (docs/SCALABILITY_BUILD_PLAN.md): the LLM circuit breaker in
+    # agents/llm_hardening.py is an in-process dataclass — one per replica.
+    # At single-replica scale that's correct, but across N workers each
+    # replica independently re-discovers a 429ing provider and keeps hammering
+    # it. Setting this to "redis" externalizes the breaker state into a shared
+    # Redis hash so the whole fleet backs off together (and recovers together).
+    #   "memory" → existing per-process CircuitBreaker (default; single-user
+    #              prod stays byte-for-byte unchanged).
+    #   "redis"  → RedisCircuitBreaker (fleet-wide). Fails OPEN on any Redis
+    #              error, so a Redis blip never blocks LLM calls.
+    breaker_backend: str = "memory"
+
+    # P2-3 (docs/SCALABILITY_BUILD_PLAN.md): per-tenant in-flight job cap.
+    # A single FIFO queue with WORKER_CONCURRENCY=1 has no fairness — one
+    # tenant enqueuing a batch of 200 scoring jobs starves every other
+    # tenant's interactive work. This caps the number of *simultaneously
+    # active* (queued+running) jobs a single (user_id, queue_class) may
+    # hold; over the cap, api/queue.py refuses a NEW enqueue with
+    # TenantQueueFull (the API layer translates that to HTTP 429).
+    #   - Counted per (user_id, queue_class) in a Redis counter
+    #     (`inflight:{user_id}:{queue_class}`); INCR on a fresh enqueue,
+    #     DECR when the worker reaches a terminal state.
+    #   - Default is intentionally HIGH so single-user prod is never
+    #     affected: one human can't hold 50 active jobs of one class.
+    #   - <= 0 (or unset → 0 via env) DISABLES the cap entirely, for full
+    #     backward-compat. The dedup/idempotency path always wins: a dedup
+    #     hit returns the existing run id and is never counted or refused.
+    #   - FAILS OPEN: any Redis error on the counter path logs + allows the
+    #     enqueue, so a counter bug can never block real work.
+    max_inflight_per_tenant: int = 50
+
+    # P2-5 (docs/SCALABILITY_BUILD_PLAN.md): async DB seam. supabase-py is
+    # synchronous, so every `.execute()` is a blocking socket call on the
+    # event loop (SCALABILITY.md P0 #3). The additive `aexecute` / async
+    # twins in db/client.py run that sync work in FastAPI's threadpool via
+    # `run_in_threadpool`. This bounds how many DB calls can occupy threadpool
+    # workers at once so a burst of slow queries can't swamp the pool (which
+    # is shared with every other `run_in_threadpool` user). Purely a seam
+    # knob today — no caller uses the async path yet (handler conversion is
+    # P2-8…N), so single-user prod is byte-for-byte unchanged.
+    db_threadpool_concurrency: int = 20
+
     # ── Scheduling ──────────────────────────────────────────────────────────
     job_scout_time: str = "09:00"
     boss_agent_time: str = "21:00"

@@ -27,10 +27,16 @@ import yaml
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from agents.base_agent import BaseAgent
+from agents.concurrency import gather_bounded
 from config.settings import get_settings
 from db.client import upsert_job, upsert_company, get_company_by_name, get_supabase
 
 logger = logging.getLogger(__name__)
+
+# Max concurrent GPT-4.1 scoring chunks. Each chunk is one ask_openai
+# call covering 25 jobs; with hundreds of jobs an unbounded gather would
+# fire ~dozens of LLM calls at once (SCALABILITY.md P1 — bound fan-outs).
+SCORE_CHUNK_CONCURRENCY = 4
 
 
 def _serper_enabled() -> bool:
@@ -1573,8 +1579,15 @@ Return JSON only."""
                 logger.warning(f"Scoring chunk offset={offset} failed: {e}")
                 return {}
 
-        chunk_results = await asyncio.gather(
-            *[score_chunk(chunk, i * chunk_size) for i, chunk in enumerate(chunks)]
+        # Bounded fan-out: cap concurrent GPT-4.1 scoring calls (was an
+        # unbounded gather firing one LLM call per 25-job chunk). Order is
+        # preserved, but score_map is keyed by id so it wouldn't matter.
+        chunk_results = await gather_bounded(
+            [
+                lambda chunk=chunk, off=i * chunk_size: score_chunk(chunk, off)
+                for i, chunk in enumerate(chunks)
+            ],
+            limit=SCORE_CHUNK_CONCURRENCY,
         )
         score_map: dict[int, dict] = {}
         for partial in chunk_results:

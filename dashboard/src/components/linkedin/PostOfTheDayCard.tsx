@@ -34,7 +34,7 @@ export function PostOfTheDayCard({ post, emptyCta = 'generate' }: Props) {
   if (!post) {
     if (emptyCta === 'hide') return null
     return (
-      <section className="rounded-lg border border-border bg-card p-4">
+      <section className="rounded-lg border border-border bg-surface p-4">
         <div className="flex items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-fg">Today&apos;s LinkedIn post</h3>
           <code className="text-3xs text-fg-subtle font-mono">linkedin_drafts</code>
@@ -54,7 +54,7 @@ export function PostOfTheDayCard({ post, emptyCta = 'generate' }: Props) {
 
   const badge = statusBadge(post.status)
   return (
-    <section className="rounded-lg border border-border bg-card p-4">
+    <section className="rounded-lg border border-border bg-surface p-4">
       <div className="flex items-baseline justify-between gap-2">
         <h3 className="text-sm font-semibold text-fg">Today&apos;s LinkedIn post</h3>
         <span className={`rounded border px-1.5 py-0.5 text-3xs ${badge.cls}`}>

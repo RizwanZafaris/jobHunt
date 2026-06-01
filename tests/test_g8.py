@@ -253,7 +253,6 @@ async def test_run_g8_persists_row(mock_router, mock_supabase, monkeypatch):
 
     # Patch the lazy supabase import in every relevant module.
     monkeypatch.setattr("db.client.get_supabase", lambda: client, raising=False)
-    sys.modules.setdefault("db", MagicMock()).client = MagicMock(get_supabase=lambda: client)
 
     # Patch the LLM router.
     monkeypatch.setattr("agents.llm_router.get_router", lambda: mock_router, raising=False)
@@ -309,7 +308,6 @@ async def test_load_open_job_raises_409_on_closed(mock_supabase, monkeypatch):
     recorder["jobs"][0]["posting_closed_at"] = "2025-01-01T00:00:00Z"
 
     monkeypatch.setattr("db.client.get_supabase", lambda: client, raising=False)
-    sys.modules.setdefault("db", MagicMock()).client = MagicMock(get_supabase=lambda: client)
 
     from agents.g8_io import run_g8_for_offer
 

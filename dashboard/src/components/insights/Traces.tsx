@@ -208,7 +208,7 @@ export async function Traces() {
       <FreshnessBar at={loadedAt} />
 
       {/* Active section */}
-      <section className="space-y-2 rounded-lg border border-border bg-card p-4">
+      <section className="space-y-2 rounded-lg border border-border bg-surface p-4">
         <div className="flex items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-fg">Active runs</h3>
           <code className="text-3xs text-fg-subtle font-mono">
@@ -225,7 +225,7 @@ export async function Traces() {
       </section>
 
       {/* Recent runs section */}
-      <section className="space-y-2 rounded-lg border border-border bg-card p-4">
+      <section className="space-y-2 rounded-lg border border-border bg-surface p-4">
         <div className="flex items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-fg">Recent runs (last 7 days)</h3>
           <code className="text-3xs text-fg-subtle font-mono">v_graph_runs</code>
@@ -240,7 +240,7 @@ export async function Traces() {
       </section>
 
       {/* Errors section */}
-      <section className="space-y-2 rounded-lg border border-border bg-card p-4">
+      <section className="space-y-2 rounded-lg border border-border bg-surface p-4">
         <div className="flex items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-fg">Recent errors</h3>
           <code className="text-3xs text-fg-subtle font-mono">

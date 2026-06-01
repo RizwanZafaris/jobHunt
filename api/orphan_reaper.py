@@ -165,6 +165,14 @@ def reap_orphans(stale_minutes: int = DEFAULT_STALE_MINUTES) -> dict[str, Any]:
     one broken row doesn't stop the sweep.
     """
     from api.jobs_runs import find_orphans, mark_failed
+    from db.client import get_supabase
+
+    # SCALE-BUG fix (2026-05-29 audit): `db` was passed to _sweep_stuck_queued()
+    # below but never bound in this scope, so every reaper tick raised
+    # NameError *before* find_orphans() ran — silently disabling the ONLY
+    # recovery path for stuck/orphaned jobs (the _scheduled_reap wrapper
+    # swallowed it as "tick crashed"). Bind the client here.
+    db = get_supabase()
 
     # HARDEN-BUG-402: sweep stuck resume_builds in the same tick
     swept_resume_builds = _sweep_stuck_resume_builds(stale_minutes=30)

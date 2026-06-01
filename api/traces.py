@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from api.context import get_current_user
 from api.users import User
-from db.client import get_supabase
+from db.client import aexecute, get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -129,15 +129,13 @@ async def recent_runs(
     _set_cache(response)
     db = get_supabase()
     try:
-        rows = (
+        rows = (await aexecute(
             db.table("v_graph_runs")
             .select("*")
             .eq("user_id", str(user.id))
             .order("last_event_at", desc=True)
             .limit(limit)
-            .execute()
-            .data
-        ) or []
+        )).data or []
     except Exception as exc:
         logger.exception("v_graph_runs query failed for user %s", user.id)
         return RecentRunsResponse(
@@ -176,7 +174,7 @@ async def recent_errors(
     _set_cache(response)
     db = get_supabase()
     try:
-        rows = (
+        rows = (await aexecute(
             db.table("agent_call_log")
             .select(
                 "graph, node_name, agent_name, model, error, called_at, "
@@ -186,9 +184,7 @@ async def recent_errors(
             .not_.is_("error", "null")
             .order("called_at", desc=True)
             .limit(limit)
-            .execute()
-            .data
-        ) or []
+        )).data or []
     except Exception as exc:
         logger.exception("agent_call_log errors query failed: %r", exc)
         return ErrorsResponse(
@@ -252,7 +248,7 @@ async def trace_detail(
         q = q.or_(f"application_id.eq.{run_key},resume_build_id.eq.{run_key}")
 
     try:
-        rows = q.order("called_at", desc=False).execute().data or []
+        rows = (await aexecute(q.order("called_at", desc=False))).data or []
     except Exception as exc:
         logger.warning("trace_detail query failed: %r", exc)
         return TraceDetailResponse(graph=graph, run_key=run_key)
