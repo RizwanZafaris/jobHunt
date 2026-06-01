@@ -62,8 +62,8 @@ export default async function NetworkPage() {
       )}
 
       {people.length === 0 && !error && (
-        <div className="mb-4 rounded-lg bg-blue-50 p-4 text-blue-700">
-          No people imported yet — upload your LinkedIn connections.csv to get started.
+        <div className="mb-4 rounded-lg border border-accent/30 bg-accent/10 p-4 text-sm text-fg">
+          No people yet — use <span className="font-medium">“Find people”</span> to add contacts at your target companies.
         </div>
       )}
 

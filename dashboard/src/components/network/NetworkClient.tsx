@@ -141,14 +141,14 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
         </header>
         {showDemoBanner && (
           <Pill tone="warning" size="xs">
-            Demo data — import LinkedIn CSV to replace
+            Demo data — use “Find people” to add real contacts
           </Pill>
         )}
         {topPaths.length === 0 ? (
           <EmptyState
             icon="users"
             title="No paths yet"
-            description="Import your LinkedIn connections to seed the graph."
+            description="Use “Find people” to add contacts at your target companies and seed the graph."
           />
         ) : (
           <ol className="flex flex-col gap-2" aria-label="Top warm-intro paths">
