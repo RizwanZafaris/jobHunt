@@ -11,11 +11,12 @@ import re
 from typing import Optional
 from datetime import date, datetime, timezone, timedelta
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header, Path, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header, Path, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse, Response
 from pydantic import BaseModel
 import os
+import uuid
 
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
@@ -610,7 +611,7 @@ async def evaluate_job(
 async def list_jobs(
     status: Optional[str] = None,
     min_score: int = 0,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200),
     include_closed: bool = False,
     letter_grade: Optional[str] = None,
     user: "User" = Depends(get_current_user),
@@ -682,7 +683,7 @@ from api.users import User  # noqa: E402
 
 @app.get("/me/jobs")
 async def list_my_jobs(
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=200),
     min_score: int = 0,
     user: "User" = Depends(get_current_user),
     db=Depends(get_request_supabase),
@@ -1230,6 +1231,21 @@ class ResumeBuildFeedback(BaseModel):
     user_feedback: Optional[str] = None
 
 
+def _valid_uuid(s) -> bool:
+    """True if *s* is a well-formed UUID string (any version).
+
+    Guards the /resume-builds/{build_id} routes: a non-UUID id would
+    otherwise reach Postgres and raise 22P02 (invalid uuid) -> a 500.
+    """
+    if not isinstance(s, str):
+        return False
+    try:
+        uuid.UUID(s)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def _safe_resume_build_row(row: dict, *, include_md: bool = False) -> dict:
     """Strip noisy fields; return a UI-shaped dict.
 
@@ -1293,6 +1309,8 @@ async def get_resume_build(build_id: str, user: "User" = Depends(get_current_use
     """Single build record with all fields (without the heavy
     agent_transcript blob — fetch that via /resume-builds/{id}/transcript
     if you need it)."""
+    if not _valid_uuid(build_id):
+        raise HTTPException(status_code=404, detail="Resume build not found")
     db = get_supabase()
     result = await aexecute(
         db.table("resume_builds")
@@ -1317,6 +1335,8 @@ async def get_resume_build_markdown(
 
     Returns: {markdown: str, source: 'user_edit'|'storage'|'missing', byte_size: int}
     """
+    if not _valid_uuid(build_id):
+        raise HTTPException(status_code=404, detail="Resume build not found")
     import httpx
     db = get_supabase()
     rb = (await aexecute(
@@ -1382,6 +1402,8 @@ async def save_resume_build_edit(
     resume_builds.user_edited_md so the original Storage object is kept
     intact (audit trail). Display/download endpoints prefer this over
     the canonical version."""
+    if not _valid_uuid(build_id):
+        raise HTTPException(status_code=404, detail="Resume build not found")
     db = get_supabase()
     if not payload.user_edited_md or not payload.user_edited_md.strip():
         raise HTTPException(status_code=400, detail="user_edited_md cannot be empty")
@@ -1411,6 +1433,8 @@ async def save_resume_build_feedback(
     """Save user rating + free-text feedback on a build. Either field
     is optional but at least one must be set. Used by the Sunday persona
     synth cron to learn from negative ratings."""
+    if not _valid_uuid(build_id):
+        raise HTTPException(status_code=404, detail="Resume build not found")
     db = get_supabase()
     if payload.user_rating is None and not payload.user_feedback:
         raise HTTPException(
@@ -1478,6 +1502,8 @@ async def download_resume_build(
     docx/pdf are rendered from that markdown with resume_agents.render
     (python-docx + reportlab — no pandoc, no network).
     """
+    if not _valid_uuid(build_id):
+        raise HTTPException(status_code=404, detail="Resume build not found")
     fmt = (fmt or "md").lower()
     if fmt != "md" and fmt not in _RESUME_RENDERERS:
         raise HTTPException(
@@ -1506,6 +1532,14 @@ async def download_resume_build(
 
     renderer, media_type, ext = _RESUME_RENDERERS[fmt]
     data = renderer(md)
+    if not data:
+        # Renderer degraded (missing lib / bad markdown) — it returns b""
+        # rather than raising. Don't hand back an empty file; tell the
+        # client to fall back to the always-available markdown.
+        raise HTTPException(
+            status_code=503,
+            detail=f"{fmt} renderer unavailable — retry with fmt=md",
+        )
     return Response(
         content=data,
         media_type=media_type,
@@ -1578,7 +1612,7 @@ async def get_profile(user: "User" = Depends(get_current_user)):
 async def get_profile_keywords(
     user: "User" = Depends(get_current_user),
     category: Optional[str] = None,
-    limit: int = 500,
+    limit: int = Query(500, ge=1, le=200),
 ):
     """Return keyword bank, optionally filtered by category (caller's tenant)."""
     db = get_supabase()
@@ -3170,7 +3204,7 @@ async def admin_rebuild_personas(
     background_tasks: BackgroundTasks,
     below: str = "medium",
     include_missing: bool = True,
-    limit: int = 200,
+    limit: int = Query(200, ge=1, le=200),
     _admin: "User" = Depends(require_admin),
 ):
     """Re-run deep-research for every target company whose persona quality is
@@ -3683,7 +3717,7 @@ async def get_last_alerts(_auth=Depends(verify_service_secret)):
 
 
 @app.get("/costs/by-resume-build")
-async def costs_by_resume_build(limit: int = 20, _auth=Depends(verify_service_secret)):
+async def costs_by_resume_build(limit: int = Query(20, ge=1, le=200), _auth=Depends(verify_service_secret)):
     """
     Top resume_builds by total cost. Joins to resume_builds for context
     (company_name, polisher_score, status).
@@ -3736,7 +3770,7 @@ async def costs_by_resume_build(limit: int = 20, _auth=Depends(verify_service_se
 
 @app.get("/costs/recent-calls")
 async def costs_recent_calls(
-    limit: int = 100,
+    limit: int = Query(100, ge=1, le=200),
     provider: Optional[str] = None,
     agent_name: Optional[str] = None,
     has_error: Optional[bool] = None,
