@@ -940,6 +940,46 @@ async def score_role(
             "skip_reason": "already_scored_within_window",
         }
 
+    # FRD-14 refactor: the scoring core lives in score_job_dict (DB-free,
+    # persistence-free) so the URL Job Rater can score an in-memory extracted
+    # JD dict. score_role keeps its DB-load + idempotency wrapper (above) and
+    # the persist + return below — external behaviour is unchanged.
+    breakdown = await score_job_dict(
+        job=job,
+        user_id=user_id,
+        user_target_total_comp=user_target_total_comp,
+        user_remote_preference=user_remote_preference,
+    )
+
+    _persist_score(
+        job_id=job_id,
+        user_id=str(user_id),
+        breakdown=breakdown,
+        letter_grade=breakdown["letter_grade"],
+    )
+
+    return breakdown
+
+
+async def score_job_dict(
+    *,
+    job: dict[str, Any],
+    user_id: UUID,
+    user_target_total_comp: Optional[int] = None,
+    user_remote_preference: Optional[str] = None,
+) -> dict[str, Any]:
+    """Score an in-memory job dict across the 6 dimensions; return the
+    breakdown. NO DB load, NO persistence — this is the pure scoring core
+    extracted from score_role (FRD-14 URL Job Rater).
+
+    score_role wraps this with the DB load + idempotency short-circuit +
+    _persist_score. The URL Job Rater calls it directly on a JD dict it
+    extracted from a pasted/fetched posting (ephemeral, never persisted here).
+
+    `job` must contain at least `company`, a title/`role`, and `description`
+    (the JD text the dimension scorers read). The returned dict has the same
+    shape score_role returns (the API surfaces it directly).
+    """
     company = job.get("company") or ""
     user_id_str = str(user_id)
     persona = _load_company_persona(user_id_str, company)
@@ -1007,13 +1047,6 @@ async def score_role(
         "scored_at": datetime.now(timezone.utc).isoformat(),
         "scorer_version": SCORER_VERSION,
     }
-
-    _persist_score(
-        job_id=job_id,
-        user_id=user_id_str,
-        breakdown=breakdown,
-        letter_grade=grade,
-    )
 
     return breakdown
 

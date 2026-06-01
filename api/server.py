@@ -176,6 +176,7 @@ from api.proof_points import router as proof_points_router  # noqa: E402  /profi
 from api.profile import router as profile_router  # noqa: E402  /profile/* (Tier 4 G11 voice calibration)
 from api.offers import router as offers_router  # noqa: E402  /offers/* (Tier 4 G8 offer evaluation)
 from api.analytics import router as analytics_router  # noqa: E402  /analytics/* (Audit Gap §4.3 pattern analytics)
+from api.job_rater import router as job_rater_router  # noqa: E402  /jobs/rate-url* (FRD-14 URL Job Rater)
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
@@ -190,6 +191,7 @@ app.include_router(proof_points_router)
 app.include_router(profile_router)
 app.include_router(offers_router)
 app.include_router(analytics_router)
+app.include_router(job_rater_router)
 from api.traces import router as traces_router  # noqa: E402  Stream C
 app.include_router(traces_router)
 
