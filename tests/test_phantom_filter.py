@@ -1,12 +1,16 @@
 """
-Regression tests for Stream B (2026-05-13): phantom-company filtering
-across the /today action queue + CompanyAgent worker.
+Regression tests for the CompanyAgent phantom-company guard.
 
 Covers:
-  1. _phantom_company_names returns a frozenset scoped to user
-  2. _build_job_actions drops rows whose company is in the phantom set
-  3. _build_job_actions still surfaces legitimate rows
-  4. CompanyAgent refuses to instantiate when DB flags the name phantom
+  - CompanyAgent refuses to instantiate when the DB flags the name phantom
+  - CompanyAgent allows a real company through the DB guard
+
+Note (2026-05-29): the `is_phantom` flag lives on `companies`, not
+`company_personas` (BUG-013). Two callers that wrongly queried
+`company_personas.is_phantom` were corrected — the /today phantom filter
+(`_phantom_company_names`) was retired, and this CompanyAgent guard was
+repointed to `companies`. The surviving runtime filters (`_build_incoming_jobs`
+and this guard) all query the correct `companies` table.
 """
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
 _USER = UUID("11111111-1111-1111-1111-111111111111")
 
 
-def _mock_db(*, phantom_personas: list[dict] | None = None, job_rows: list[dict] | None = None):
+def _mock_db(*, phantom_companies: list[dict] | None = None, job_rows: list[dict] | None = None):
     """Build a MagicMock Supabase client returning canned table data."""
 
     class _Q:
@@ -75,12 +79,12 @@ def _mock_db(*, phantom_personas: list[dict] | None = None, job_rows: list[dict]
 
         def execute(self):
             if self.table == "companies":
-                rows = phantom_personas or []
+                rows = phantom_companies or []
                 # Honor is_phantom filter
                 wants_phantom = any(f == ("eq", "is_phantom", True) for f in self._filters)
                 if wants_phantom:
                     rows = [r for r in rows if r.get("is_phantom") is True]
-                # Honor ilike(company_name, X) filter
+                # Honor ilike(name, X) filter
                 for f in self._filters:
                     if f[0] == "ilike" and f[1] == "name":
                         rows = [r for r in rows if r.get("name", "").lower() == f[2].lower()]
@@ -96,44 +100,7 @@ def _mock_db(*, phantom_personas: list[dict] | None = None, job_rows: list[dict]
     return _Client()
 
 
-# ── 1. _phantom_company_names returns lowercase frozenset ──────────────
-
-
-def test_phantom_company_names_returns_lowercased_frozenset(monkeypatch):
-    from api import actions
-
-    db = _mock_db(phantom_personas=[
-        {"name": "Adyen Careers", "is_phantom": True},
-        {"name": "SuperApp", "is_phantom": True},
-        {"name": "Real Co", "is_phantom": False},  # not flagged
-    ])
-    monkeypatch.setattr(actions, "get_supabase", lambda: db, raising=False)
-
-    out = actions._phantom_company_names(_USER)
-    assert isinstance(out, frozenset)
-    assert "adyen careers" in out
-    assert "superapp" in out
-    assert "real co" not in out
-
-
-def test_phantom_company_names_handles_db_failure(monkeypatch):
-    """DB error → empty set, no exception (defensive)."""
-    from api import actions
-
-    def boom():
-        raise RuntimeError("simulated DB outage")
-
-    class _Client:
-        def table(self, name):
-            raise RuntimeError("simulated DB outage")
-
-    monkeypatch.setattr(actions, "get_supabase", lambda: _Client(), raising=False)
-
-    out = actions._phantom_company_names(_USER)
-    assert out == frozenset()
-
-
-# ── 2. CompanyAgent refuses to instantiate when DB flags name phantom ──
+# ── CompanyAgent refuses to instantiate when DB flags name phantom ──
 
 
 def test_company_agent_refuses_phantom_via_db_flag(monkeypatch):
@@ -151,7 +118,7 @@ def test_company_agent_refuses_phantom_via_db_flag(monkeypatch):
     )
 
     # DB returns a phantom row for "SuperApp"
-    db = _mock_db(phantom_personas=[
+    db = _mock_db(phantom_companies=[
         {"name": "SuperApp", "is_phantom": True},
     ])
     # Patch the lazy get_supabase import inside CompanyAgent.__init__
@@ -174,7 +141,7 @@ def test_company_agent_allows_real_company_via_db_check(monkeypatch):
     )
 
     # DB returns empty (no row for "Adyen") → guard does not fire
-    db = _mock_db(phantom_personas=[])
+    db = _mock_db(phantom_companies=[])
     import db.client as dbc
     monkeypatch.setattr(dbc, "get_supabase", lambda: db, raising=False)
 

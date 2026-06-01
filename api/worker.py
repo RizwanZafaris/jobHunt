@@ -34,15 +34,34 @@ WORKER_CONCURRENCY env var:
     isn't suitable for a long-lived worker; we use plain Worker.work()
     in a single process and rely on Railway's replicas for true
     horizontal scaling).
+
+WORKER_QUEUES env var (P2-1):
+    Comma-separated latency classes this worker consumes. Default = all
+    classes ('interactive,batch,cron') so a single worker still drains
+    everything exactly as before. Split the fleet by running a
+    worker-interactive pool (WORKER_QUEUES=interactive) and a worker-batch
+    pool (WORKER_QUEUES=batch,cron). NOTE: when RQ_QUEUE_PREFIX is unset
+    every class resolves to the one 'jobhunt' queue, so this var is inert
+    until the split is enabled — back-compat is preserved.
+
+RQ_RUN_SCHEDULER env var (P2-2):
+    "1" to run RQ's embedded scheduler in this worker (for scheduled/
+    deferred jobs), else "0". Default "0". Exactly ONE worker in the fleet
+    should set it to "1"; otherwise scaling worker replicas double-fires
+    scheduled jobs — the queue-side analogue of the API's SCHEDULER_ENABLED
+    leader gate.
 """
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
+import signal
 import sys
 import traceback
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +116,93 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
+# ─── Per-tenant in-flight cap: release on terminal (P2-3 fairness) ─────────
+#
+# api/queue.py INCRs a per-(user_id, queue_class) counter on every fresh
+# enqueue; the worker must DECR it once the job reaches a terminal state
+# (success OR failure) so the slot frees up. We do this in a `finally`
+# wrapper around each worker_run_* function rather than threading a
+# decrement into all ~8 success/failure branches by hand — one place, every
+# terminal path covered, including re-raises for RQ retry.
+#
+# The release is fail-safe by construction:
+#   * api.queue.release_inflight never raises and never lets the counter go
+#     negative;
+#   * if we can't determine the run's (user_id, kind) (row deleted between
+#     enqueue and pickup), we skip the DECR and let the counter's TTL safety
+#     net reap it — never crash the job on a counter bug.
+#
+# When the cap is disabled (MAX_INFLIGHT_PER_TENANT <= 0, the default-high
+# value notwithstanding) release_inflight() short-circuits before touching
+# Redis, so single-user mode adds no per-job Redis traffic.
+
+
+def _inflight_release(func: Callable[[str], Any]) -> Callable[[str], Any]:
+    """Decorator: DECR the tenant's in-flight counter when the job finishes.
+
+    Wraps a `worker_run_*(jobs_run_id)` function. Looks up the run's
+    (user_id, kind) once and, in a `finally`, releases one in-flight slot —
+    so the counter is freed whether the job succeeded, failed-and-re-raised
+    for RQ retry, or returned an early sentinel. Best-effort and never
+    raises.
+    """
+
+    @functools.wraps(func)
+    def _wrapper(jobs_run_id: str):
+        # Zero-overhead pass-through when the cap is disabled
+        # (MAX_INFLIGHT_PER_TENANT <= 0): no extra row read, no Redis. This
+        # keeps the worker path byte-for-byte unchanged for operators who
+        # turn the feature off. With the default (cap=50, enabled) the cost
+        # is one cheap indexed read + one Redis DECR per finished job.
+        try:
+            from api.queue import _cap_enabled
+            enabled = _cap_enabled()
+        except Exception:
+            enabled = False
+        if not enabled:
+            return func(jobs_run_id)
+
+        user_id = None
+        kind = None
+        try:
+            # Resolve identity up front so we can still release even if the
+            # row is mutated/deleted during the job. Cheap single-row read,
+            # off the hot path. Guarded — a lookup failure must not block
+            # the actual work.
+            from api.jobs_runs import get_run
+            run = get_run(jobs_run_id)
+            if run is not None:
+                user_id = run.user_id
+                kind = run.kind
+        except Exception:
+            logger.debug(
+                "inflight: could not resolve run %s for release; "
+                "relying on counter TTL", jobs_run_id, exc_info=True,
+            )
+
+        try:
+            return func(jobs_run_id)
+        finally:
+            if user_id is not None and kind is not None:
+                try:
+                    from api.queue import release_inflight
+                    release_inflight(user_id, kind)
+                except Exception:
+                    # release_inflight already swallows Redis errors; this
+                    # is belt-and-suspenders so the worker terminal path is
+                    # truly crash-proof.
+                    logger.debug(
+                        "inflight: release_inflight raised for run %s "
+                        "(ignored)", jobs_run_id, exc_info=True,
+                    )
+
+    return _wrapper
+
+
 # ─── Worker job functions ─────────────────────────────────────────────────
 
 
+@_inflight_release
 def worker_run_g2(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G2 resume graph for one jobs_runs row.
 
@@ -175,6 +278,7 @@ def worker_run_g2(jobs_run_id: str) -> dict[str, Any]:
         raise  # Let RQ apply Retry policy
 
 
+@_inflight_release
 def worker_run_g1(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G1 persona deep-research for one company.
 
@@ -244,6 +348,7 @@ def worker_run_g1(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g3(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G3 interview-prep graph for one application/round."""
     from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
@@ -300,6 +405,7 @@ def worker_run_g3(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g9(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G9 STAR+R story extractor for one user.
 
@@ -351,6 +457,7 @@ def worker_run_g9(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g5(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G5 fit-score evaluation for one job.
 
@@ -413,6 +520,7 @@ def worker_run_g5(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g11(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G11 voice-calibration graph for one user.
 
@@ -466,6 +574,7 @@ def worker_run_g11(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_g4(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G4 LinkedIn-draft graph for one user."""
     from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
@@ -509,6 +618,7 @@ def worker_run_g4(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+@_inflight_release
 def worker_run_legitimacy(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the Tier-2 legitimacy agent for one job.
 
@@ -597,12 +707,128 @@ def worker_run_legitimacy(jobs_run_id: str) -> dict[str, Any]:
         raise
 
 
+# ─── SIGTERM guard (B7) ───────────────────────────────────────────────────
+#
+# Railway sends SIGTERM before SIGKILL during deploys. Without a handler,
+# in-flight resume_builds are abandoned in status='running' and the next
+# orphan_reaper sweep flips them to 'failed' with a NULL error (see
+# docs/INCIDENTS/2026_05_11_mass_fail.md). This handler gives us ~10s to
+# mark them cleanly before the process dies.
+
+_SIGTERM_HANDLED = False
+
+
+def _sweep_in_flight_on_shutdown() -> dict[str, int]:
+    """Flip all status='running' resume_builds + jobs_runs to failed.
+
+    Returns a dict with counts for telemetry. Never raises — the worker is
+    dying anyway; we log and continue.
+    """
+    counts = {"resume_builds_flipped": 0, "jobs_runs_flipped": 0}
+    try:
+        from db.client import get_supabase
+        db = get_supabase()
+
+        # 1. Resume builds — anything still running.
+        stuck_builds = (
+            db.table("resume_builds")
+            .select("id")
+            .eq("status", "running")
+            .execute()
+        ).data or []
+
+        for row in stuck_builds:
+            try:
+                db.table("resume_builds").update({
+                    "status": "failed",
+                    "error": "worker_sigterm_received",
+                    "finalized_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", row["id"]).execute()
+                counts["resume_builds_flipped"] += 1
+            except Exception:
+                pass  # best-effort; worker is dying
+
+        logger.warning(
+            f"SIGTERM sweep: flipped {counts['resume_builds_flipped']} "
+            "resume_build(s) to failed"
+        )
+
+        # 2. Jobs runs — anything started but not finished.
+        stuck_jobs = (
+            db.table("jobs_runs")
+            .select("id")
+            .eq("status", "running")
+            .execute()
+        ).data or []
+
+        for row in stuck_jobs:
+            try:
+                db.table("jobs_runs").update({
+                    "status": "failed",
+                    "last_error": "worker_sigterm_received",
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", row["id"]).execute()
+                counts["jobs_runs_flipped"] += 1
+            except Exception:
+                pass
+
+        if counts["jobs_runs_flipped"]:
+            logger.warning(
+                f"SIGTERM sweep: flipped {counts['jobs_runs_flipped']} "
+                "jobs_run(s) to failed"
+            )
+
+    except Exception:
+        logger.exception("SIGTERM sweep failed (continuing shutdown)")
+
+    return counts
+
+
+def _on_sigterm(signum: int, frame: Any) -> None:
+    """Handler for SIGTERM — sweep in-flight builds then exit cleanly."""
+    global _SIGTERM_HANDLED
+    if _SIGTERM_HANDLED:
+        return
+    _SIGTERM_HANDLED = True
+    logger.warning("worker received SIGTERM — sweeping in-flight builds")
+    _sweep_in_flight_on_shutdown()
+    sys.exit(0)
+
+
 # ─── Worker entrypoint ────────────────────────────────────────────────────
+
+
+def _worker_queues():
+    """Resolve the list of RQ Queue objects this worker should consume.
+
+    Reads WORKER_QUEUES (comma-separated latency classes). Default = all
+    classes, so a lone worker drains everything exactly as before. Classes
+    are resolved to concrete RQ Queue objects via api.queue._get_queue,
+    which means when RQ_QUEUE_PREFIX is unset they all collapse onto the
+    single 'jobhunt' queue — we de-dup by name so the Worker isn't handed
+    the same queue three times. Order is preserved: the first listed class
+    has scheduling priority within the worker's pop loop (P2-1).
+    """
+    from api.queue import QUEUE_CLASSES, _get_queue
+
+    raw = os.environ.get("WORKER_QUEUES") or ",".join(QUEUE_CLASSES)
+    classes = [c.strip() for c in raw.split(",") if c.strip()]
+    if not classes:
+        classes = list(QUEUE_CLASSES)
+
+    queues = []
+    seen_names: set[str] = set()
+    for cls in classes:
+        q = _get_queue(cls)
+        if q.name not in seen_names:
+            queues.append(q)
+            seen_names.add(q.name)
+    return queues
 
 
 def _start_worker():
     """Boot one RQ worker in this process and block on .work()."""
-    from api.queue import _get_queue, _get_redis
+    from api.queue import _get_redis
     try:
         from rq import Worker
     except ImportError as e:
@@ -611,7 +837,7 @@ def _start_worker():
             "(see _pending_deps_queue.txt for the pinned version)."
         ) from e
 
-    queue = _get_queue()
+    queues = _worker_queues()
     redis_conn = _get_redis()
 
     # Sanity probe — fail fast if Redis is unreachable rather than
@@ -627,11 +853,25 @@ def _start_worker():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    # B7: register SIGTERM handler so Railway deploys don't orphan
+    # in-flight resume_builds. Must happen before worker.work() blocks.
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except Exception:
+        pass  # Windows or restricted environments
+
+    # P2-2: only one worker in the fleet should run the embedded RQ
+    # scheduler, else scaling worker replicas double-fires scheduled jobs.
+    # Default OFF — the worker-interactive pool (railway.toml) sets it to 1.
+    run_scheduler = os.getenv("RQ_RUN_SCHEDULER", "0") == "1"
+
+    queue_names = ", ".join(q.name for q in queues)
     logger.info(
-        f"jobHunt worker starting (queue={queue.name}, redis={redis_conn})"
+        f"jobHunt worker starting (queues=[{queue_names}], "
+        f"with_scheduler={run_scheduler}, redis={redis_conn})"
     )
-    worker = Worker([queue], connection=redis_conn)
-    worker.work(with_scheduler=True)
+    worker = Worker(queues, connection=redis_conn)
+    worker.work(with_scheduler=run_scheduler)
 
 
 def _start_worker_pool(concurrency: int):

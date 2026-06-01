@@ -39,11 +39,11 @@ from typing import Any, Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.context import get_current_user
 from api.users import User
-from db.client import get_supabase
+from db.client import aexecute, get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,17 @@ STATUS_VALUES = ("draft", "approved", "scheduled", "posted", "rejected", "expire
 
 
 class GenerateBody(BaseModel):
-    """Body for POST /linkedin/drafts/generate."""
+    """Body for POST /linkedin/drafts/generate.
+
+    extra='forbid' set 2026-05-14 after a silent field-name mismatch
+    bug (dashboard sent `company_id`, backend expects `target_company_id`).
+    Pydantic's default silently drops unknown fields, so the bug was
+    invisible — every Generate request produced a draft with no
+    target-company filter applied. Failing loudly with 422 on unknown
+    fields surfaces these mismatches immediately.
+    """
+    model_config = ConfigDict(extra="forbid")
+
     count: int = Field(default=1, ge=1, le=5)
     angle: Optional[str] = None
     target_company_id: Optional[UUID] = None
@@ -264,7 +274,7 @@ async def list_drafts(
     )
     if status is not None:
         q = q.eq("status", status)
-    result = q.execute()
+    result = await aexecute(q)
     return {
         "items": result.data or [],
         "total": getattr(result, "count", None) or len(result.data or []),
@@ -307,12 +317,11 @@ async def patch_draft(
         return cur
 
     db = get_supabase()
-    rs = (
+    rs = await aexecute(
         db.table("linkedin_drafts")
         .update(update)
         .eq("id", str(draft_id))
         .eq("user_id", str(user.id))
-        .execute()
     )
     return (rs.data or [cur])[0]
 
@@ -343,12 +352,11 @@ async def approve_draft(
 
     new_status = "scheduled" if sched > datetime.now(timezone.utc) else "approved"
     db = get_supabase()
-    rs = (
+    rs = await aexecute(
         db.table("linkedin_drafts")
         .update({"status": new_status, "scheduled_for": sched.isoformat()})
         .eq("id", str(draft_id))
         .eq("user_id", str(user.id))
-        .execute()
     )
     return (rs.data or [cur])[0]
 
@@ -381,12 +389,11 @@ async def copy_draft(
         update["posted_at"] = now.isoformat()
 
     db = get_supabase()
-    rs = (
+    rs = await aexecute(
         db.table("linkedin_drafts")
         .update(update)
         .eq("id", str(draft_id))
         .eq("user_id", str(user.id))
-        .execute()
     )
     updated = (rs.data or [cur])[0]
 
@@ -453,12 +460,11 @@ async def reject_draft(
         raise HTTPException(status_code=409,
                             detail="cannot reject a posted draft")
     db = get_supabase()
-    rs = (
+    rs = await aexecute(
         db.table("linkedin_drafts")
         .update({"status": "rejected"})
         .eq("id", str(draft_id))
         .eq("user_id", str(user.id))
-        .execute()
     )
     return (rs.data or [cur])[0]
 
@@ -477,12 +483,11 @@ async def get_voice_profile(
     to defaults inside the G4 graph.
     """
     db = get_supabase()
-    rs = (
+    rs = await aexecute(
         db.table("linkedin_voice_profile")
         .select("*")
         .eq("user_id", str(user.id))
         .limit(1)
-        .execute()
     )
     rows = rs.data or []
     if not rows:
@@ -511,17 +516,16 @@ async def put_voice_profile(
         ][:5]
 
     db = get_supabase()
-    rs = (
+    rs = await aexecute(
         db.table("linkedin_voice_profile")
         .upsert(payload, on_conflict="user_id")
-        .execute()
     )
     rows = rs.data or []
     if not rows:
         # Some postgrest versions don't echo on upsert — re-read.
-        existing = (
+        existing = await aexecute(
             db.table("linkedin_voice_profile")
-            .select("*").eq("user_id", str(user.id)).limit(1).execute()
+            .select("*").eq("user_id", str(user.id)).limit(1)
         )
         rows = existing.data or []
     if not rows:
@@ -538,12 +542,11 @@ async def get_posting_schedule(
 ) -> dict[str, Any]:
     """Return the user's full posting schedule (one row per slot)."""
     db = get_supabase()
-    rs = (
+    rs = await aexecute(
         db.table("linkedin_posting_schedule")
         .select("*")
         .eq("user_id", str(user.id))
         .order("day_of_week")
-        .execute()
     )
     rows = rs.data or []
     return {
@@ -566,9 +569,9 @@ async def put_posting_schedule(
     surface them without a join.
     """
     db = get_supabase()
-    db.table("linkedin_posting_schedule").delete().eq(
+    await aexecute(db.table("linkedin_posting_schedule").delete().eq(
         "user_id", str(user.id)
-    ).execute()
+    ))
 
     posts_per_week = max(0, min(7, len(body.slots)))
     pu = body.pause_until.isoformat() if body.pause_until else None
@@ -584,7 +587,7 @@ async def put_posting_schedule(
         for s in body.slots
     ]
     if rows_to_insert:
-        db.table("linkedin_posting_schedule").insert(rows_to_insert).execute()
+        await aexecute(db.table("linkedin_posting_schedule").insert(rows_to_insert))
 
     # Return the freshly-set schedule so the client doesn't need a second GET.
     return await get_posting_schedule(user=user)

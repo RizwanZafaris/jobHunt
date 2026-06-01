@@ -85,7 +85,7 @@ export default function OfferClient({
     return (
       <form
         onSubmit={handleEvaluate}
-        className="space-y-3 rounded-lg border border-border bg-card p-4"
+        className="space-y-3 rounded-lg border border-border bg-surface p-4"
       >
         <h2 className="text-sm font-semibold text-fg">Paste the offer</h2>
         <p className="text-2xs text-fg-subtle">
@@ -201,7 +201,7 @@ export default function OfferClient({
       </div>
 
       {/* ── Comp summary ───────────────────────────────────────────── */}
-      <section className="rounded-lg border border-border bg-card p-4">
+      <section className="rounded-lg border border-border bg-surface p-4">
         <h3 className="text-sm font-semibold text-fg">Compensation</h3>
         <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
           <div>
@@ -244,7 +244,7 @@ export default function OfferClient({
       </section>
 
       {/* ── Market bands ───────────────────────────────────────────── */}
-      <section className="rounded-lg border border-border bg-card p-4">
+      <section className="rounded-lg border border-border bg-surface p-4">
         <h3 className="text-sm font-semibold text-fg">Market bands</h3>
         {evaluation.market_summary && (
           <p className="mt-1 text-2xs text-fg-subtle">{evaluation.market_summary}</p>
@@ -275,7 +275,7 @@ export default function OfferClient({
 
       {/* ── Negotiation script ─────────────────────────────────────── */}
       {evaluation.negotiation_script && (
-        <section className="rounded-lg border border-border bg-card p-4">
+        <section className="rounded-lg border border-border bg-surface p-4">
           <div className="flex items-baseline justify-between">
             <h3 className="text-sm font-semibold text-fg">Negotiation plan</h3>
             <div className="text-2xs text-fg-subtle">
@@ -295,7 +295,7 @@ export default function OfferClient({
       )}
 
       {/* ── Risk factors ───────────────────────────────────────────── */}
-      <section className="rounded-lg border border-border bg-card p-4">
+      <section className="rounded-lg border border-border bg-surface p-4">
         <div className="flex items-baseline justify-between">
           <h3 className="text-sm font-semibold text-fg">Risk</h3>
           <div className="text-2xs text-fg-subtle">
@@ -331,7 +331,7 @@ export default function OfferClient({
 
       {/* ── Rationale ──────────────────────────────────────────────── */}
       {evaluation.rationale_md && (
-        <section className="rounded-lg border border-border bg-card p-4">
+        <section className="rounded-lg border border-border bg-surface p-4">
           <h3 className="text-sm font-semibold text-fg">Rationale</h3>
           <div className="mt-2 whitespace-pre-wrap text-xs text-fg">
             {evaluation.rationale_md}
@@ -340,7 +340,7 @@ export default function OfferClient({
       )}
 
       {/* ── Decision form ──────────────────────────────────────────── */}
-      <section className="rounded-lg border border-border bg-card p-4">
+      <section className="rounded-lg border border-border bg-surface p-4">
         <h3 className="text-sm font-semibold text-fg">Record your decision</h3>
         {evaluation.user_decision ? (
           <p className="mt-1 text-xs text-fg-subtle">

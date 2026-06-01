@@ -1,0 +1,59 @@
+# Runs pr-job-scan on every PR's diff.
+#
+# Why this exists: the bug log (B7, B15, B17, B26, B-OR3, etc.) shows a
+# recurring set of mistake classes — logger.exception leaks, CORS wildcards
+# with credentials, writes to non-existent Supabase columns, raw LLM router
+# calls without fallback, route prefixes that collide with /workspace/{id},
+# stale Claude model ids that 404. These slip through review repeatedly.
+# This workflow makes them merge blockers.
+#
+# Rules + rationale live in tools/pr_job_scan/README.md.
+
+name: pr-job-scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    name: scan PR diff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: '.python-version'
+
+      - name: Self-test the scanner
+        run: |
+          cd tools/pr_job_scan
+          python -m pytest tests/ -q
+
+      - name: Scan PR diff (or push HEAD)
+        id: scan
+        run: |
+          cd tools/pr_job_scan
+          BASE="${{ github.base_ref || 'main' }}"
+          python -m pr_job_scan scan-repo "${{ github.workspace }}" \
+            --base "origin/$BASE" \
+            --no-color --format sarif > "${{ github.workspace }}/pr-scan.sarif" || true
+          python -m pr_job_scan scan-repo "${{ github.workspace }}" \
+            --base "origin/$BASE" \
+            --no-color --fail-on high
+
+      - name: Upload SARIF to GitHub code-scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: pr-scan.sarif
+          category: pr-job-scan

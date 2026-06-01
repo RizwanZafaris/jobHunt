@@ -5,6 +5,7 @@ import { Personas } from '@/components/insights/Personas'
 import { Costs } from '@/components/insights/Costs'
 import { System } from '@/components/insights/System'
 import { Analytics } from '@/components/insights/Analytics'
+import { Traces } from '@/components/insights/Traces'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,17 +14,24 @@ export const metadata = {
   description: 'Personas, cost telemetry, pattern analytics, and the strategic orchestrator — in one place.',
 }
 
-type InsightTab = 'personas' | 'costs' | 'analytics' | 'system'
+type InsightTab = 'personas' | 'costs' | 'analytics' | 'traces' | 'system'
 
-const TABS: { id: InsightTab; label: string; icon: 'brain' | 'currency' | 'rocket' | 'bar-chart-3' }[] = [
+const TABS: { id: InsightTab; label: string; icon: 'brain' | 'currency' | 'rocket' | 'bar-chart-3' | 'graph' }[] = [
   { id: 'personas',  label: 'Personas',  icon: 'brain' },
   { id: 'costs',     label: 'Costs',     icon: 'currency' },
   { id: 'analytics', label: 'Analytics', icon: 'bar-chart-3' },
+  { id: 'traces',    label: 'Traces',    icon: 'graph' },
   { id: 'system',    label: 'System',    icon: 'rocket' },
 ]
 
 function isInsightTab(value: string | undefined): value is InsightTab {
-  return value === 'personas' || value === 'costs' || value === 'analytics' || value === 'system'
+  return (
+    value === 'personas' ||
+    value === 'costs' ||
+    value === 'analytics' ||
+    value === 'traces' ||
+    value === 'system'
+  )
 }
 
 interface InsightsPageProps {
@@ -49,6 +57,12 @@ const HEADERS: Record<InsightTab, { eyebrow: string; title: string; description:
     description:
       'Application funnel, rejection clusters, and per-company cost efficiency. Every number is live from a named SQL view — never a hardcoded placeholder.',
   },
+  traces: {
+    eyebrow: 'Debug',
+    title: 'LangGraph traces',
+    description:
+      'What is your agent doing right now? Live runs, recent graph executions, and the last errors — sourced from agent_call_log + v_graph_runs.',
+  },
   system: {
     eyebrow: 'Orchestration',
     title: 'System — Boss agent',
@@ -64,7 +78,7 @@ export default async function InsightsPage(props: InsightsPageProps) {
   const header = HEADERS[active]
 
   return (
-    <AppShell wide={active === 'costs' || active === 'analytics'}>
+    <AppShell wide={active === 'costs' || active === 'analytics' || active === 'traces'}>
       <PageHeader
         eyebrow={header.eyebrow}
         title={header.title}
@@ -82,6 +96,7 @@ export default async function InsightsPage(props: InsightsPageProps) {
         {active === 'personas' && <Personas />}
         {active === 'costs' && <Costs />}
         {active === 'analytics' && <Analytics />}
+        {active === 'traces' && <Traces />}
         {active === 'system' && <System />}
       </div>
     </AppShell>

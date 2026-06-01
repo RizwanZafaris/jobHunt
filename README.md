@@ -8,11 +8,29 @@
 Built for **Rizwan Zafar** (user #1, lifetime plan) today; multi-tenant
 SaaS-ready tomorrow.
 
-**Status: 2026-05-11** — production stack is live on Railway + Supabase
-+ Vercel. 71 target companies, ~3,500 rows of company knowledge, 12 G2
+**Status: 2026-05-29** — production stack is live on Railway + Supabase
++ Vercel. 68 target companies, ~3,500 rows of company knowledge, 12 G2
 nodes shipping resumes at ~$1 / 5 min, G3 interview studio + tutor
-ready, G4 LinkedIn engine with image briefs producing one draft per
-weekday, Perplexity recency-check validated end-to-end at $0.005/call.
+ready, G4 LinkedIn engine with image briefs, G5 letter-grade A-F + G6
+follow-up cadence + G7 application-form assist + G8 offer-evaluation
+(all live), `/insights?tab=analytics` for pattern analytics,
+`/insights?tab=traces` for LangGraph debugging, embedded APScheduler in
+the API process (now gated by `SCHEDULER_ENABLED` + a dedicated `scheduler`
+service so the API can scale horizontally without cron double-firing — see
+[`docs/SCALABILITY.md`](docs/SCALABILITY.md)), migrations 001–039 applied.
+
+**Since 2026-05-14:** `/today` redesigned into per-kind sections with a
+résumé-scored **Recommended** list (`/today/recommended`); a JobScout
+reliability overhaul (Workday CXS two-segment + region fixes, title
+filter v3 validated on 447 live Mastercard/Visa titles, and a
+`_url_matches_company` mislabel guard backed by a 33-case regression
+suite); plus an AI cost audit (P0 model-tiering — 6 agents Opus→Sonnet —
+and P1 prompt caching + Perplexity cache-aside) to cut steady-state burn.
+
+> See [`BUILD_RATIONALE.md`](BUILD_RATIONALE.md) for the architecture
+> decisions (why LangGraph, why per-company personas, why Anthropic
+> for the writer, why three-layer RAG, etc.) and how each component
+> fits together.
 
 ---
 
@@ -59,24 +77,50 @@ Backend (FastAPI on Railway, port 8080)
   agents/                  ◄── 18 graphs / workers (see Agents table)
 
 Database (Supabase Postgres + pgvector)
-  Multi-tenant from day 1: 22 user-owned tables × 88 RLS policies
-  10 migrations applied this session (see db/migrations/)
+  Multi-tenant schema: 32 user-owned tables with RLS policies — but the API
+  uses the service-role key, which BYPASSES RLS, so tenant isolation is
+  app-side only today (harden before a 2nd tenant — see docs/SCALABILITY.md)
+  Migrations 001–039 (see db/migrations/)
 
-Dashboard (Next.js 14 App Router on Vercel)
+Dashboard (Next.js 15 App Router on Vercel)
   /today /targets /applications /network /insights /admin
-  /applications/[id]/workspace + /interview-studio
+  /applications/[id]/workspace + /interview-studio + /offer
   /linkedin + /jobs/[id]
+  /insights?tab=analytics + /insights?tab=traces
 ```
 
-Deep docs: [`docs/AUDIT_360_SYNTHESIS.md`](docs/AUDIT_360_SYNTHESIS.md) (6-expert audit + P0/P1/P2 roadmap) · [`docs/SPRINT_1_STATUS.md`](docs/SPRINT_1_STATUS.md) (decisions log) · [`docs/AUDIT_2026_05_10.md`](docs/AUDIT_2026_05_10.md) (cost + quality audit) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/G2_RESUME_BUILDER_GRAPH.md`](docs/G2_RESUME_BUILDER_GRAPH.md) · [`docs/G3_INTERVIEW_PREP_GRAPH.md`](docs/G3_INTERVIEW_PREP_GRAPH.md) · [`docs/SECURITY.md`](docs/SECURITY.md)
+Deep docs: [`docs/SCALABILITY.md`](docs/SCALABILITY.md) (scalability audit + multi-tenant roadmap) · [`docs/AUDIT_360_SYNTHESIS.md`](docs/AUDIT_360_SYNTHESIS.md) (6-expert audit + P0/P1/P2 roadmap) · [`docs/SPRINT_1_STATUS.md`](docs/SPRINT_1_STATUS.md) (decisions log) · [`docs/AUDIT_2026_05_10.md`](docs/AUDIT_2026_05_10.md) (cost + quality audit) · [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) · [`docs/G2_RESUME_BUILDER_GRAPH.md`](docs/G2_RESUME_BUILDER_GRAPH.md) · [`docs/G3_INTERVIEW_PREP_GRAPH.md`](docs/G3_INTERVIEW_PREP_GRAPH.md) · [`docs/SECURITY.md`](docs/SECURITY.md)
 
 API surface docs: [`api/AUTH.md`](api/AUTH.md) · [`api/QUEUE.md`](api/QUEUE.md) · [`api/WORKSPACE.md`](api/WORKSPACE.md) · [`api/INTERVIEW_STUDIO.md`](api/INTERVIEW_STUDIO.md) · [`api/LINKEDIN.md`](api/LINKEDIN.md) · [`api/NETWORK.md`](api/NETWORK.md)
 
 ---
 
+## Scaling & production readiness
+
+jobHunt runs **single-user in production today** and is built to become a
+multi-tenant SaaS. A full CTO-level scalability audit — what breaks going from
+1 user to thousands of tenants + concurrent agent workloads, graded P0/P1/P2
+with a sequenced roadmap — lives in **[`docs/SCALABILITY.md`](docs/SCALABILITY.md)**.
+
+**Hardened (2026-05-29):** the embedded cron scheduler is gated
+(`SCHEDULER_ENABLED`) and has a dedicated single-replica `scheduler` service, so
+the API can scale out without cron double-firing; the orphan-reaper crash that
+silently disabled job recovery is fixed; GZip compression and worker
+self-healing (`restartPolicy=ALWAYS`) are in; and a migration captures the
+drifted recommendation columns + adds `/today` hot-path indexes.
+
+**Before onboarding a 2nd paying tenant (audit Phase 1):** drop the global
+`UNIQUE` constraints that let one tenant overwrite another's rows, add per-user
+JWT auth through the dashboard proxy, scope every `server.py` query by
+`user_id`, and actually enforce RLS (the API uses the service-role key, which
+bypasses it today). **Phase 2 (throughput):** async data layer, queue split +
+worker autoscaling, connection pooler, per-tenant spend caps.
+
+---
+
 ## What's in this codebase
 
-### Sprint phases (2026-05-08 → 2026-05-11)
+### Sprint phases (2026-05-08 → 2026-05-29)
 
 | Phase | What | Status |
 |---|---|---|
@@ -93,23 +137,74 @@ API surface docs: [`api/AUTH.md`](api/AUTH.md) · [`api/QUEUE.md`](api/QUEUE.md)
 | **Phase 3 — Interview Studio** | `/applications/[id]/interview-studio` 3-pane studio · concept ladder (basics → intermediate → advanced) · tutor chat · outcome logger | merged |
 | **Perplexity layer** | `recency_check` (Sonar) · `strategic_posture` (Sonar-pro) · `verify_claim` · persona news-tracking columns · disambiguation prompt for brand-vs-policy ambiguity | merged |
 | **Apollo layer** | `enrich_organization` (firmographic) · `get_organization_job_postings` · `search_people` (paid plan) · `search_companies` (paid plan) · DB hook into `company_knowledge` | merged |
+| **Tier 2 G5 / Legitimacy v1** | 6-dimension fit scoring with A-F `letter_grade` chips on every /today card · `legitimacy_tier` ghost-posting filter | merged |
+| **Tier 2 G6 follow-up cadence** | Daily follow-up draft generator · `follow_up_cadence` table · cite-attribution loop back to persona | merged |
+| **Tier 2 Story Bank + G9** | Per-user achievement library · `story_bank` table · G3 cites stories by id for outcome credit | merged |
+| **Tier 3 G7 application graph** | Greenhouse form-scanner → classifier → retriever → critic → fill (HITL approve gate) · `application_answers` table · per-question cites | merged |
+| **Tier 4 G11 voice calibration** | Per-user writing-sample injection into the USER message · `writing_samples` table | merged |
+| **Tier 4 §6.4 Proof points** | Quantified achievement extractor · `proof_points` table · cited by G7 cover letters | merged |
+| **Tier 4 G8 Offer Evaluation** | 5-node LangGraph (offer_parser → market_analyzer → negotiation_strategist → risk_detector → synthesizer) · persona-as-critic gate · `offer_evaluations` table (41 cols) · `/applications/[id]/offer` dashboard | merged |
+| **Pattern Analytics** | 7 SQL views (funnel, by_grade, by_archetype, by_size, rejection_signals, build_efficiency, cost_per_outcome) · `agents/pattern_analyzer.py` · `/insights?tab=analytics` dashboard | merged |
+| **LangGraph Traces** | `v_graph_runs` view aggregates `agent_call_log` into per-run summaries · `api/traces.py` (3 endpoints) · `/insights?tab=traces` debug dashboard | merged |
+| **Embedded APScheduler** | Cron jobs (job_scout, persona_synthesis, boss_agent, follow_up_cadence, cost_alert, cost_digest) run inside the FastAPI process · `/admin/scheduler-status` health probe | merged |
+| **Firecrawl pilot** | Source adapter for JS-rendered enterprise career pages (Visa/Mastercard/Stripe/Adyen/Marqeta) · `agents/sources/firecrawl_source.py` · $20/mo budget cap | merged |
+| **Phantom cleanup + LinkedIn harden** | Migrations 028+030 hard-delete the BUG-013 phantom companies + flag 183 phantom-string jobs · LinkedIn title parser regex broadened · `/linkedin` Generate wired end-to-end with company dropdown + image brief always visible · all 4 DraftCard buttons (Edit/Copy/Approve/Reject) wired to real API with validation | merged |
+| **Security advisor hardening** | `boss_audit_log` RLS · views switched to `security_invoker` · `resume_builds` failed-requires-error constraint · `agent_call_log.actual_provider` router telemetry (migrations 031–034) | merged |
+| **`/today` redesign + triggers** | Sectioned action dashboard (one section per card kind) · job-card dismiss/snooze · aggregator blocklist + freshness filter · browser-clickable `GET` aliases for `trigger-scout` / `trigger-validator` (migrations 035–037) | merged |
+| **LinkedIn Buffer integration** | Schedule LinkedIn drafts straight to Buffer queue (migration 038) | merged |
+| **JobScout reliability** | Workday CXS fixes (two-segment tenant URL, `limit=20` cap, region-targeted `searchText`) · title filter v3 (regex, validated on 447 live Mastercard+Visa titles) · verified Workday URLs for 11 previously-blocked companies | merged |
+| **JobScout mislabel guard** | `_url_matches_company` drops Perplexity candidates whose URL doesn't plausibly belong to the target company (the STC-Pay←PNC class of bug) · token-boundary hardening vs short-slug false positives · 33-case regression suite (`tests/test_scout_url_match.py`) | merged |
+| **Résumé-scored Recommendations** | 418 open jobs scored against the résumé · `jobs.user_recommendation_*` columns (migration 039) · `GET /today/recommended` endpoint + `/today` Recommended section (apply_now / strong / stretch tiers) | merged |
+| **AI cost audit — P0** | 6 agents Opus→Sonnet 4.6 in `config/settings.py` (boss + g2_polisher kept on Opus) · hardened-router default · JSON-schema validation + 1-retry helper | merged |
+| **AI cost audit — P1** | Anthropic prompt caching on 5KB+ system prompts · OpenAI `prompt_cache_key` · Perplexity cache-aside with `company_knowledge` TTL/decay (migration 041) | merged |
+| **People-finder (Apollo + Perplexity)** | Replaces LinkedIn CSV import — discovers target-company contacts via Apollo (primary) + Perplexity (fallback) to seed the referral graph · migration 040 applied; agent + UI on `feat/people-finder-perplexity-replace-csv` | in progress (unmerged) |
 
-### Database migrations applied this session (production Supabase)
+### Database migrations applied to production Supabase
 
 ```
-2026_05_10_001  multi_tenancy (22 tables × 4 RLS policies each = 88 policies)
-2026_05_10_002  application_status enum normalisation (ES + EN variants)
+2026_05_10_001  multi_tenancy (32 tables × 4 RLS policies each)
+2026_05_10_002  application_status enum normalisation
 2026_05_10_003  jobs_runs (durable queue ledger)
 2026_05_10_004  referral graph (people, employments, edges, target_company_employees)
 2026_05_10_005  linkedin_drafts + posting_schedule + voice_profile
 2026_05_10_006  linkedin_drafts.image_brief column
 2026_05_10_007  jobs.posting_closed_at + last_validated_at + validation_status
-2026_05_10_008  knowledge_outcome_credits + persona_versions + interview_tutor_messages + company_knowledge.outcome_score
+2026_05_10_008  knowledge_outcome_credits + persona_versions + interview_tutor_messages
 2026_05_10_009  search_company_knowledge v2 (returns id UUID for citation markers)
-2026_05_10_010  company_personas news-tracking columns (last_news_check_at, last_strategic_posture_md, ...)
+2026_05_10_010  company_personas news-tracking columns
+2026_05_12_012  linkedin_drafts.source_company_name denormalisation
+2026_05_12_013  comp_cache (salary band cache) + companies.is_phantom
+2026_05_12_014  applications.applied_date check constraint
+2026_05_12_015  story_bank (per-user achievement library)
+2026_05_12_016  follow_up_cadence (G6 daily follow-up generator)
+2026_05_12_017  story_bank not-null hardening
+2026_05_12_018  search_story_bank v2 (semantic match)
+2026_05_12_019  jobs.fit_score_breakdown JSONB (G5 6-dimension scoring)
+2026_05_12_020  jobs.legitimacy_tier + legitimacy_score (ghost-posting filter)
+2026_05_12_021  interview_prep G3 Tier-2 columns
+2026_05_12_022  application_answers (G7 application-form assist)
+2026_05_12_023  writing_samples (Tier 4 G11 voice calibration)
+2026_05_12_024  proof_points (Tier 4 §6.4)
+2026_05_12_025  v_company_conversion_funnel (closed + phantom filter fix)
+2026_05_12_026  offer_evaluations (Tier 4 G8 — 41 columns)
+2026_05_12_027  pattern analytics views (7 views: funnel by grade/archetype/size, rejection signals, …)
+2026_05_13_028  phantom company hard-cleanup (deletes is_phantom=TRUE rows)
+2026_05_13_029  v_graph_runs (LangGraph trace observability view)
+2026_05_14_030  phantom job strings (flags 183 jobs with phantom company names)
+2026_05_16_031  boss_audit_log RLS
+2026_05_16_032  views security_invoker (advisor hardening)
+2026_05_16_033  resume_builds failed-requires-error constraint
+2026_05_16_034  agent_call_log.actual_provider (multi-LLM router telemetry)
+2026_05_16_035  archive phantom jobs
+2026_05_26_036  job_card_dismissals (/today dismiss + snooze)
+2026_05_26_037  jobs surface-tracking columns (/today card lifecycle)
+2026_05_26_038  linkedin_buffer_integration
+2026_05_27_039  jobs.user_recommendation_* (résumé-scored recommendations)
+2026_05_27_040  people perplexity-discovery provenance columns
+2026_05_27_041  company_knowledge TTL / confidence decay (cache-aside)
 ```
 
-All 32 production tables have RLS enabled (`boss_audit_log` intentionally excluded — admin/global).
+All production tables have RLS enabled; the 031/032 advisor-hardening pass added RLS to `boss_audit_log` and switched analytics views to `security_invoker`.
 
 ---
 
@@ -117,16 +212,23 @@ All 32 production tables have RLS enabled (`boss_audit_log` intentionally exclud
 
 | Agent | Model | Role | Trigger |
 |---|---|---|---|
-| **JobScoutAgent** | GPT-4.1 | Scans portals, scores jobs against persona | Daily 09:00 |
-| **CompanyAgent** | Claude Opus | Deep company expert; reviews resume gaps | Per company |
-| **RizwanAgent** | Claude Opus | Represents the user; fills gaps via dialogue | Per application |
-| **InterviewAgent** *(legacy)* | Claude Opus | STAR prep, likely Qs, salary negotiation | Per high-score job |
+| **JobScoutAgent** | GPT-4.1 | Scans ATS portals (Workday CXS / Greenhouse / Lever / Ashby) + Perplexity discovery; title filter v3 + `_url_matches_company` mislabel guard; scores jobs against persona | Daily 09:00 · manual `GET /today/trigger-scout` |
+| **CompanyAgent** | Claude Sonnet 4.6 *(was Opus 4.5 — P0 audit)* | Deep company expert; reviews resume gaps | Per company |
+| **RizwanAgent** | Claude Sonnet 4.6 *(was Opus 4.5 — P0 audit)* | Represents the user; fills gaps via dialogue | Per application |
+| **InterviewAgent** *(legacy)* | Claude Sonnet 4.6 *(was Opus 4.5 — P0 audit)* | STAR prep, likely Qs, salary negotiation | Per high-score job |
 | **BossAgent** | Claude Opus | Orchestrator; freshness audit; daily digest | Daily 21:00 |
 | **PersonaSynthesizer** | Gemini 2.5 Pro (fallback Claude) | Per-company persona refresh from outcomes + transcripts | Sun 03:00 weekly |
 | **persona_deep_research** | Gemini 2.5 Pro + Apify | Deep persona build: 6-10 success_patterns + 6-10 failure_patterns + ~20 ATS keywords | One-shot per company; refresh on demand |
 | **G2 graph (12 nodes)** | Multi-LLM ensemble | Resume builder; insider_expert emits `cite:knowledge_id=<uuid>` for outcome attribution | `/workspace/{id}/build-resume` ~$1, ~5 min |
 | **G3 graph (7 nodes)** | Multi-LLM ensemble | Interview prep pack (likely Qs, STAR, hooks, red flags, salary) | `/workspace/{id}` → Interview Prep tab |
-| **G4 LinkedIn graph (5 nodes)** | Sonnet + Opus | News-anchored post drafter; pick_angle → draft → critique → polish → image_brief → persist; never auto-posts | Manual or scheduled (Mon/Wed/Fri 09:00) |
+| **G4 LinkedIn graph (5 nodes)** | Opus writer + Sonnet critic + Opus polish | News-anchored post drafter; pick_angle → draft → critique → polish → image_brief → persist; never auto-posts | Manual or scheduled (Mon/Wed/Fri 09:00) |
+| **G5 fit scoring** | Deterministic + LLM | 6-dimension scorecard (role, seniority, skills, location, comp, culture) → A-F letter grade + `legitimacy_tier` (ghost-posting filter) | Every job ingest |
+| **G6 follow-up cadence** | Claude Opus | Daily follow-up draft generator per stale application; cite-attribution loop back to persona | Daily 18:00 (APScheduler) |
+| **G7 application graph** | Multi-LLM | Greenhouse form-scanner → classifier → retriever → critic → fill (HITL approve gate); per-question `cite:knowledge_id` + `cite:story_id` | `/applications/[id]/apply` |
+| **G8 offer evaluation (5 nodes)** | Multi-LLM | offer_parser → market_analyzer → negotiation_strategist → risk_detector → synthesizer; persona-as-critic gate | `/applications/[id]/offer` |
+| **G9 story bank** | Claude Opus | Per-user achievement library; G3 cites stories by id for outcome credit | Onboarding + on-demand |
+| **G11 voice calibration** | Claude Opus | Per-user writing-sample injection into USER message; preserves voice in G4/G7 outputs | Onboarding |
+| **pattern_analyzer** | (SQL views) | 7 views over `agent_call_log` + `outcomes` (funnel by grade/archetype/size, rejection signals, build_efficiency, cost_per_outcome) | `/insights?tab=analytics` |
 | **interview_tutor** | Claude Opus | 3-level concept ladder tutor; cites prep-pack sections | `/interview-studio/{id}/tutor-chat` |
 | **outcome_to_persona** | Claude Opus | Bayesian credit assignment: outcome event → cited knowledge rows → `outcome_score` update → persona evolution | After every outcome log + Sunday cron |
 | **perplexity_search** | Sonar / Sonar-pro | Recency check + strategic posture + claim verification; with brand-vs-policy disambiguation | Weekly recency + monthly strategic per persona |
@@ -148,13 +250,20 @@ All 32 production tables have RLS enabled (`boss_audit_log` intentionally exclud
 | Surface | Endpoints |
 |---|---|
 | **System** | `GET /` · `GET /health` · `GET /jobs-runs/{run_id}` (polling) |
-| **Today** | `GET /actions/today?limit=N` |
+| **Today** | `GET /actions/today?limit=N` · `GET /actions/today/recommended` (résumé-scored, tiered) · `GET/POST /actions/today/trigger-scout` · `GET/POST /actions/today/trigger-validator` |
 | **Workspace (Phase 2)** | `GET /workspace/{job_id}` · `POST /workspace/{job_id}/build-resume` · `POST /workspace/{job_id}/edit-resume` · `POST /workspace/{job_id}/save-resume-edit` · `POST /workspace/{job_id}/rebuild-section` · `POST /workspace/{job_id}/full-rebuild` · `POST /workspace/{job_id}/mark-applied` |
 | **Interview Studio (Phase 3)** | `GET /interview-studio/{application_id}` · `POST /interview-studio/{application_id}/tutor-chat` · `POST /interview-studio/{application_id}/log-outcome` · `POST /interview-studio/{application_id}/build-prep-pack` |
 | **LinkedIn engine (P1.2)** | `POST /linkedin/drafts/generate` · `GET /linkedin/drafts` · `GET/PATCH /linkedin/drafts/{id}` · `POST /linkedin/drafts/{id}/{approve,copy,reject}` · `GET/PUT /linkedin/voice-profile` · `GET/PUT /linkedin/posting-schedule` |
 | **Network / referrals (P1.1)** | `GET /network/paths?target_company_id=` · `GET /network/people` · `POST /network/people` · `POST /network/import/linkedin-csv` (multipart) · `POST /network/edges` · `GET /network/target-coverage` |
 | **Perplexity** | `POST /perplexity/check-news/{company_name}` · `POST /perplexity/strategic-posture/{company_name}` · `POST /perplexity/verify-claim` |
 | **Apollo** | `POST /apollo/enrich/{company_name}` · `POST /apollo/enrich-raw` · `POST /apollo/job-postings` · `POST /apollo/search-people` *(paid plan)* · `POST /apollo/search-companies` *(paid plan)* |
+| **Story Bank (G9)** | `GET /stories` · `POST /stories` · `PATCH /stories/{id}` · `DELETE /stories/{id}` · `POST /stories/search` |
+| **Follow-up cadence (G6)** | `GET /follow-ups` · `POST /follow-ups/generate/{application_id}` · `POST /follow-ups/{id}/send` · `POST /follow-ups/{id}/snooze` |
+| **Application form assist (G7)** | `POST /g7/scan-form` · `POST /g7/generate-answers/{application_id}` · `POST /g7/approve-answer/{id}` · `GET /g7/answers/{application_id}` |
+| **Offer evaluation (G8)** | `POST /offers/evaluate/{application_id}` · `GET /offers/{application_id}` · `POST /offers/{id}/decide` |
+| **Proof points (Tier 4)** | `GET /proof-points` · `POST /proof-points/extract` · `PATCH /proof-points/{id}` |
+| **Pattern analytics** | `GET /analytics/funnel` · `GET /analytics/by-grade` · `GET /analytics/by-archetype` · `GET /analytics/rejection-signals` · `GET /analytics/cost-per-outcome` |
+| **LangGraph traces** | `GET /traces/runs?limit=N` · `GET /traces/runs/{run_id}` · `GET /traces/errors` |
 | **Legacy / pipeline** | `POST /pipeline/run` · `POST /pipeline/evaluate` · `GET /jobs` · `GET /companies` · `POST /jobs/{id}/generate-resume` · `POST /personas/deep-research` · `POST /personas/refresh-news` · `POST /boss/audit` · `GET /digest/latest` · `GET /costs/by-resume-build` |
 
 ---
@@ -194,7 +303,7 @@ chmod +x db/migrations/APPLY.sh
 DATABASE_URL=postgres://...branch...supabase.co:5432/postgres ./db/migrations/APPLY.sh
 psql "$DATABASE_URL" -f db/seeds/user_001.sql
 ```
-All 10 migrations are idempotent and transactional. Or apply individually via Supabase MCP `apply_migration`.
+All 30+ migrations are idempotent and transactional. Or apply individually via Supabase MCP `apply_migration`.
 
 ### 4. Boot services
 ```bash
@@ -244,6 +353,7 @@ python -m agents.linkedin_voice_extractor --user-id 00000000-0000-0000-0000-0000
 | `SLACK_WEBHOOK_URL` | Cost-alert dispatch | optional |
 | `SENDGRID_API_KEY` · `SENDGRID_FROM_EMAIL` | Email alerts | optional |
 | `WORKER_CONCURRENCY` | RQ worker pool size (default `1`) | optional |
+| `SCHEDULER_ENABLED` | `1` (default) runs the embedded cron in this process; set `0` on the API service when running a dedicated `scheduler` service so cron fires once | optional |
 | `PERPLEXITY_MODEL_RECENCY` · `PERPLEXITY_MODEL_STRATEGIC` | Override Sonar / Sonar-pro | optional |
 | `APOLLO_BASE_URL` · `APOLLO_HTTP_TIMEOUT` | Apollo HTTP defaults | optional |
 | `JOB_VALIDATOR_STALE_HOURS` | Validator cache (default `6`) | optional |
@@ -272,6 +382,13 @@ Full reference: [`.env.example`](.env.example)
 
 All four services share the same env vars (set once at the project level).
 
+> **Cron must run in exactly one place.** By default the 6 cron jobs are
+> embedded in the API process (`SCHEDULER_ENABLED` defaults on), so a minimal
+> one-service deploy still runs cron. When you scale the API to **>1 replica**,
+> deploy the dedicated `scheduler` service (above) **and set
+> `SCHEDULER_ENABLED=0` on the API service**, otherwise every replica
+> double-fires all 6 jobs (N× LLM spend). See [`docs/SCALABILITY.md`](docs/SCALABILITY.md).
+
 ### Vercel — dashboard
 
 ```bash
@@ -293,9 +410,12 @@ cd dashboard && vercel deploy --prod
 | `/applications` | Application kanban |
 | `/applications/[id]/workspace` | 5-tab workspace (Role / Resume / Network / Interview Prep / Apply) |
 | `/applications/[id]/interview-studio` | 3-pane studio (Prep / Tutor chat / Outcome logger) |
+| `/applications/[id]/offer` | G8 offer evaluation dashboard (market analysis + negotiation strategy + risks) |
 | `/linkedin` | Content calendar — drafts, scheduled, posted |
 | `/network` | Warm-intro paths + LinkedIn CSV import |
 | `/insights` | Personas + Costs + System (Boss agent audit) |
+| `/insights?tab=analytics` | Pattern analytics — funnel by grade/archetype, rejection signals, cost-per-outcome |
+| `/insights?tab=traces` | LangGraph run traces — per-run cost, latency, error inspection |
 | `/companies` · `/companies/[name]` | Target companies + research intel |
 | `/jobs/[id]` · `/jobs/[id]/resume` | Per-job detail + outcome logger |
 | `/personas/[name]` | Per-company persona (success/failure patterns + ATS bank + version history) |
@@ -328,7 +448,8 @@ cd dashboard && vercel deploy --prod
 - **Hybrid resume edit auto-replace edge case** — currently auto-replaces on Full rebuild success with confirm-if-dirty; mid-edit Quick-tweak doesn't auto-apply yet (component state).
 - **Chrome browser scrape integration** — code path possible via `Claude in Chrome` MCP but no extension currently connected. Apify covers the same use cases for now.
 - **Multi-tenant pivot endpoint wiring** — 65 endpoints in `api/server.py` still use service-role; `Depends(get_current_user)` ready but not yet wired. Recipe in [`api/AUTH.md`](api/AUTH.md).
-- **Audit Tier-1 cost cuts** — prompt caching, Sonnet swaps, Haiku for orchestration. Documented, not implemented.
+- **AI audit P2 backlog** — P0 (model tiering, hardened-router default, JSON-schema validation) and P1 (prompt caching, Perplexity cache-aside + TTL) **shipped**. Remaining: router-level PII redaction, `<user_input>` prompt-injection wrapping, persona-version trigger, and broader `ask_json_validated` / `cached_recency_check` adoption.
+- **People-finder (Apollo + Perplexity)** — replaces LinkedIn CSV import for seeding the referral graph; migration 040 applied to prod, agent + UI built on `feat/people-finder-perplexity-replace-csv` (pushed, awaiting merge). CSV import stays the live mechanism until that branch merges.
 - **Outcome-driven persona evolution dashboard** — schema in place (`persona_versions` table); UI surface not yet built.
 
 ---

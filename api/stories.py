@@ -40,7 +40,10 @@ from api.users import User
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/workspace/stories", tags=["stories"])
+# B2: was "/workspace/stories" — collided with /workspace/{job_id} (int)
+# because workspace_router is included first in server.py. FastAPI matched
+# "stories" as job_id="stories" → 422 int_parsing. Top-level prefix fixes it.
+router = APIRouter(prefix="/stories", tags=["stories"])
 
 
 # ─── Request bodies ────────────────────────────────────────────────────────

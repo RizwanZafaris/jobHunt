@@ -185,21 +185,21 @@ class CompanyAgent(BaseAgent):
         # Production audit found ~$1 spent on CompanyAgent[SuperApp] +
         # CompanyAgent[Adyen Careers] + CompanyAgent[68 Vacancies Apr 2026]
         # because the regex didn't flag them but the DB had already marked
-        # them as phantoms. This closes that loop.
+        # them as phantoms. This closes that loop. Defensive — DB errors
+        # don't block (logged + continue) so a transient Supabase issue
+        # doesn't take the whole pipeline down.
         #
-        # Schema correction (2026-05-13): is_phantom lives on `companies`
-        # (added by BUG-013), NOT `company_personas`. Earlier draft hit
-        # the wrong table and would crash with "column is_phantom does
-        # not exist".
-        #
-        # Defensive — DB errors don't block (logged + continue) so a
-        # transient Supabase issue doesn't take the whole pipeline down.
+        # Schema fix (BUG-013, 2026-05-29): is_phantom lives on `companies`,
+        # NOT company_personas (the column was never added there). The earlier
+        # company_personas query always raised Postgres 42703, which the
+        # except-clause below swallowed — so this guard was a silent no-op
+        # until repointed to `companies` (matching _build_incoming_jobs).
         try:
             from db.client import get_supabase
             phantom_rows = (
                 get_supabase()
                 .table("companies")
-                .select("id")
+                .select("name")
                 .ilike("name", company_name)
                 .eq("is_phantom", True)
                 .limit(1)

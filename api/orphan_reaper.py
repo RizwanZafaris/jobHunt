@@ -45,6 +45,111 @@ DEFAULT_STALE_MINUTES = 15
 MAX_ATTEMPTS = 3
 
 
+def _sweep_stuck_resume_builds(stale_minutes: int = 30) -> int:
+    """HARDEN-BUG-402: Flip resume_builds stuck in 'running' >30 min to 'failed'.
+
+    The orphan_reaper handles jobs_runs; this handles resume_builds which
+    can also get stuck when the worker dies mid-graph.  Called from
+    reap_orphans() so both tables are swept in the same tick.
+
+    Returns count of rows swept.
+    """
+    try:
+        from db.client import get_supabase
+        from datetime import datetime, timezone, timedelta
+
+        db = get_supabase()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
+
+        stuck = db.table("resume_builds").select("id").eq("status", "running").lt("updated_at", cutoff).execute()
+        ids = [r["id"] for r in (stuck.data or [])]
+        if not ids:
+            return 0
+
+        # B6: Column is `error`, NOT `error_message`. PostgREST silently
+        # drops unknown fields — without this fix the sweep marks rows as
+        # 'failed' but never writes a reason (same bug class as the 15
+        # mass-failed builds with error=NULL from 2026-05-11).
+        db.table("resume_builds").update({
+            "status": "failed",
+            "error": "B6: stuck-build sweep (30min timeout)",
+        }).in_("id", ids).execute()
+
+        logger.warning(
+            "HARDEN-BUG-402: swept %d stuck resume_builds (running >%dmin)",
+            len(ids), stale_minutes,
+        )
+        return len(ids)
+    except Exception:
+        logger.exception("HARDEN-BUG-402: resume_builds sweep failed")
+        return 0
+
+
+# B1: kind → worker_func map. Mirror of the registrations in api/queue.py.
+# When we re-enqueue a stuck queued row we have to dispatch to the right
+# worker function — there is no single `worker_dispatch` entrypoint.
+_KIND_TO_WORKER = {
+    "g1_discovery": "api.worker.worker_run_g1",
+    "g2_resume": "api.worker.worker_run_g2",
+    "g3_interview_prep": "api.worker.worker_run_g3",
+    "g4_linkedin_post": "api.worker.worker_run_g4",
+    "g5_score": "api.worker.worker_run_g5",
+    "g9_story_extract": "api.worker.worker_run_g9",
+    "g11_voice_calibration": "api.worker.worker_run_g11",
+    "legitimacy_check": "api.worker.worker_run_legitimacy",
+}
+
+
+def _sweep_stuck_queued(db, stale_minutes: int = 60) -> int:
+    """B1: Re-enqueue jobs_runs rows stuck in 'queued' for too long.
+
+    When the worker dies after a row is inserted but before RQ picks it up,
+    the row sits forever. We detect these (queued + no started_at + old)
+    and re-push them to the RQ queue (if attempts < 3) using the same
+    worker_func that `api/queue.py::_enqueue_or_dedup` would have picked.
+    """
+    try:
+        from datetime import datetime, timezone, timedelta
+        from api.queue import _get_queue
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)).isoformat()
+
+        stuck = (db.table("jobs_runs")
+            .select("id, kind, attempts")
+            .eq("status", "queued")
+            .is_("started_at", "null")
+            .lt("created_at", cutoff)
+            .lt("attempts", 3)
+            .execute())
+
+        rows = stuck.data or []
+        if not rows:
+            return 0
+
+        q = _get_queue()
+        requeued = 0
+        for row in rows:
+            worker_func = _KIND_TO_WORKER.get(row.get("kind"))
+            if not worker_func:
+                logger.error("B1: unknown kind=%s for run %s — skipping", row.get("kind"), row["id"])
+                continue
+            try:
+                q.enqueue(worker_func, row["id"])
+                db.table("jobs_runs").update({
+                    "attempts": (row.get("attempts") or 0) + 1,
+                }).eq("id", row["id"]).execute()
+                requeued += 1
+            except Exception as e:
+                logger.error("B1: failed to re-enqueue queued jobs_run %s: %s", row["id"], e)
+
+        if requeued:
+            logger.warning("B1: re-enqueued %d stuck queued jobs_runs (>%dmin)", requeued, stale_minutes)
+        return requeued
+    except Exception:
+        logger.exception("B1: queued sweep failed")
+        return 0
+
+
 def reap_orphans(stale_minutes: int = DEFAULT_STALE_MINUTES) -> dict[str, Any]:
     """Find stale `running` rows and either requeue or mark failed.
 
@@ -60,11 +165,28 @@ def reap_orphans(stale_minutes: int = DEFAULT_STALE_MINUTES) -> dict[str, Any]:
     one broken row doesn't stop the sweep.
     """
     from api.jobs_runs import find_orphans, mark_failed
+    from db.client import get_supabase
+
+    # SCALE-BUG fix (2026-05-29 audit): `db` was passed to _sweep_stuck_queued()
+    # below but never bound in this scope, so every reaper tick raised
+    # NameError *before* find_orphans() ran — silently disabling the ONLY
+    # recovery path for stuck/orphaned jobs (the _scheduled_reap wrapper
+    # swallowed it as "tick crashed"). Bind the client here.
+    db = get_supabase()
+
+    # HARDEN-BUG-402: sweep stuck resume_builds in the same tick
+    swept_resume_builds = _sweep_stuck_resume_builds(stale_minutes=30)
+
+    # B1: Also sweep jobs_runs rows stuck in 'queued' for >60 min.
+    # These happen when the worker dies after enqueue but before pick-up.
+    # We re-enqueue them (if attempts < 3) so the new worker picks them up.
+    _sweep_stuck_queued(db, stale_minutes=60)
 
     summary = {
         "scanned": 0,
         "requeued": 0,
         "marked_failed": 0,
+        "swept_resume_builds": swept_resume_builds,
         "errors": [],
     }
 

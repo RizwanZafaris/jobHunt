@@ -27,10 +27,16 @@ import yaml
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from agents.base_agent import BaseAgent
+from agents.concurrency import gather_bounded
 from config.settings import get_settings
 from db.client import upsert_job, upsert_company, get_company_by_name, get_supabase
 
 logger = logging.getLogger(__name__)
+
+# Max concurrent GPT-4.1 scoring chunks. Each chunk is one ask_openai
+# call covering 25 jobs; with hundreds of jobs an unbounded gather would
+# fire ~dozens of LLM calls at once (SCALABILITY.md P1 — bound fan-outs).
+SCORE_CHUNK_CONCURRENCY = 4
 
 
 def _serper_enabled() -> bool:
@@ -116,8 +122,137 @@ ATS_APIS = {
     "ashby":      "https://jobs.ashbyhq.com/api/non-user-graphql?op=ApiJobBoardWithTeams",
     "lever":          "https://api.lever.co/v0/postings/{slug}?mode=json",
     "smartrecruiters": "https://api.smartrecruiters.com/v1/companies/{slug}/postings?status=PUBLISHED",
-    "workday":        "https://{slug}.wd3.myworkdayjobs.com/wday/cxs/{slug}/jobs",
+    # 2026-05-26 fix: Workday URL is no longer hardcoded to wd3 + same slug
+    # for both subdomain and tenant. Real-world Workday URLs vary widely:
+    #   - Visa:           visa.wd5.myworkdayjobs.com/wday/cxs/Visa/jobs
+    #   - Mastercard:     mastercard.wd1.myworkdayjobs.com/wday/cxs/Mastercard/jobs
+    #   - PayPal:         paypal.wd1.myworkdayjobs.com/wday/cxs/jobs/jobs
+    #   - Western Union:  westernunion.wd5.myworkdayjobs.com/wday/cxs/WesternUnionJobs/jobs
+    #   - Worldpay:       worldpay.wd5.myworkdayjobs.com/wday/cxs/worldpay_external_careers_site/jobs
+    #
+    # New scheme: portals.yml can specify either:
+    #   workday_slug: visa.wd5         (subdomain only — tenant defaults to capitalized first segment)
+    #   workday_slug: visa.wd5/Visa    (subdomain/tenant explicit)
+    #   workday_tenant: Visa           (alternative explicit field)
+    # See _build_workday_url() below for parsing.
+    "workday": None,  # built dynamically per-company via _build_workday_url()
 }
+
+
+def _build_workday_url(workday_slug: str, workday_tenant: str = None) -> tuple[str, str]:
+    """Build the Workday CXS jobs URL from a slug + optional tenant.
+
+    Returns (url, tenant_for_logging).
+
+    The CXS endpoint is ALWAYS two segments: /wday/cxs/{company}/{site}/jobs
+    Verified live 2026-05-27 against Visa, Mastercard, PayPal, Western Union,
+    Worldpay — all return 200 only with the two-segment path.
+      ✓ mastercard.wd1/wday/cxs/mastercard/CorporateCareers/jobs       (1141 jobs)
+      ✓ visa.wd5/wday/cxs/visa/Visa/jobs                                (15 Dubai-search)
+      ✓ paypal.wd1/wday/cxs/paypal/jobs/jobs                            (278 jobs)
+      ✓ westernunion.wd5/wday/cxs/westernunion/WesternUnionJobs/jobs    (72 jobs)
+      ✓ worldpay.wd5/wday/cxs/worldpay/worldpay_external_careers_site/jobs (169)
+      ✗ Single-segment paths (e.g. cxs/Mastercard/jobs) all return 404/400.
+
+    Slug formats supported (backward compatible):
+      "visa.wd5"                              → cxs/visa/Visa/jobs            (site inferred from subdomain)
+      "visa.wd5/Visa"                         → cxs/visa/Visa/jobs            (site explicit)
+      slug="visa.wd5", tenant="Visa"          → cxs/visa/Visa/jobs            (site via tenant param)
+      slug="mastercard.wd1", tenant="CorporateCareers" → cxs/mastercard/CorporateCareers/jobs
+      slug="mastercard.wd1", tenant="mastercard/CorporateCareers"      → exact pass-through (company override)
+      "visa" (legacy, no cluster)             → visa.wd3/cxs/visa/Visa/jobs   (cluster + site both inferred)
+    """
+    # Split tenant from slug if "/" present
+    tenant_from_slug = None
+    if "/" in workday_slug:
+        workday_slug, tenant_from_slug = workday_slug.split("/", 1)
+
+    # Determine subdomain: if no dot, default to wd3 cluster (legacy)
+    has_explicit_cluster = "." in workday_slug
+    if has_explicit_cluster:
+        subdomain = workday_slug  # already includes cluster, e.g. "visa.wd5"
+        subdomain_first = workday_slug.split(".")[0]
+    else:
+        subdomain = f"{workday_slug}.wd3"
+        subdomain_first = workday_slug
+
+    # Resolve the SITE name (the second path segment).
+    # Order: explicit tenant param → embedded after "/" → capitalize subdomain.
+    if workday_tenant:
+        site = workday_tenant
+    elif tenant_from_slug:
+        site = tenant_from_slug
+    else:
+        site = subdomain_first.capitalize()
+
+    # Allow operators to override the {company} segment too by passing
+    # "company/site" in workday_tenant (e.g. "mastercard/CorporateCareers").
+    # If no "/" in site, derive company from subdomain prefix (lowercase).
+    if "/" in site:
+        tenant_path = site
+    else:
+        tenant_path = f"{subdomain_first}/{site}"
+
+    url = f"https://{subdomain}.myworkdayjobs.com/wday/cxs/{tenant_path}/jobs"
+    return url, tenant_path
+
+# ── _is_relevant_title regex patterns (v3, 2026-05-27) ──────────────────────
+# Compiled once at module load. Pattern derivation in JobScoutAgent
+# ._is_relevant_title docstring. Validated against 233 live Mastercard
+# + 214 live Visa job titles harvested from their CXS endpoints.
+
+_TITLE_NEGATIVE_PATTERN = re.compile(
+    r"\b("
+    r"intern|graduate|junior|associate analyst|sales associate|"
+    r"marketing manager|account manager|sales manager|sales representative|"
+    r"sales executive|assistant|apprentice|trainee|entry.level|"
+    r"office manager|executive assistant"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_TITLE_POSITIVE_PATTERN = re.compile(
+    r"\b("
+    # ─ PRODUCT — any seniority + any product function ─
+    r"product\s+(?:manager|management|mgmt|owner|lead|leader|director|head|"
+        r"strategy|development|marketing|analytics|data|platform|gtm|sales|"
+        r"innovation|architect|specialist)|"
+    r"(?:senior\s+)?specialist[,\s\-]+product|"
+    r"(?:director|head|vp|vice\s+president|svp|chief|principal|lead|group|global|"
+        r"sr\.?\s+director|sr\.?\s+manager|senior\s+manager)"
+        r"[\s,\-]+(?:of\s+)?product|"
+    r"(?:product\s+)?cpo\b|"
+    # ─ PROGRAMME / PMO ─
+    r"progr?am?(?:me)?\s+(?:manager|management|mgmt)|"
+    r"\bpmo\b|"
+    # ─ ADJACENT senior-tier (Director+/Head/VP only) ─
+    r"head\s+of\s+(?:payments|digital|fintech|platform|engineering|strategy|"
+        r"innovation|business\s+development|partnerships|transformation|"
+        r"growth|product|advisory)|"
+    r"(?:director|head|vp|vice\s+president|sr\.?\s+director|senior\s+director)"
+        r"[\s,\-]+(?:of\s+)?(?:strategy|business\s+development|partnerships|"
+        r"transformation|innovation|digital|advisory|value\s+enablement)|"
+    # ─ Mastercard Managing Consultant tier (Director-equivalent) ─
+    r"(?:senior|principal)\s+managing\s+consultant|"
+    r"managing\s+director[,\s\-]+consulting"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_relevant_title_pattern(title: str) -> bool:
+    """Module-level regex check — negatives first, then positives.
+
+    Used by JobScoutAgent._is_relevant_title; pulled out to module level so
+    the patterns compile once at import (not per-call) and so tests can
+    cover the matcher without instantiating the agent + env vars.
+    """
+    if not title:
+        return False
+    if _TITLE_NEGATIVE_PATTERN.search(title):
+        return False
+    return bool(_TITLE_POSITIVE_PATTERN.search(title))
+
 
 # Signals that a job page is expired / no longer accepting applications
 EXPIRY_SIGNALS = [
@@ -629,41 +764,124 @@ class JobScoutAgent(BaseAgent):
             elif ats == "workday":
                 # GAP-02 fix: Workday JSON API (used by Mastercard, Visa, JPMorgan, HSBC etc.)
                 # Workday has no public uniform API — we use the CXS endpoint with a POST search.
-                # slug format expected: "mastercard" → subdomain + job board name (may differ per company)
-                workday_slug = company.get("workday_slug", slug)  # some companies need separate board name
-                url = ATS_APIS["workday"].format(slug=workday_slug)
-                try:
-                    resp = await client.post(
-                        url,
-                        json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": "product manager"},
-                        headers={"Content-Type": "application/json"},
-                        timeout=20,
-                    )
-                    if resp.status_code in (404, 403, 405):
-                        return []
-                    resp.raise_for_status()
-                    data = resp.json()
-                    jobs = []
-                    for j in data.get("jobPostings", []):
-                        title = j.get("title", "")
-                        if not self._is_relevant_title(title):
-                            continue
-                        job_path = j.get("externalPath", "")
-                        jobs.append({
-                            "title": title,
-                            "company": company_name,
-                            "url": f"https://{workday_slug}.wd3.myworkdayjobs.com{job_path}",
-                            "description": j.get("locationsText", ""),
-                            "source": "workday",
-                            "ats_type": "workday",
-                            "location": j.get("locationsText", ""),
-                            "match_score": 0,
-                            "discovered_at": datetime.utcnow().isoformat(),
-                        })
-                    return jobs
-                except Exception as e:
-                    logger.debug(f"Workday fetch failed for {company_name}: {e}")
+                # 2026-05-26 fix: slug can now include cluster ("visa.wd5") and
+                # tenant ("visa.wd5/Visa"). See _build_workday_url() above.
+                workday_slug = company.get("workday_slug") or slug
+                if not workday_slug:
+                    logger.debug(f"Workday: no workday_slug or slug for {company_name} — skipping")
                     return []
+                workday_tenant = company.get("workday_tenant")
+                url, resolved_tenant = _build_workday_url(workday_slug, workday_tenant)
+                # subdomain for building job URLs (e.g. "visa.wd5") — extract from final URL
+                # Format: https://{subdomain}.myworkdayjobs.com/wday/cxs/{tenant}/jobs
+                workday_subdomain = url.split("//")[1].split(".myworkdayjobs.com")[0]
+
+                # 2026-05-26 fix: previously this used a single query
+                # `searchText: "product manager"` with `limit: 20`. For
+                # Visa/Mastercard/Goldman/HSBC/Standard Chartered, that
+                # returned the top 20 in Workday's default ordering
+                # (typically US-first/featured-first), so MENA/UK/SG/EU
+                # postings never made it through. The geo allowlist
+                # (TARGET_LOCATION_TOKENS) only saw US results → 0 cards
+                # for these companies on /today.
+                #
+                # New strategy: run 6 region-targeted searches per company,
+                # 50 results each, deduplicated by externalPath. Catches:
+                #   - MENA (Dubai)
+                #   - UK   (London)
+                #   - APAC (Singapore)
+                #   - EU   (Amsterdam)
+                #   - Remote roles
+                # Plus the baseline "product manager" sweep for anything
+                # without an explicit location in the search index.
+                # Workday's CXS searchText is an AND query — every token must
+                # appear in the job (title/description/location concatenated).
+                # `"product manager Dubai"` requires BOTH tokens, so a "Vice
+                # President, Product Management" role in Dubai is excluded
+                # (it doesn't contain the literal phrase "product manager").
+                # Strategy: query by region NAME only; let _is_relevant_title()
+                # filter PM-style titles client-side. Verified 2026-05-27 on
+                # Mastercard — "Dubai" returns 5, "product manager Dubai" only 1.
+                REGION_QUERIES = [
+                    "product manager",   # baseline — Workday's general PM listings
+                    "Dubai",
+                    "London",
+                    "Singapore",
+                    "Amsterdam",
+                    "Abu Dhabi",
+                    "Riyadh",
+                    "remote",
+                ]
+                # Workday CXS hard-caps limit at 20 (verified 2026-05-27 against
+                # Visa/Mastercard/PayPal/Western Union/Worldpay — all return
+                # HTTP 400 for limit>20). Walk 4 pages via offset to get ~80
+                # per region query; total ceiling per company is ~640 across
+                # 8 region queries × 4 pages, deduplicated by externalPath.
+                PAGE_SIZE = 20
+                MAX_PAGES_PER_QUERY = 4
+
+                all_jobs: dict[str, dict] = {}  # dedupe by externalPath
+                for query in REGION_QUERIES:
+                    company_dead = False
+                    for page in range(MAX_PAGES_PER_QUERY):
+                        try:
+                            resp = await client.post(
+                                url,
+                                json={
+                                    "appliedFacets": {},
+                                    "limit": PAGE_SIZE,
+                                    "offset": page * PAGE_SIZE,
+                                    "searchText": query,
+                                },
+                                headers={"Content-Type": "application/json"},
+                                timeout=30,
+                            )
+                            if resp.status_code in (404, 403, 405):
+                                # Whole company endpoint dead — abort all queries for this company.
+                                logger.debug(f"Workday {workday_slug} returned {resp.status_code} on query '{query}' page {page} — skipping company")
+                                company_dead = True
+                                break
+                            resp.raise_for_status()
+                            data = resp.json()
+                            postings = data.get("jobPostings", [])
+                            if not postings:
+                                # No more results for this query — stop paginating.
+                                break
+                            for j in postings:
+                                title = j.get("title", "")
+                                if not self._is_relevant_title(title):
+                                    continue
+                                job_path = j.get("externalPath", "")
+                                if not job_path or job_path in all_jobs:
+                                    continue
+                                all_jobs[job_path] = {
+                                    "title": title,
+                                    "company": company_name,
+                                    "url": f"https://{workday_subdomain}.myworkdayjobs.com{job_path}",
+                                    "description": j.get("locationsText", ""),
+                                    "source": "workday",
+                                    "ats_type": "workday",
+                                    "location": j.get("locationsText", ""),
+                                    "match_score": 0,
+                                    "discovered_at": datetime.utcnow().isoformat(),
+                                }
+                            # Stop early if Workday returned fewer than a full page.
+                            if len(postings) < PAGE_SIZE:
+                                break
+                        except Exception as e:
+                            # One bad page shouldn't drop the whole query.
+                            logger.debug(f"Workday query failed for {workday_slug} q='{query}' page={page}: {e}")
+                            break
+                        await asyncio.sleep(0.15)
+                    if company_dead:
+                        return []
+                    await asyncio.sleep(0.2)  # courtesy delay between queries
+
+                logger.info(
+                    "Workday %s: %d unique relevant jobs across %d region queries",
+                    workday_slug, len(all_jobs), len(REGION_QUERIES),
+                )
+                return list(all_jobs.values())
 
         return []
 
@@ -842,6 +1060,152 @@ class JobScoutAgent(BaseAgent):
 
     # ── Expiry Validation ─────────────────────────────────────────────────────
 
+    # ── Company-URL sanity check (2026-05-27 mislabel fix) ─────────────────
+    # Bug: Perplexity sometimes returns URLs for OTHER companies when
+    # asked about a target. Example from production: query="STC Pay"
+    # returned a pnc.wd5.myworkdayjobs.com URL (PNC Bank). We mislabeled
+    # that row as STC Pay because the parser trusted the query context.
+    # Fix: validate URL hostname/path against the target company before
+    # accepting the candidate.
+    _KNOWN_ATS_HOSTS: tuple[str, ...] = (
+        "boards.greenhouse.io", "boards-api.greenhouse.io", "job-boards.greenhouse.io",
+        "jobs.lever.co", "api.lever.co",
+        "jobs.ashbyhq.com",
+        "jobs.smartrecruiters.com", "api.smartrecruiters.com",
+        "myworkdayjobs.com",
+    )
+
+    def _company_slug(self, company_name: str) -> str:
+        """Lowercase, alphanumeric-only slug for fuzzy URL matching.
+
+        "Standard Chartered" → "standardchartered"
+        "American Express GBT (Global Business Travel)" → "americanexpressgbtglobalbusinesstravel"
+        "STC Pay / STC Bank" → "stcpaystcbank"
+        """
+        return re.sub(r"[^a-z0-9]", "", (company_name or "").lower())
+
+    def _url_matches_company(
+        self,
+        url: str,
+        company_name: str,
+        company_domain: Optional[str] = None,
+        careers_url: Optional[str] = None,
+    ) -> bool:
+        """Sanity check: does the URL plausibly belong to this company?
+
+        Accept if ANY of:
+          1. URL hostname contains company_domain (most reliable)
+          2. URL hostname equals or is a subdomain of careers_url's host
+             (catches brand-disjoint Workday tenants like
+             travelhrportal=AmexGBT, peopleplus=SCB)
+          3. Hostname's first label OR full host contains a slug variant
+             of the company name (paypal.wd1.myworkdayjobs.com → PayPal)
+          4. URL is on a known generic ATS AND path contains a slug variant
+             (boards.greenhouse.io/okx → OKX)
+
+        Rules 3 and 4 BOTH run even when one fails — Workday URLs can
+        match either way depending on whether the company name slug
+        appears in the hostname subdomain or in the URL path.
+
+        Returns False otherwise — prefers false negatives (a few legit
+        candidates rejected) over false positives (PNC Bank job labeled
+        as STC Pay).
+        """
+        if not url or not company_name:
+            return False
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            path = (parsed.path or "").lower()
+        except Exception:
+            return False
+        if not host:
+            return False
+
+        slug = self._company_slug(company_name)
+        if not slug or len(slug) < 2:
+            return False
+        # Build short-slug variants — first 1-2-3 words for multi-word
+        # company names. "American Express GBT (Global Business Travel)"
+        # → ("american", "americanexpress", "americanexpressgbt", "amex"...).
+        words = re.findall(r"[a-z0-9]+", company_name.lower())
+        slug_variants: set[str] = set()
+        for n in range(1, min(len(words), 4) + 1):
+            variant = "".join(words[:n])
+            if len(variant) >= 3:
+                slug_variants.add(variant)
+        slug_variants.add(slug)
+        # Hand-coded abbreviations for common multi-word company names.
+        # (Amex, JPMC, GS, BoA…) — extend as needed when scouts mislabel.
+        abbrev_map = {
+            "americanexpress": ("amex", "aexp"),
+            "jpmorganchase": ("jpmc", "jpmorgan"),
+            "goldmansachs": ("goldman", "gs"),
+            "bankofamerica": ("bofa", "boa"),
+            "standardchartered": ("scb", "stanchart", "peopleplus"),
+            "emiratesnbd": ("enbd", "liv"),
+        }
+        for k, vs in abbrev_map.items():
+            if k in slug:
+                slug_variants.update(vs)
+
+        # Rule 1 — explicit company_domain match.
+        if company_domain:
+            cd = company_domain.lower().replace("https://", "").replace("http://", "").strip("/")
+            cd_base = cd.split("/", 1)[0]
+            if cd_base and cd_base in host:
+                return True
+
+        # Rule 2 — careers_url cross-check (catches brand-disjoint ATS tenants).
+        if careers_url:
+            try:
+                careers_host = (urlparse(careers_url).hostname or "").lower()
+                if careers_host and (careers_host == host or host.endswith("." + careers_host)
+                                     or careers_host.endswith("." + host)):
+                    return True
+                # Also accept if careers_url's first label matches URL's first label
+                # (e.g. careers points to travelhrportal.wd1, URL is on same subdomain).
+                if careers_host:
+                    if careers_host.split(".", 1)[0] == host.split(".", 1)[0]:
+                        return True
+            except Exception:
+                pass
+
+        # Token-boundary matcher (2026-05-29 hardening). Match a slug variant
+        # against whole host/path TOKENS — not naive substrings. The old
+        # `any(v in path ...)` accepted "stc" inside "westcoast" and "unit"
+        # inside "opportunity" — short-slug false positives that violate this
+        # function's stated "prefer false negatives" contract. Equality covers
+        # every real ATS tenant/slug; a length-gated prefix match (len >= 5)
+        # allows distinctive compound slugs (finastra, worldline, checkout)
+        # without re-opening the short-slug hole.
+        def _tok_match(tokens: list[str]) -> bool:
+            for tok in tokens:
+                if not tok:
+                    continue
+                for v in slug_variants:
+                    if tok == v or (len(v) >= 5 and tok.startswith(v)):
+                        return True
+            return False
+
+        host_tokens = re.split(r"[^a-z0-9]+", host)
+        path_tokens = re.split(r"[^a-z0-9]+", path)
+
+        # Rule 3 — hostname slug match. Workday encodes the company in the
+        # first host label; tokenising the whole host also catches
+        # "careers.adyen.com" → "adyen".
+        if _tok_match(host_tokens):
+            return True
+
+        # Rule 4 — generic ATS path slug match (Greenhouse / Lever / Ashby /
+        # SmartRecruiters use /<company-slug>/... path patterns).
+        is_generic_ats = any(known in host for known in self._KNOWN_ATS_HOSTS)
+        if is_generic_ats and _tok_match(path_tokens):
+            return True
+
+        return False
+
     # ── JobScout v2 — per-target Perplexity discovery + 7-safeguard validation ──
     async def _discover_via_perplexity(
         self,
@@ -896,13 +1260,35 @@ class JobScoutAgent(BaseAgent):
                     logger.warning("Perplexity discovery failed for %s: %s", name, e)
                     return name, [], 0.0
 
+        # Re-pull domain per company for the sanity check below.
+        # rows already has (id, name, domain, careers_url) — index it by name.
+        rows_by_name = {(r.get("name") or ""): r for r in rows}
+
         results = await asyncio.gather(*(_one(c) for c in rows))
+        mislabel_count = 0
         for name, cands, cost in results:
             total_cost += cost
+            co_row = rows_by_name.get(name) or {}
+            company_domain = co_row.get("domain")
+            careers_url = co_row.get("careers_url")
             for c in cands:
                 url = c.get("url") or ""
                 title = c.get("title") or f"{name} — product role"
                 if not url:
+                    continue
+                # 2026-05-27 mislabel fix: drop URLs that obviously belong
+                # to a different company. Real production bug: searching
+                # "STC Pay" returned pnc.wd5.myworkdayjobs.com URLs and
+                # "MagnatiPay" returned worldpay.wd5 URLs. Without this
+                # guard, those rows landed in /today labeled with the
+                # wrong company name.
+                if not self._url_matches_company(url, name, company_domain, careers_url):
+                    mislabel_count += 1
+                    logger.info(
+                        "Perplexity mislabel rejected — query=%r url=%s "
+                        "(URL doesn't match this company; would have been mislabeled)",
+                        name, url,
+                    )
                     continue
                 all_candidates.append({
                     "title": title,
@@ -915,6 +1301,11 @@ class JobScoutAgent(BaseAgent):
                     "_published_at": c.get("published_at"),
                 })
 
+        if mislabel_count:
+            self.log(
+                f"   Perplexity mislabels filtered: {mislabel_count} "
+                f"(URLs from other companies — see logs)"
+            )
         self.log(f"   Perplexity per-target discovery: {len(all_candidates)} candidates · ${total_cost:.4f}")
         return all_candidates
 
@@ -1188,8 +1579,15 @@ Return JSON only."""
                 logger.warning(f"Scoring chunk offset={offset} failed: {e}")
                 return {}
 
-        chunk_results = await asyncio.gather(
-            *[score_chunk(chunk, i * chunk_size) for i, chunk in enumerate(chunks)]
+        # Bounded fan-out: cap concurrent GPT-4.1 scoring calls (was an
+        # unbounded gather firing one LLM call per 25-job chunk). Order is
+        # preserved, but score_map is keyed by id so it wouldn't matter.
+        chunk_results = await gather_bounded(
+            [
+                lambda chunk=chunk, off=i * chunk_size: score_chunk(chunk, off)
+                for i, chunk in enumerate(chunks)
+            ],
+            limit=SCORE_CHUNK_CONCURRENCY,
         )
         score_map: dict[int, dict] = {}
         for partial in chunk_results:
@@ -1279,36 +1677,126 @@ Certifications: PMP, PMI-ACP, CSPO, CSM
 """.strip()
 
     def _is_relevant_title(self, title: str) -> bool:
-        """Filter: does this title match a PM/PMO/Head of Product role?"""
-        title_lower = title.lower()
-        positive = [
-            "product manager", "head of product", "chief product",
-            "programme manager", "program manager", "pmo",
-            "vp product", "vp of product", "vice president product",
-            "director of product", "director, product",
-            "product lead", "product owner",
-            "head of payments", "head of digital",
-            "head of engineering",   # Sometimes Rizwan-relevant hybrid roles
-        ]
-        negative = ["intern", "graduate", "junior", "associate analyst",
-                    "marketing manager", "account manager", "sales"]
-        if any(neg in title_lower for neg in negative):
-            return False
-        return any(kw in title_lower for kw in positive)
+        """Filter: does this title match a PM/PgM or adjacent senior-tier role?
+
+        2026-05-27 v3 — regex-based. Replaces the brittle substring list
+        after live-harvesting 233 Mastercard + 214 Visa job titles and
+        observing dozens of misses (e.g. "Director, New Product Development",
+        "Vice President, Product Data Platform", "Sr. Director - Product
+        Management/AI Solutions"). Verified pass-rates on live data:
+          Mastercard: 40/211 unique titles (only 2 product/program misses,
+                      both legitimately out-of-scope partner-program roles)
+          Visa:       19/202 unique titles (only "Product Analyst Junior")
+
+        Mastercard hierarchy notes (researched via Levels.fyi / Glassdoor):
+          - Specialist (IC) track: Specialist → Senior Specialist (L8) →
+            Lead PM (L7) → Principal PM (L6) → Senior Principal PM (L5)
+          - Manager track: Manager (L8) → Senior Manager (L7) → Director
+            (L6) → Senior Director (L5) → VP (L4) → SVP (L3) → EVP (L2)
+          - Formal title pattern: "Senior Specialist, Product Management"
+            "Director, Product Management" "Vice President, Product
+            Management, [Domain]" — always with comma + "Management" not
+            "Manager" for the formal title.
+
+        Visa hierarchy notes:
+          - PM → Senior PM → Director PM → Sr. Director PM → VP PM
+          - Heavy use of "Sr." abbreviation (Sr. Director, Sr. Manager)
+          - "Product Owner" used for senior IC PMs in some BUs
+          - Visa-specific BUs: Acceptance Solutions, Cybersource Product,
+            VCA (Visa Consulting & Analytics), Authorize.net Product
+        """
+        return _is_relevant_title_pattern(title)
 
     def _extract_company_from_title(self, title: str) -> Optional[str]:
-        """Extract company name from search result title string."""
-        # Pattern: "Job Title - Company | Portal" or "Job Title at Company"
+        """Extract company name from search result title string.
+
+        BUG-051 fix (2026-05-13): production examples that the prior naive
+        split() got wrong:
+          "Fintech/Payments — Ventula Consulting hiring Group Product
+           Manager – Fintech/Payments"
+              prior result: "Fintech/Payments"  (WRONG — this is the topic)
+              correct:      "Ventula Consulting"
+          "Emirates NBD hiring Senior Product Manager – Merchant Acquiring
+           at Emirates NBD"
+              prior result: "Merchant Acquiring …"  (WRONG — phantom)
+              correct:      "Emirates NBD"
+
+        Strategy — try preference-ordered patterns:
+          1. "<TOPIC> — <COMPANY> hiring <ROLE>"   (LinkedIn modern format)
+          2. "<COMPANY> hiring <ROLE> [at <COMPANY>]"  (LinkedIn old format,
+             also Indeed). Prefer the "at" suffix when present — it's the
+             ground-truth employer.
+          3. "<ROLE> - <COMPANY> | <PORTAL>"        (Indeed/Bayt/etc)
+          4. "<ROLE> at <COMPANY>"                  (generic)
+
+        Each candidate is post-filtered against:
+          - portal names (linkedin, indeed, etc) → skip
+          - phantom patterns (handled by _is_phantom_company_name elsewhere
+            but checked here for "Careers" / "Hiring" / "Vacancies" so they
+            never even enter the candidate pool).
+        """
+        if not title or not isinstance(title, str):
+            return None
+
+        non_companies = {
+            "linkedin", "indeed", "glassdoor", "bayt", "naukrigulf",
+            "gulftalent", "greenhouse", "lever", "ashby", "jobs",
+            "workday", "smartrecruiters", "myworkdayjobs",
+        }
+
+        def _clean(s: str) -> str:
+            s = s.strip().rstrip(",.;:")
+            s = re.sub(r"\s*[|].*$", "", s).strip()
+            return s
+
+        def _is_phantom_candidate(c: str) -> bool:
+            if not c or len(c) < 2:
+                return True
+            cl = c.lower()
+            if cl in non_companies:
+                return True
+            # Reject job-listing chrome that survived the split
+            chrome = ("careers", "hiring", "vacancies", "vacancy", "job in",
+                      "jobs in", "job board")
+            for w in chrome:
+                if w in cl:
+                    return True
+            return False
+
+        # ── Pattern 1: "<TOPIC> — <COMPANY> hiring <ROLE>"
+        # The em-dash splits topic from the actual listing. Try em-dash
+        # first because LinkedIn now uses it heavily.
+        m = re.search(
+            r"^(?P<topic>[^—]{1,80})\s+—\s+(?P<rest>.+?)\s+hiring\s+",
+            title,
+        )
+        if m:
+            candidate = _clean(m.group("rest"))
+            if not _is_phantom_candidate(candidate):
+                return candidate
+
+        # ── Pattern 2: "<COMPANY> hiring <ROLE> [at <COMPANY>]"
+        # Prefer the "at <COMPANY>" suffix when present (more reliable
+        # employer ground-truth than the prefix on multi-employer
+        # platform titles).
+        m_at = re.search(r"\s+at\s+(?P<co>[^|·\-–—]+?)\s*$", title, re.IGNORECASE)
+        if m_at:
+            candidate = _clean(m_at.group("co"))
+            if not _is_phantom_candidate(candidate):
+                return candidate
+        m_pre = re.search(r"^(?P<co>[A-Z][^|]+?)\s+hiring\s+", title)
+        if m_pre:
+            candidate = _clean(m_pre.group("co"))
+            if not _is_phantom_candidate(candidate):
+                return candidate
+
+        # ── Pattern 3 (legacy): "<ROLE> - <COMPANY> | <PORTAL>" or "<ROLE> at <COMPANY>"
         parts = re.split(r"\s+[-–|]\s+|\s+[Aa]t\s+", title)
         if len(parts) >= 2:
-            company = parts[1].strip()
-            company = re.sub(r"\s*[|].*", "", company).strip()
-            # Filter out portal names masquerading as companies
-            non_companies = {"linkedin", "indeed", "glassdoor", "bayt", "naukrigulf",
-                             "gulftalent", "greenhouse", "lever", "ashby", "jobs"}
-            if company.lower() in non_companies:
-                return None
-            return company if len(company) > 1 else None
+            candidate = _clean(parts[1])
+            if not _is_phantom_candidate(candidate):
+                return candidate
+
         return None
 
     def _detect_source(self, url: str) -> str:

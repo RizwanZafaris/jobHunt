@@ -95,6 +95,7 @@ const config: Config = {
         },
       },
       fontSize: {
+        '3xs': ['0.6875rem',{ lineHeight: '1.4' }],   // 11px — micro labels (used 51×; was undefined → rendered at inherited size)
         '2xs': ['0.75rem',  { lineHeight: '1.4' }],   // 12px — floor
         xs:    ['0.8125rem',{ lineHeight: '1.4' }],   // 13px
         sm:    ['0.9375rem',{ lineHeight: '1.5' }],   // 15px

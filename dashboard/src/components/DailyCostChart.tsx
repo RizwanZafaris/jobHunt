@@ -32,7 +32,12 @@ export default function DailyCostChart({ rows, days, warning }: Props) {
  const { chartData, providers } = useMemo(() => {
  const byDay: Record<string, Record<string, number>> = {}
  const providerSet = new Set<string>()
- for (const r of rows) {
+ // Guard: defend against a malformed backend payload where `rows` is
+ // missing or non-iterable (e.g. cost telemetry table was just truncated,
+ // or a partial 5xx response slipped through). Render empty state instead
+ // of crashing the whole /costs page.
+ const safeRows = Array.isArray(rows) ? rows : []
+ for (const r of safeRows) {
  providerSet.add(r.provider)
  if (!byDay[r.day]) byDay[r.day] = {}
  byDay[r.day][r.provider] = (byDay[r.day][r.provider] || 0) + Number(r.total_cost_usd || 0)

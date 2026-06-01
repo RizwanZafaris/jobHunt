@@ -36,7 +36,9 @@ from db.client import get_supabase
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/workspace/follow-ups", tags=["follow-ups"])
+# B2: was "/workspace/follow-ups" — collided with /workspace/{job_id} (int)
+# because workspace_router is included first in server.py. Same fix as stories.
+router = APIRouter(prefix="/follow-ups", tags=["follow-ups"])
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────

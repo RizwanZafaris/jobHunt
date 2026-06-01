@@ -101,6 +101,7 @@ export default function ApplicationsBoard({ initial }: Props) {
                     <select
                       value={a.status}
                       onChange={(e) => changeStatus(a.id, e.target.value)}
+                      aria-label={`Change status for ${a.company} application`}
                       className="text-2xs bg-surface border border-border-strong rounded px-1.5 py-0.5 text-fg-muted flex-1"
                     >
                       {COLUMNS.map((c) => (

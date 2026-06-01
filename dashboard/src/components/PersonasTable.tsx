@@ -60,9 +60,14 @@ export default function PersonasTable({ personas }: Props) {
         case 'examples':
           cmp = (a.n_examples_used || 0) - (b.n_examples_used || 0)
           break
-        case 'synthesized':
-          cmp = new Date(a.last_synthesized_at).getTime() - new Date(b.last_synthesized_at).getTime()
+        case 'synthesized': {
+          // Null last_synthesized_at (persona created but never synthesized)
+          // sorts to the bottom regardless of direction.
+          const at = a.last_synthesized_at ? new Date(a.last_synthesized_at).getTime() : 0
+          const bt = b.last_synthesized_at ? new Date(b.last_synthesized_at).getTime() : 0
+          cmp = at - bt
           break
+        }
         case 'quality':
           cmp =
             (QUALITY_ORDER[a.metadata?.persona_quality || 'unknown'] || 0) -
@@ -94,11 +99,13 @@ export default function PersonasTable({ personas }: Props) {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Search company..."
+          aria-label="Filter personas by company name"
           className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg w-48"
         />
         <select
           value={filterQuality}
           onChange={(e) => setFilterQuality(e.target.value)}
+          aria-label="Filter personas by quality tier"
           className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
         >
           <option value="all">All quality tiers</option>
@@ -142,7 +149,11 @@ export default function PersonasTable({ personas }: Props) {
               const required = p.ats_keyword_bank?.required || []
               const boost = p.ats_keyword_bank?.boost || []
               const totalKw = required.length + boost.length
-              const synthDate = new Date(p.last_synthesized_at)
+              // last_synthesized_at can be null for personas that exist but have
+              // never been synthesized (e.g. seeded from import). Bare new Date()
+              // on null returns Invalid Date and crashes the cell at toISOString().
+              const synthDate = p.last_synthesized_at ? new Date(p.last_synthesized_at) : null
+              const synthDateValid = synthDate && !isNaN(synthDate.getTime())
               return (
                 <tr key={p.company_name} className="hover:bg-surface-raised/30 transition-colors">
                   <td className="px-3 py-2">
@@ -175,8 +186,15 @@ export default function PersonasTable({ personas }: Props) {
                       <span className="text-fg-subtle">0</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-fg-muted" title={synthDate.toISOString()}>
-                    {mounted ? relativeDate(synthDate) : absoluteDate(synthDate)}
+                  <td
+                    className="px-3 py-2 text-fg-muted"
+                    title={synthDateValid ? synthDate!.toISOString() : 'Never synthesized'}
+                  >
+                    {synthDateValid
+                      ? mounted
+                        ? relativeDate(synthDate!)
+                        : absoluteDate(synthDate!)
+                      : <span className="text-fg-subtle">—</span>}
                   </td>
                   <td className="px-3 py-2 text-fg-muted">
                     {totalKw > 0 ? (

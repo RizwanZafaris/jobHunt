@@ -1,0 +1,88 @@
+diff --git a/api/server.py b/api/server.py
+index 1111111..2222222 100644
+--- a/api/server.py
++++ b/api/server.py
+@@ -10,6 +10,7 @@ from fastapi import FastAPI
+
+ app = FastAPI()
+
++@app.on_event("startup")
++async def _startup():
++    pass
++
+ app.add_middleware(
+     CORSMiddleware,
+-    allow_origins=["https://app.example.com"],
++    allow_origins=["*"],
+     allow_credentials=True,
+ )
+@@ -120,3 +124,12 @@ async def something():
+     try:
+         await do_thing()
+     except Exception:
+-        logger.error("boom")
++        logger.exception("boom")
++
++
++@app.post("/applications/{id}/retire")
++async def retire(id: int):
++    return {"ok": True}
+diff --git a/api/follow_ups.py b/api/follow_ups.py
+index 3333333..4444444 100644
+--- a/api/follow_ups.py
++++ b/api/follow_ups.py
+@@ -1,4 +1,5 @@
+-router = APIRouter(prefix="/follow-ups", tags=["follow-ups"])
++router = APIRouter(prefix="/workspace/follow-ups", tags=["follow-ups"])
+diff --git a/api/orphan_reaper.py b/api/orphan_reaper.py
+index 5555555..6666666 100644
+--- a/api/orphan_reaper.py
++++ b/api/orphan_reaper.py
+@@ -50,7 +50,11 @@ def sweep():
+-    db.table("resume_builds").update({"status": "failed"}).execute()
++    db.table("resume_builds").update({
++        "status": "failed",
++        "error_message": "stuck-build sweep",
++    }).execute()
+diff --git a/agents/g5_graph.py b/agents/g5_graph.py
+index 7777777..8888888 100644
+--- a/agents/g5_graph.py
++++ b/agents/g5_graph.py
+@@ -40,3 +40,8 @@ async def writer_node(state):
+-    result = await get_hardened_router().ask_with_fallback(...)
++    # TODO: switch back later
++    result = await get_router().ask(
++        provider="anthropic",
++        model="claude-opus-4-7",
++    )
+diff --git a/dashboard/src/app/today/page.tsx b/dashboard/src/app/today/page.tsx
+index 9999999..aaaaaaa 100644
+--- a/dashboard/src/app/today/page.tsx
++++ b/dashboard/src/app/today/page.tsx
+@@ -50,5 +50,8 @@ export default async function Page() {
+   try {
+     return await fetchTodayActions()
+   } catch (err) {
+-    return { actions: [], isMock: false }
++    return { actions: MOCK_TODAY_ACTIONS, isMock: true }
+   }
+ }
+diff --git a/config/settings.py b/config/settings.py
+--- a/config/settings.py
++++ b/config/settings.py
+@@ -50,1 +50,2 @@ class Settings:
+-    secret_key: str
++    secret_key: str = "change-me-in-production"
+diff --git a/dashboard/src/lib/network 2.ts b/dashboard/src/lib/network 2.ts
+new file mode 100644
+--- /dev/null
++++ b/dashboard/src/lib/network 2.ts
+@@ -0,0 +1,1 @@
++export const x = 1
+diff --git a/api/network.py b/api/network.py
+--- a/api/network.py
++++ b/api/network.py
+@@ -40,3 +40,7 @@ from pydantic import BaseModel
++class DraftIntroBody(BaseModel):
++    contact_id: int
++    angle: str

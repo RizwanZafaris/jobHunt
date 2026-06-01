@@ -1,90 +1,105 @@
 /**
  * /today — the new home.
  *
- * One ranked list answering: what should I do right now?
- * Data comes from /actions/today (api/actions.py). The endpoint returns
- * a stable shape with actions[], total, counts; on failure we surface a
- * clean error state rather than crashing the route.
+ * 2026-05-26 redesign: replaces the single flat ranked list with one
+ * dedicated section per card kind. Data comes from /actions/today/sections
+ * (api/actions.py::get_today_sections). Each section is independently
+ * collapsible + shows count + has its own empty state.
+ *
+ * Old flat-list response is still served by /actions/today for the few
+ * dashboards that haven't migrated yet (legacy mobile bookmark, etc).
  */
 import Link from 'next/link'
 import { AppShell } from '@/components/layout/AppShell'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { TodayActionList } from '@/components/today/TodayActionList'
-import { fetchTodayActions, type FetchTodayResponse } from '@/lib/api'
-import { MOCK_TODAY_ACTIONS } from '@/lib/mock/today'
-import type { TodayAction, TodayActionKind } from '@/lib/types/today'
+import { TodayActionSection } from '@/components/today/TodayActionSection'
+import { RecommendedSection } from '@/components/today/RecommendedSection'
+import {
+  fetchTodaySections,
+  fetchPostOfTheDay,
+  fetchTodayRecommended,
+  type PostOfTheDay,
+} from '@/lib/api'
+import { PostOfTheDayCard } from '@/components/linkedin/PostOfTheDayCard'
+import type {
+  TodaySection,
+  TodaySectionsResponse,
+  TodayRecommendedResponse,
+} from '@/lib/types/today'
 
 export const dynamic = 'force-dynamic'
 
 export const metadata = {
   title: 'Today · Job Hunt',
-  description: 'A single ranked list answering: what should I do right now?',
+  description: 'Your prioritised action queue, grouped by kind.',
 }
 
-// Was 5 — bumped to 10 (2026-05-11) after production data showed users had
-// 6 resume_ready cards in the top 6 (Adyen ×3, Adecco, Finkraft, Ventula),
-// pushing high-score targets like Visa (rank 10) and Marqeta (rank 13)
-// below the visible fold. 10 covers the score≥85 band comfortably.
-const VISIBLE_LIMIT = 10
+// Per-section visible default. Bumped to 5 in the sectioned redesign
+// so each region shows enough to be useful without dominating the page.
+// Tunable per /today render via ?per_kind=N (backend caps at 20).
+const PER_KIND = 5
 
-interface FetchOutcome {
+interface SectionsOutcome {
   ok: boolean
-  actions: TodayAction[]
+  sections: TodaySection[]
   total: number
-  counts: Record<string, number>
   errorMessage: string | null
-  isMock: boolean
 }
 
-async function loadTodayActions(): Promise<FetchOutcome> {
+async function loadTodaySections(): Promise<SectionsOutcome> {
   try {
-    const data: FetchTodayResponse = await fetchTodayActions(VISIBLE_LIMIT * 2)
+    const data: TodaySectionsResponse = await fetchTodaySections(PER_KIND, {
+      include_empty: true,  // always render the 8 sections; empty ones show empty_state
+    })
     return {
       ok: true,
-      actions: data.actions ?? [],
+      sections: data.sections ?? [],
       total: data.total ?? 0,
-      counts: data.counts ?? {},
       errorMessage: null,
-      isMock: false,
     }
   } catch (err) {
-    // Backend unreachable in dev / first deploy — render the mock so the page
-    // is still useful, but surface a small banner so the user knows.
     const message = err instanceof Error ? err.message : String(err)
     return {
       ok: false,
-      actions: MOCK_TODAY_ACTIONS,
-      total: MOCK_TODAY_ACTIONS.length,
-      counts: {},
+      sections: [],
+      total: 0,
       errorMessage: message,
-      isMock: true,
+    }
+  }
+}
+
+async function loadRecommended(): Promise<{
+  data: TodayRecommendedResponse | null
+  errorMessage: string | null
+}> {
+  try {
+    const data = await fetchTodayRecommended()
+    return { data, errorMessage: null }
+  } catch (err) {
+    return {
+      data: null,
+      errorMessage: err instanceof Error ? err.message : String(err),
     }
   }
 }
 
 export default async function TodayPage() {
-  const { actions, total, errorMessage, isMock } = await loadTodayActions()
-  const visible = actions.slice(0, VISIBLE_LIMIT)
-  const overflow = Math.max(0, total - visible.length)
+  const [{ sections, total, errorMessage, ok }, post, recommended] = await Promise.all([
+    loadTodaySections(),
+    fetchPostOfTheDay().catch(() => null as PostOfTheDay | null),
+    loadRecommended(),
+  ])
+  const showError = !ok && errorMessage !== null
 
-  // BUG-010 fix: derive the strip counts from the VISIBLE cards, not from
-  // the API's `counts` summary. Previously the strip said e.g. "1 Ready to
-  // apply" while the page rendered 4 green Ready cards because the API
-  // counts queue-total but the page is truncated to VISIBLE_LIMIT and the
-  // user has no way to reconcile the two. Counting locally guarantees the
-  // strip is always the index of the list directly underneath it.
-  const visibleCounts = visible.reduce<Record<TodayActionKind, number>>(
-    (acc, a) => {
-      acc[a.kind] = (acc[a.kind] ?? 0) + 1
-      return acc
-    },
-    {} as Record<TodayActionKind, number>,
-  )
+  // Tiny stat strip — derived from the sections themselves.
+  // We surface only kinds with at least 1 card so the strip doesn't lie
+  // (a "0 Hot leads" pill would be noise; the empty section itself
+  // already conveys that).
+  const strip = sections
+    .filter((s) => s.count_total > 0)
+    .map((s) => ({ kind: s.kind, label: s.label, n: s.count_total }))
 
-  // Use Date in render but force UTC for deterministic SSR output —
-  // see BUG-017. The eyebrow ("Tuesday, 12 May") is purely informational
-  // so a fixed locale + timezone is safe.
   const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     day: 'numeric',
@@ -92,49 +107,45 @@ export default async function TodayPage() {
     timeZone: 'UTC',
   })
 
-  // Tiny stat strip — counts derived from the cards visible on this page.
-  const interestingCounts = (
-    [
-      ['linkedin_post_due',     'Visibility post',  'Approved LinkedIn drafts scheduled for today'],
-      ['resume_ready',          'Ready to apply',    'Cards below with a tailored resume already built'],
-      ['score_high_no_resume',  'Resumes to build',  'Cards below where the score is ≥85 but no resume yet'],
-      ['stale_application',     'Stale apps',        'Cards below — applied 7+ days ago, no outcome logged'],
-      ['persona_stale',         'Stale personas',    'Cards below — persona not refreshed in 14+ days'],
-    ] as const
-  )
-    .map(([k, label, tip]) => ({ k, label, tip, n: visibleCounts[k] ?? 0 }))
-    .filter((row) => row.n > 0)
-
   return (
     <AppShell>
       <PageHeader
         eyebrow={today}
         title="Today"
-        description="The shortest list of moves the agent thinks will move the needle. Top of the stack first."
+        description="Your day, organised by what's most perishable first."
       />
 
-      {isMock && errorMessage && (
+      {showError && (
         <div
           role="alert"
-          className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-2xs text-fg-muted"
+          className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-2xs text-fg-muted"
         >
-          <span className="font-medium text-fg">Live data unavailable</span>
-          <span className="text-fg-subtle"> — showing example actions.</span>
+          <span className="font-medium text-fg">Couldn&rsquo;t reach the backend</span>
+          <span className="text-fg-subtle"> — refresh to retry.</span>
           <span className="block text-fg-subtle/80 mt-0.5">{errorMessage}</span>
         </div>
       )}
 
-      {interestingCounts.length > 0 && (
+      {/* Pinned: today's LinkedIn post (preserves Stream D placement). */}
+      <PostOfTheDayCard post={post} emptyCta="generate" />
+
+      {/* 2026-05-27: AI-curated apply-now list. Pinned above the action
+          sections because applying to a top match TODAY beats clearing
+          stale follow-ups. Auto-hides on quiet days (no recommendations
+          loaded). */}
+      <RecommendedSection
+        data={recommended.data}
+        errorMessage={recommended.errorMessage}
+      />
+
+      {/* Stat strip — counts per kind, derived from sections. */}
+      {strip.length > 0 && (
         <ul
           className="flex flex-wrap gap-x-4 gap-y-1 text-2xs text-fg-subtle"
           aria-label="Today's queue counts"
         >
-          {interestingCounts.map(({ k, label, tip, n }) => (
-            <li
-              key={k}
-              className="flex items-center gap-1"
-              title={tip}
-            >
+          {strip.map(({ kind, label, n }) => (
+            <li key={kind} className="flex items-center gap-1">
               <span className="font-mono tabular-nums text-fg">{n}</span>
               <span>{label}</span>
             </li>
@@ -142,7 +153,10 @@ export default async function TodayPage() {
         </ul>
       )}
 
-      {visible.length === 0 ? (
+      {/* All 8 sections rendered in fixed perishability order. Empty
+          sections show their empty_state copy so the layout stays
+          stable across days — fewer surprises for muscle memory. */}
+      {sections.length === 0 && !showError ? (
         <EmptyState
           icon="check"
           title="Inbox zero"
@@ -157,20 +171,20 @@ export default async function TodayPage() {
           }
         />
       ) : (
-        /* Phase 2 §4.1 — the action list is now a CLIENT component so it
-         * can host the A-F filter chip group without forcing the whole
-         * /today page into the client bundle. Chip selection is local
-         * (no URL persistence yet — that's a Phase 3 follow-up). */
-        <TodayActionList actions={visible} />
+        <div className="flex flex-col gap-3">
+          {sections.map((s) => (
+            <TodayActionSection key={s.kind} section={s} />
+          ))}
+        </div>
       )}
 
-      {overflow > 0 && (
+      {total > 0 && (
         <div className="pt-2">
           <Link
             href="/applications"
             className="text-xs font-medium text-fg-muted hover:text-fg underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
           >
-            View all ({total})
+            View all applications
           </Link>
         </div>
       )}

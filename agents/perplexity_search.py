@@ -197,6 +197,152 @@ def _extract_token_usage(payload: dict[str, Any]) -> tuple[int, int]:
     return int(usage.get("prompt_tokens") or 0), int(usage.get("completion_tokens") or 0)
 
 
+# ─── Cache-aside wrapper (P1 audit, 2026-05-27) ──────────────────────────
+#
+# AI_SYSTEM_AUDIT.md §4 found that recency_check / strategic_posture
+# fire Perplexity calls every invocation, even when company_knowledge
+# already has a fresh row for the same (company, section). This wrapper
+# checks the DB first and only calls Perplexity on miss, then writes
+# back. Each section has its own TTL via the trigger applied in
+# migration 041_company_knowledge_ttl (recency=30d, jobs=14d, posture=90d).
+#
+# Cost impact (per audit): $5-10/mo savings + 5-10× faster on cache hits.
+
+from datetime import datetime, timezone
+import json as _json
+
+
+def _get_cached_section(company: str, section: str) -> Optional[dict[str, Any]]:
+    """Return the freshest non-expired company_knowledge row for (company, section).
+
+    Returns None on miss or if no fresh row exists. The TTL gate is
+    `confidence_decays_at > NOW()` — the column is auto-populated by
+    the trg_company_knowledge_default_ttl trigger.
+    """
+    try:
+        from db.client import get_supabase  # local import — avoid hard dep at module load
+    except Exception as exc:
+        logger.debug("cache_get: db client unavailable (%r) — bypassing cache", exc)
+        return None
+
+    try:
+        resp = (
+            get_supabase()
+            .table("company_knowledge")
+            .select("content, source_url, scraped_at, confidence_decays_at, metadata")
+            .eq("company_name", company)
+            .eq("section", section)
+            .gt("confidence_decays_at", datetime.now(timezone.utc).isoformat())
+            .order("scraped_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return None
+        row = rows[0]
+        # Content may be stored as JSON-string OR plain text depending on caller.
+        content = row.get("content")
+        try:
+            parsed = _json.loads(content) if isinstance(content, str) else content
+        except (ValueError, TypeError):
+            parsed = {"summary": content or ""}
+        if not isinstance(parsed, dict):
+            parsed = {"summary": str(parsed)}
+        parsed["_cache"] = {
+            "hit": True,
+            "scraped_at": row.get("scraped_at"),
+            "decays_at": row.get("confidence_decays_at"),
+        }
+        return parsed
+    except Exception as exc:
+        logger.warning("cache_get failed for %s/%s: %r", company, section, exc)
+        return None
+
+
+def _persist_section(
+    company: str,
+    section: str,
+    payload: dict[str, Any],
+    *,
+    source_url: Optional[str] = None,
+) -> None:
+    """Write a Perplexity payload to company_knowledge.
+
+    The TTL trigger sets confidence_decays_at automatically based on
+    `section`. Failures are non-fatal — we'd rather make the LLM call
+    twice than crash the caller.
+    """
+    try:
+        from db.client import get_supabase
+    except Exception as exc:
+        logger.debug("cache_put: db client unavailable (%r) — skip persist", exc)
+        return
+
+    try:
+        get_supabase().table("company_knowledge").insert({
+            "company_name": company,
+            "section": section,
+            "content": _json.dumps(payload, default=str)[:32000],  # cap for safety
+            "source_url": source_url,
+            "scraped_at": datetime.now(timezone.utc).isoformat(),
+            "metadata": {"source": "perplexity_cached"},
+            # confidence_decays_at: trigger fills based on section
+        }).execute()
+    except Exception as exc:
+        logger.warning("cache_put failed for %s/%s: %r", company, section, exc)
+
+
+async def cached_recency_check(
+    company: str,
+    days: int = 30,
+    industry_hint: str = "fintech / payments / financial technology",
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """Cache-aside wrapper around recency_check.
+
+    DB-first lookup against company_knowledge (section='recency_check').
+    On hit, returns the cached payload with `_cache.hit=True`. On miss,
+    calls Perplexity and writes back. Pass force_refresh=True to bypass
+    the cache (cron jobs that explicitly want fresh news).
+    """
+    if not force_refresh:
+        cached = _get_cached_section(company, "recency_check")
+        if cached:
+            logger.debug("cached_recency_check: HIT for %s", company)
+            cached.setdefault("cost_usd", 0.0)
+            cached.setdefault("citations", cached.get("citations") or [])
+            cached.setdefault("model", "cache")
+            return cached
+
+    fresh = await recency_check(company, days=days, industry_hint=industry_hint)
+    _persist_section(company, "recency_check", fresh)
+    fresh["_cache"] = {"hit": False}
+    return fresh
+
+
+async def cached_strategic_posture(
+    company: str,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """Cache-aside wrapper around strategic_posture (90d TTL)."""
+    if not force_refresh:
+        cached = _get_cached_section(company, "strategic_posture")
+        if cached:
+            logger.debug("cached_strategic_posture: HIT for %s", company)
+            cached.setdefault("cost_usd", 0.0)
+            cached.setdefault("citations", cached.get("citations") or [])
+            cached.setdefault("model", "cache")
+            return cached
+
+    fresh = await strategic_posture(company)
+    _persist_section(company, "strategic_posture", fresh)
+    fresh["_cache"] = {"hit": False}
+    return fresh
+
+
 # ─── Public surface ───────────────────────────────────────────────────────
 async def recency_check(
     company: str,
