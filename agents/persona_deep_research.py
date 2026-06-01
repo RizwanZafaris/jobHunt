@@ -216,8 +216,8 @@ async def gather_research(
                 continue
             sources.append(ResearchSource(
                 query=label,
-                url=item.get("metadata.url") or item.get("searchResult.url") or "",
-                title=item.get("metadata.title") or item.get("searchResult.title") or "",
+                url=(item.get("metadata") or {}).get("url") or (item.get("searchResult") or {}).get("url") or "",
+                title=(item.get("metadata") or {}).get("title") or (item.get("searchResult") or {}).get("title") or "",
                 content=_truncate_md(md),
             ))
     return sources
