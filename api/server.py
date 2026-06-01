@@ -18,13 +18,11 @@ from pydantic import BaseModel
 import os
 import uuid
 
-from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from slowapi.util import get_remote_address
 
 from config.settings import get_settings
-from api.rate_limits import RATE_LIMITS
+from api.rate_limits import RATE_LIMITS, limiter
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -126,10 +124,6 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 # TODO(multi-tenant): switch key from get_remote_address to a user_id-aware
 # key function once we leave single-user mode (per-IP throttles a whole
 # household behind NAT). See docs/AUDIT_REVIEW_EXTERNAL_2026_05_12.md §3.6.
-limiter = Limiter(
-    key_func=get_remote_address,
-    default_limits=[RATE_LIMITS["default"]],
-)
 app.state.limiter = limiter
 
 
@@ -348,7 +342,17 @@ async def health():
     Hit every few seconds by the platform; must never touch Redis/DB or it
     becomes a self-inflicted load source. Readiness (dependency reachability)
     lives in /ready instead.
+
+    Also exempted from rate limiting — the platform healthchecker would
+    otherwise trip the 60/min default during a slow rolling restart.
     """
+    return {"status": "healthy", "timestamp": date.today().isoformat()}
+
+
+@app.get("/healthz")
+@limiter.exempt
+async def healthz():
+    """Kubernetes-style health probe alias for /health (also exempt from rate limiting)."""
     return {"status": "healthy", "timestamp": date.today().isoformat()}
 
 
@@ -535,8 +539,10 @@ async def debug_provider_ping(
 
 
 @app.post("/pipeline/run")
+@limiter.limit(RATE_LIMITS["background_jobs"])
 async def run_pipeline(
-    request: PipelineRunRequest,
+    request: Request,
+    body: PipelineRunRequest,
     background_tasks: BackgroundTasks,
     _auth=Depends(verify_service_secret)
 ):
@@ -545,9 +551,9 @@ async def run_pipeline(
         from pipeline import JobHuntPipeline
         pipeline = JobHuntPipeline()
         await pipeline.run(
-            target_company=request.company,
-            target_role=request.role,
-            skip_scout=request.skip_scout,
+            target_company=body.company,
+            target_role=body.role,
+            skip_scout=body.skip_scout,
         )
 
     background_tasks.add_task(_run)
@@ -2096,7 +2102,9 @@ async def trigger_company_research(
 
 
 @app.post("/pipeline/run-targets")
+@limiter.limit(RATE_LIMITS["background_jobs"])
 async def run_pipeline_targets(
+    request: Request,
     background_tasks: BackgroundTasks,
     _auth=Depends(verify_service_secret),
 ):
@@ -2175,7 +2183,9 @@ async def reclassify_existing_jobs(
 
 
 @app.post("/jobs/{job_id}/generate-resume")
+@limiter.limit(RATE_LIMITS["llm_generation"])
 async def generate_resume_for_job(
+    request: Request,
     job_id: int,
     background_tasks: BackgroundTasks,
     max_cost_usd: Optional[float] = None,
@@ -2292,7 +2302,9 @@ async def generate_resume_for_job(
 # ── G3 Interview Prep Graph (Phase 2) ─────────────────────────────────────
 
 @app.post("/jobs/{job_id}/prep-interview")
+@limiter.limit(RATE_LIMITS["llm_generation"])
 async def prep_interview_for_job(
+    request: Request,
     job_id: int,
     background_tasks: BackgroundTasks,
     application_id: Optional[str] = None,

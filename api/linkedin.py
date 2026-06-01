@@ -38,10 +38,11 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from api.context import get_current_user
+from api.rate_limits import RATE_LIMITS, limiter
 from api.users import User
 from db.client import aexecute, get_supabase
 
@@ -213,7 +214,9 @@ def _next_scheduled_slot(user_id: UUID, after: Optional[datetime] = None) -> Opt
 # Drafts — generate
 # ═════════════════════════════════════════════════════════════════════════
 @router.post("/drafts/generate", response_model=GenerateResponse, status_code=202)
+@limiter.limit(RATE_LIMITS["llm_generation"])
 async def generate_drafts(
+    request: Request,
     body: GenerateBody,
     user: User = Depends(get_current_user),
 ) -> GenerateResponse:
