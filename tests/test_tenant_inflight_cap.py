@@ -312,11 +312,15 @@ def test_enqueue_proceeds_when_counter_redis_errors():
 
     # The counter helpers see an exploding Redis (GET/INCR raise → fail open),
     # but the RQ enqueue is mocked healthy so we test ONLY the cap's fail-open.
+    # A live worker is present (_has_live_worker→True) so the 2026-06-01
+    # dead-worker guard doesn't divert this to the in-process fallback — we're
+    # isolating the cap path, not worker-liveness.
     healthy_queue = MagicMock()
     healthy_queue.name = "jobhunt"
     with patch.object(q, "_get_redis", return_value=_exploding_redis()), \
             patch.object(q, "_inflight_cap", return_value=3), \
             patch.object(q, "_get_queue", return_value=healthy_queue), \
+            patch.object(q, "_has_live_worker", return_value=True), \
             patch("api.jobs_runs.find_by_idempotency_key", return_value=None), \
             patch("api.jobs_runs.create_run", return_value=run):
         run_id = q._enqueue_or_dedup(

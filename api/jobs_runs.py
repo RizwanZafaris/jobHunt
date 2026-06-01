@@ -237,6 +237,42 @@ def mark_cancelled(run_id: str, reason: Optional[str] = None) -> None:
     }).eq("id", run_id).execute()
 
 
+def reset_run(run_id: str) -> Optional[JobRun]:
+    """Flip a TERMINAL run back to ``queued`` so it can be retried IN PLACE.
+
+    A failed (or cancelled) build is retried by *reusing its existing row*
+    rather than inserting a new one — the UNIQUE index on
+    ``idempotency_key`` would otherwise reject a fresh insert carrying the
+    same ``(user_id, kind, payload)`` hash. We clear the execution
+    bookkeeping (``started_at`` / ``finished_at`` / ``last_error`` /
+    ``result``) and reset ``attempts`` to 0 so the worker (or the
+    in-process fallback) treats it as a clean run.
+
+    Used by ``api/queue._enqueue_or_dedup`` when a user re-requests a build
+    whose previous run is terminal-**failed**: a ``succeeded`` run still
+    dedups (we never silently rebuild a good resume), but a ``failed`` one
+    MUST be retryable without forcing the caller to mutate the payload
+    (``force=true``). Without this, a single failed build permanently traps
+    that job — every retry hits the terminal-dedup branch and the UI polls
+    a stale ``failed`` row, showing "build failed" forever
+    (production incident 2026-06-01: jobs_runs left ``failed``/attempts=0
+    by a worker outage could never be rebuilt).
+
+    Returns the updated JobRun (re-fetched), or ``None`` if the row vanished.
+    """
+    from db.client import get_supabase
+    db = get_supabase()
+    db.table("jobs_runs").update({
+        "status": "queued",
+        "started_at": None,
+        "finished_at": None,
+        "last_error": None,
+        "result": None,
+        "attempts": 0,
+    }).eq("id", run_id).execute()
+    return get_run(run_id)
+
+
 def list_user_runs(user_id: UUID | str, limit: int = 50) -> list[JobRun]:
     """List recent runs for a user, newest first. Used by the dashboard."""
     from db.client import get_supabase

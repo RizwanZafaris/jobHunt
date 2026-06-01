@@ -404,6 +404,12 @@ def _enqueue_or_dedup(
 
     key = _idempotency_key(user_id, kind, payload)
 
+    # Resolve the latency class up front — it keys the per-tenant cap, the
+    # retry path, and the enqueue below. When RQ_QUEUE_PREFIX is unset this
+    # is still the routing label used for the counter; the queue itself
+    # collapses to the single shared queue (back-compat).
+    queue_class = _KIND_QUEUE.get(kind, _DEFAULT_QUEUE_CLASS)
+
     existing = find_by_idempotency_key(key)
     if existing is not None:
         if existing.status in ACTIVE_STATUSES:
@@ -416,52 +422,67 @@ def _enqueue_or_dedup(
                 f"-> existing run {existing.id} (status={existing.status})"
             )
             return existing.id
-        if existing.status in TERMINAL_STATUSES:
-            # Terminal — but the unique index would block re-insert. For
-            # a true retry the caller flips `force=True` (changes the
-            # payload, changes the hash). Returning the terminal id here
-            # is the least-surprising behavior; the API layer can decide
-            # to surface "already completed" to the user. Also not a new
-            # in-flight job → not counted, not refused.
+        if existing.status == "succeeded":
+            # A good build already exists for this EXACT request. Don't
+            # silently spend ~$1 rebuilding it — hand back the existing run
+            # so the API/UI can show the result (or offer an explicit
+            # force=true rebuild, which changes the payload → a new key).
             logger.info(
-                f"queue: terminal dedup hit kind={kind} key={key[:12]}… "
-                f"-> existing run {existing.id} (status={existing.status})"
+                f"queue: succeeded dedup hit kind={kind} key={key[:12]}… "
+                f"-> existing run {existing.id} (not rebuilding a success)"
             )
             return existing.id
 
-    # Resolve the latency class up front — both the cap and the enqueue key
-    # on it. When RQ_QUEUE_PREFIX is unset this is still the routing label
-    # used for the counter; the queue itself collapses to the single shared
-    # queue (back-compat).
-    queue_class = _KIND_QUEUE.get(kind, _DEFAULT_QUEUE_CLASS)
+        # existing.status in {"failed", "cancelled"}: this is a RETRY.
+        #
+        # Production incident 2026-06-01: returning the stale terminal id
+        # here was a TRAP. A build that failed (e.g. a worker outage left
+        # the row failed/attempts=0 without ever running) permanently
+        # blocked rebuilds — every click hit this branch, the UI polled the
+        # 'failed' row, and showed "build failed" forever. The only escape
+        # was force=true (mutates the payload → new key), which users don't
+        # know to do.
+        #
+        # Fix: reset the row IN PLACE (reuses the idempotency_key, so the
+        # UNIQUE index doesn't reject it) and fall through to (re-)enqueue.
+        # We skip the cap exactly like the active-dedup branch above — a
+        # retry of an existing row isn't a brand-new in-flight job, and the
+        # worker's terminal DECR self-heals the counter (it clamps at ≥0).
+        from api.jobs_runs import reset_run
 
-    # P2-3 per-tenant fairness: this is a genuinely NEW in-flight job (no
-    # active/terminal dedup hit above), so it counts against the tenant's
-    # cap. Refuse with TenantQueueFull when at/over the cap. Disabled (cap
-    # <= 0) and any Redis error both fall open (over=False) — we never block
-    # real work on a counter problem.
-    over, in_flight, cap = _over_inflight_cap(user_id, queue_class)
-    if over:
-        logger.warning(
-            f"queue: tenant {user_id} at in-flight cap kind={kind} "
-            f"class={queue_class} ({in_flight}/{cap}) — refusing enqueue"
+        logger.info(
+            f"queue: terminal retry kind={kind} key={key[:12]}… "
+            f"-> resetting run {existing.id} (was {existing.status}) and re-enqueuing"
         )
-        raise TenantQueueFull(user_id, queue_class, cap, in_flight)
+        run = reset_run(existing.id) or existing
+    else:
+        # Brand-new request. P2-3 per-tenant fairness: this is a genuinely
+        # NEW in-flight job, so it counts against the tenant's cap. Refuse
+        # with TenantQueueFull when at/over the cap. Disabled (cap <= 0) and
+        # any Redis error both fall open (over=False) — we never block real
+        # work on a counter problem.
+        over, in_flight, cap = _over_inflight_cap(user_id, queue_class)
+        if over:
+            logger.warning(
+                f"queue: tenant {user_id} at in-flight cap kind={kind} "
+                f"class={queue_class} ({in_flight}/{cap}) — refusing enqueue"
+            )
+            raise TenantQueueFull(user_id, queue_class, cap, in_flight)
 
-    run = create_run(
-        user_id=user_id,
-        kind=kind,
-        payload=payload,
-        idempotency_key=key,
-    )
+        run = create_run(
+            user_id=user_id,
+            kind=kind,
+            payload=payload,
+            idempotency_key=key,
+        )
 
-    # Count this fresh active job against the tenant's cap. INCR happens
-    # AFTER create_run so we only ever count a run that actually exists; the
-    # worker DECRs once it reaches a terminal state (success or failure). On
-    # any Redis error this fails open (returns None) and the enqueue still
-    # proceeds — a counter blip must never block real work.
-    if _cap_enabled(cap):
-        incr_inflight(user_id, queue_class)
+        # Count this fresh active job against the tenant's cap. INCR happens
+        # AFTER create_run so we only ever count a run that actually exists;
+        # the worker DECRs once it reaches a terminal state (success or
+        # failure). On any Redis error this fails open (returns None) and the
+        # enqueue still proceeds — a counter blip must never block real work.
+        if _cap_enabled(cap):
+            incr_inflight(user_id, queue_class)
 
     # 2026-05-12: in-process fallback when Redis is unreachable.
     # Production reported `redis.exceptions.ConnectionError: Error 111
@@ -477,6 +498,25 @@ def _enqueue_or_dedup(
         # When RQ_QUEUE_PREFIX is unset this still resolves to the single
         # shared queue (back-compat).
         q = _get_queue(queue_class)
+        # 2026-06-01 dead-worker guard. Redis can be perfectly reachable
+        # while NO worker is draining the queue — the worker pool is down,
+        # crash-looping, or (the incident that motivated this) bound to a
+        # different queue NAME than the API enqueues to. In that state
+        # q.enqueue() SUCCEEDS but the job rots forever and the UI polls a
+        # 'queued' row that never advances ("build failed" after a poll
+        # timeout). If we can positively see that no worker is heartbeating
+        # on this queue, run in-process instead so the user still gets their
+        # resume. Gated by RESUME_INPROCESS_WHEN_NO_WORKER (default on) and
+        # fail-safe: any detection error assumes a worker exists (→ normal
+        # queueing), so a flaky probe never forces heavy work onto the API.
+        if _inprocess_when_no_worker() and not _has_live_worker(q):
+            logger.warning(
+                f"queue: NO live worker on queue={q.name} — running kind={kind} "
+                f"run_id={run.id} in-process (degraded mode; revive the worker "
+                f"to restore durable queueing)."
+            )
+            _run_inprocess_fallback(worker_func, run.id)
+            return run.id
         q.enqueue(
             worker_func,
             run.id,
@@ -526,6 +566,67 @@ def _enqueue_or_dedup(
         # event loop isn't blocked.
         _run_inprocess_fallback(worker_func, run.id)
         return run.id
+
+
+# A worker is "live" if its last RQ heartbeat is within this many seconds.
+# RQ's default worker TTL is 420s; we use a tighter window so a worker that
+# died in the last few minutes is correctly treated as gone.
+_WORKER_HEARTBEAT_FRESH_SECS = 120
+
+
+def _inprocess_when_no_worker() -> bool:
+    """Whether to run a job in-process when no live worker drains its queue.
+
+    Default ON. Set ``RESUME_INPROCESS_WHEN_NO_WORKER=0`` to disable — e.g.
+    once a durable worker pool is reliably up and you'd rather a build fail
+    loudly than silently move ~$1 of LLM work onto the API process.
+    """
+    return os.environ.get("RESUME_INPROCESS_WHEN_NO_WORKER", "1") != "0"
+
+
+def _has_live_worker(queue) -> bool:
+    """Best-effort: is at least one RQ worker heartbeating on ``queue``?
+
+    RQ registers every worker in Redis with a periodic heartbeat; a worker
+    whose heartbeat lapses is dead. We consider a worker live if it lists
+    this queue AND its last heartbeat is within ``_WORKER_HEARTBEAT_FRESH_SECS``.
+
+    Crucially this also catches the QUEUE-NAME-MISMATCH case: a worker bound
+    to ``jobhunt:interactive`` simply doesn't appear under ``Worker.all(queue=
+    Queue('jobhunt'))``, so a job enqueued to ``jobhunt`` correctly reads as
+    "no live worker" and diverts to the in-process fallback.
+
+    FAIL-SAFE: any error (rq missing, Redis hiccup, version drift) returns
+    ``True`` — "assume a worker exists" — so a detection blip never diverts
+    work to the in-process path. We only fall back on a *positive* "no live
+    worker" signal.
+    """
+    try:
+        from rq import Worker
+        workers = Worker.all(queue=queue)
+    except Exception as exc:  # rq missing / Redis error / API drift
+        logger.debug(
+            f"queue: _has_live_worker probe failed "
+            f"({type(exc).__name__}: {exc}); assuming a worker is live"
+        )
+        return True
+    if not workers:
+        return False
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for w in workers:
+        hb = getattr(w, "last_heartbeat", None)
+        if hb is None:
+            # Can't date this worker → don't gamble, treat it as live.
+            return True
+        try:
+            if hb.tzinfo is None:
+                hb = hb.replace(tzinfo=timezone.utc)
+            if (now - hb).total_seconds() <= _WORKER_HEARTBEAT_FRESH_SECS:
+                return True
+        except Exception:
+            return True  # comparison weirdness → assume live (fail-safe)
+    return False
 
 
 def _run_inprocess_fallback(worker_func: str, run_id: str) -> None:
