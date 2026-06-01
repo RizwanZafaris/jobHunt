@@ -1,0 +1,142 @@
+# Follow-up fixes for issues that pr-job-scan found in p0_fixes.diff
+#
+# Run:
+#   git apply fix_p0_followup.diff
+#   python -m pytest tests/test_b1_worker_status.py -v
+#
+# Each hunk has a corresponding rule id from pr-job-scan in the leading
+# comment so reviewers can trace why it's here.
+
+diff --git a/api/orphan_reaper.py b/api/orphan_reaper.py
+--- a/api/orphan_reaper.py
++++ b/api/orphan_reaper.py
+@@ -128,7 +128,11 @@ def _sweep_stuck_queued(db, stale_minutes: int = 60) -> int:
+         if requeued:
+             logger.warning("B1: re-enqueued %d stuck queued jobs_runs (>%dmin)", requeued, stale_minutes)
+         return requeued
+-    except Exception:
+-        logger.exception("B1: queued sweep failed")
++    except Exception as e:
++        # SEC001: logger.error (not exception) — tracebacks leak into prod logs
++        logger.error(
++            "B1: queued sweep failed: error=%s detail=%s",
++            type(e).__name__, str(e)[:200],
++        )
+         return 0
+
+diff --git a/tests/test_b1_worker_status.py b/tests/test_b1_worker_status.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_b1_worker_status.py
+@@ -0,0 +1,103 @@
++"""
++QUA004 follow-up: tests for the new /admin/worker-status and
++/admin/requeue-stuck endpoints added in p0_fixes.diff.
++
++Run: pytest tests/test_b1_worker_status.py -v
++"""
++from __future__ import annotations
++
++from unittest.mock import MagicMock, patch
++
++import pytest
++from fastapi.testclient import TestClient
++
++
++@pytest.fixture
++def client(monkeypatch):
++    # Stub heavy imports before importing the app
++    monkeypatch.setenv("API_SECRET_KEY", "test-secret")
++    monkeypatch.setenv("SUPABASE_URL", "http://test")
++    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test")
++    from api.server import app
++    return TestClient(app)
++
++
++@pytest.fixture
++def auth_headers():
++    return {"X-Secret-Key": "test-secret"}
++
++
++# ─── /admin/worker-status ──────────────────────────────────────────────
++
++def test_worker_status_requires_secret(client):
++    r = client.get("/admin/worker-status")
++    assert r.status_code in (401, 403)
++
++
++def test_worker_status_returns_redis_state(client, auth_headers):
++    fake_redis = MagicMock()
++    fake_redis.ping.return_value = True
++    fake_redis.llen.return_value = 7
++
++    fake_db = MagicMock()
++    fake_db.table.return_value.select.return_value.not_.is_.return_value.order.return_value.limit.return_value.execute.return_value.data = [
++        {"started_at": "2026-05-17T10:00:00Z"}
++    ]
++    fake_db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
++    fake_db.table.return_value.select.return_value.eq.return_value.is_.return_value.lt.return_value.execute.return_value.data = [{"count": 0}]
++
++    with patch("api.server._get_redis", return_value=fake_redis), \
++         patch("api.server.get_supabase", return_value=fake_db):
++        r = client.get("/admin/worker-status", headers=auth_headers)
++
++    assert r.status_code == 200
++    body = r.json()
++    assert body["redis_ping"] is True
++    assert body["queue_depth"] == 7
++    assert body["last_dequeued_at"] == "2026-05-17T10:00:00Z"
++
++
++def test_worker_status_when_redis_down(client, auth_headers):
++    fake_redis = MagicMock()
++    fake_redis.ping.side_effect = ConnectionError("redis down")
++
++    fake_db = MagicMock()
++    # Empty results from all selects
++    fake_db.table.return_value.select.return_value.not_.is_.return_value.order.return_value.limit.return_value.execute.return_value.data = []
++    fake_db.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
++    fake_db.table.return_value.select.return_value.eq.return_value.is_.return_value.lt.return_value.execute.return_value.data = [{"count": 0}]
++
++    with patch("api.server._get_redis", return_value=fake_redis), \
++         patch("api.server.get_supabase", return_value=fake_db):
++        r = client.get("/admin/worker-status", headers=auth_headers)
++
++    assert r.status_code == 200
++    assert r.json()["redis_ping"] is False
++    assert r.json()["queue_depth"] == 0
++
++
++# ─── /admin/requeue-stuck ──────────────────────────────────────────────
++
++def test_requeue_stuck_requires_secret(client):
++    r = client.post("/admin/requeue-stuck")
++    assert r.status_code in (401, 403)
++
++
++def test_requeue_stuck_idempotent_on_empty(client, auth_headers):
++    fake_db = MagicMock()
++    fake_db.table.return_value.select.return_value.eq.return_value.is_.return_value.lt.return_value.lt.return_value.execute.return_value.data = []
++
++    with patch("api.server.get_supabase", return_value=fake_db):
++        r = client.post("/admin/requeue-stuck", headers=auth_headers)
++
++    assert r.status_code == 200
++    assert r.json() == {"requeued": 0}
++
++
++def test_requeue_stuck_increments_attempts(client, auth_headers):
++    fake_db = MagicMock()
++    fake_db.table.return_value.select.return_value.eq.return_value.is_.return_value.lt.return_value.lt.return_value.execute.return_value.data = [
++        {"id": "r1", "kind": "g2", "payload": {}, "attempts": 0, "user_id": "u1"},
++        {"id": "r2", "kind": "g3", "payload": {}, "attempts": 1, "user_id": "u1"},
++    ]
++    fake_q = MagicMock()
++
++    with patch("api.server.get_supabase", return_value=fake_db), \
++         patch("api.server._get_queue", return_value=fake_q):
++        r = client.post("/admin/requeue-stuck", headers=auth_headers)
++
++    assert r.status_code == 200
++    assert r.json() == {"requeued": 2}
++    assert fake_q.enqueue.call_count == 2

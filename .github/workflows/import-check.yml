@@ -1,0 +1,29 @@
+# PR #73 imported EVENT_JOB_MISFIRE (apscheduler 4.x) against the >=3.10 pin —
+# 8 Railway deploys crashed at startup before /health bound. This catches that.
+name: import-check
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  smoke-import:
+    name: import main, api.server
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: https://example.supabase.co
+      SUPABASE_SERVICE_KEY: ci-fake
+      ANTHROPIC_API_KEY: ci-fake
+      OPENAI_API_KEY: ci-fake
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install deps (skip Playwright browsers)
+        run: pip install -r requirements.txt
+      - name: Import startup modules
+        run: |
+          mkdir -p output/resumes output/reports output/interview_prep data
+          python -c "import main; main.start_scheduler.__doc__"
+          python -c "import api.server"

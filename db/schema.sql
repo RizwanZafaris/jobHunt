@@ -84,7 +84,9 @@ CREATE TABLE IF NOT EXISTS applications (
     score           NUMERIC(3,1),   -- 0.0 - 5.0 (career-ops A-F → numeric)
     status          TEXT DEFAULT 'Evaluada',
     applied_date    DATE,
+    -- DEPRECATED 2026-05-12 (BUG-036) — zero writers; safe to drop in a future cleanup migration.
     report_url      TEXT,
+    -- DEPRECATED 2026-05-12 (BUG-036) — zero writers; safe to drop in a future cleanup migration.
     pdf_url         TEXT,
     cover_email     TEXT,
     notes           TEXT,

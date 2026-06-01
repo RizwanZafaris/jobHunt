@@ -26,6 +26,10 @@ const PROVIDER_COLOR: Record<string, string> = {
  * p95 > 20s red
  */
 export default function ProviderHealthBadges({ providers, warning }: Props) {
+ // Defend against a backend response that omitted `providers` entirely
+ // (e.g. when the health collector is mid-rotation and returns just a
+ // `warning` string). The contract says non-optional, but reality lies.
+ const safeProviders = Array.isArray(providers) ? providers : []
  return (
  <section className="bg-surface border border-border rounded-xl p-5">
  <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
@@ -35,9 +39,6 @@ export default function ProviderHealthBadges({ providers, warning }: Props) {
  Error rate + latency percentiles over last 7 days
  </p>
  </div>
- <p className="text-2xs text-fg-subtle">
- source: <code className="text-fg-muted">v_agent_call_health</code>
- </p>
  </div>
 
  {warning && (
@@ -46,17 +47,16 @@ export default function ProviderHealthBadges({ providers, warning }: Props) {
  </div>
  )}
 
- {providers.length === 0 ? (
+ {safeProviders.length === 0 ? (
  <div className="text-center py-8 border border-dashed border-border rounded-lg">
  <p className="text-sm text-fg-subtle">No calls in last 7 days yet.</p>
  <p className="text-xs text-fg-subtle mt-1">
- Health metrics appear once LLM traffic flows through{' '}
- <code className="text-fg-subtle">agents/llm_router.py</code>.
+ Health metrics appear once LLM traffic starts flowing.
  </p>
  </div>
  ) : (
  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
- {providers.map((p) => (
+ {safeProviders.map((p) => (
  <ProviderCard key={p.provider} row={p} />
  ))}
  </div>

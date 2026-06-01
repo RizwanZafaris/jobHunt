@@ -1,15 +1,9 @@
 /**
- * /network — referral graph surface (P1.1).
+ * /network — referral graph surface (B9: real fetchers).
  *
- * Replaces the "Coming soon" placeholder with the real V1 UI:
- *   - top: search + LinkedIn CSV import
- *   - middle: best warm intros (top 5 ranked paths) + target coverage
- *   - bottom: your network grouped by current company
- *
- * Today this page reads from the V1 mocks at dashboard/src/lib/mock/network.ts.
- * The `/network/*` endpoints in api/network.py are authored but not yet wired
- * into api/server.py — see api/NETWORK.md "How to wire the router" for the
- * one-line include. When that lands, swap MOCK_* below for fetch calls.
+ * Top: search + LinkedIn CSV import
+ * Middle: best warm intros (top 5 ranked paths) + target coverage
+ * Bottom: your network grouped by current company
  *
  * Server Component owns the data hand-off; NetworkClient runs the
  * interactive bits (modal, filtering, file input).
@@ -17,11 +11,7 @@
 import { AppShell } from '@/components/layout/AppShell'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { NetworkClient } from '@/components/network/NetworkClient'
-import {
-  MOCK_PEOPLE,
-  MOCK_TARGET_COVERAGE,
-  MOCK_TOP_INTRO_PATHS,
-} from '@/lib/mock/network'
+import { fetchNetworkPeople, fetchTargetCoverage } from '@/lib/api'
 
 export const dynamic = 'force-dynamic'
 
@@ -31,13 +21,31 @@ export const metadata = {
     'Referral graph that finds the warmest path into your dream company.',
 }
 
-export default function NetworkPage() {
-  // TODO: replace with parallel fetch of /network/target-coverage,
-  //       /network/people, and a top-paths derivation once the router is
-  //       wired into api/server.py — see api/NETWORK.md.
-  const topPaths = MOCK_TOP_INTRO_PATHS
-  const coverage = MOCK_TARGET_COVERAGE
-  const people = MOCK_PEOPLE
+export default async function NetworkPage() {
+  let topPaths: any[] = []
+  let coverage: any[] = []
+  let people: any[] = []
+  let error: string | null = null
+
+  try {
+    const [coverageRes, peopleRes] = await Promise.all([
+      fetchTargetCoverage(),
+      fetchNetworkPeople(),
+    ])
+    coverage = Array.isArray(coverageRes) ? coverageRes : []
+    people = Array.isArray(peopleRes) ? peopleRes : []
+    topPaths = coverage
+      .filter((c: any) => c.top_path)
+      .sort(
+        (a: any, b: any) =>
+          (b.paths_count_1hop + b.paths_count_2hop) -
+          (a.paths_count_1hop + a.paths_count_2hop),
+      )
+      .slice(0, 5)
+      .map((c: any) => c.top_path)
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err)
+  }
 
   return (
     <AppShell wide>
@@ -46,6 +54,18 @@ export default function NetworkPage() {
         title="Network"
         description="Find the warmest path into your dream company. Top 1- and 2-hop intros across your target list."
       />
+
+      {error && (
+        <div className="mb-4 rounded-lg bg-red-50 p-4 text-red-700">
+          Couldn&apos;t load network data: {error}
+        </div>
+      )}
+
+      {people.length === 0 && !error && (
+        <div className="mb-4 rounded-lg bg-blue-50 p-4 text-blue-700">
+          No people imported yet — upload your LinkedIn connections.csv to get started.
+        </div>
+      )}
 
       <NetworkClient topPaths={topPaths} coverage={coverage} people={people} />
     </AppShell>

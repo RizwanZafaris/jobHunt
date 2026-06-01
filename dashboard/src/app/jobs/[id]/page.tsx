@@ -77,7 +77,8 @@ interface JobDetailData {
   artifacts: { resume_path?: Artifact; email_path?: Artifact; interview_path?: Artifact }
 }
 
-export default async function JobDetailPage({ params }: { params: { id: string } }) {
+export default async function JobDetailPage(props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   let data: JobDetailData | undefined
   let error: string | null = null
   try {
@@ -219,6 +220,14 @@ export default async function JobDetailPage({ params }: { params: { id: string }
 
         <div className="space-y-3">
           <ArtifactCard title="Tailored resume" icon="document" path={j.resume_path ?? null} artifact={data.artifacts.resume_path} />
+          {/*
+            BUG-031 / BUG-032: source Cover email + Interview prep from the
+            artifacts bag, not from `j.email_path` / `j.interview_path` (those
+            columns are never written by any pipeline). The backend synthesises
+            both artifacts from `resume_builds.cover_email_md` and
+            `interview_prep.prep_pack_url|prep_pack_md` respectively — see
+            api/server.py::get_job_detail.
+          */}
           <ArtifactCard title="Cover email" icon="mail" path={j.email_path ?? null} artifact={data.artifacts.email_path} preview />
           <ArtifactCard title="Interview prep" icon="target" path={j.interview_path ?? null} artifact={data.artifacts.interview_path} preview />
           <OutcomeLogger
@@ -393,6 +402,12 @@ function ArtifactCard({
 }) {
   const exists = artifact?.exists
   const kind = artifact?.kind
+  // BUG-031 / BUG-032 (2026-05-12): some artifacts have no `path` (e.g.
+  // the Cover email is synthesised from `resume_builds.cover_email_md`
+  // and Interview prep from `interview_prep.prep_pack_md`). Treat any
+  // artifact that the backend reports as `exists: true` — regardless of
+  // whether a path column was ever set — as renderable.
+  const hasContent = !!exists && (!!artifact?.url || !!artifact?.content)
   return (
     <Card
       title={
@@ -402,9 +417,9 @@ function ArtifactCard({
         </span>
       }
     >
-      {!path ? (
+      {!hasContent && !path ? (
         <p className="text-2xs text-fg-subtle italic">Not generated yet — use &ldquo;Generate resume&rdquo; above.</p>
-      ) : !exists ? (
+      ) : !hasContent && !exists ? (
         <p className="text-2xs text-warning">
           Generated, but artifact lost on redeploy. Click &ldquo;Re-generate resume&rdquo; to rebuild.
         </p>
@@ -419,11 +434,21 @@ function ArtifactCard({
             <Icon name="download" size={12} />
             Download
           </a>
-          <p className="text-2xs text-fg-subtle mt-2 break-all font-mono">{path.split('/').pop()}</p>
+          {path && (
+            <p className="text-2xs text-fg-subtle mt-2 break-all font-mono">{path.split('/').pop()}</p>
+          )}
+          {preview && artifact?.content && (
+            <pre className="mt-2 text-2xs text-fg-muted leading-relaxed whitespace-pre-wrap font-mono bg-surface-raised border border-border rounded p-2 max-h-64 overflow-y-auto">
+              {artifact.content.slice(0, 2000)}
+              {artifact.content.length > 2000 ? '\n\n... (truncated)' : ''}
+            </pre>
+          )}
         </>
       ) : (
         <>
-          <p className="text-2xs text-fg-subtle break-all font-mono">{path.split('/').pop()}</p>
+          {path && (
+            <p className="text-2xs text-fg-subtle break-all font-mono">{path.split('/').pop()}</p>
+          )}
           {artifact?.size !== undefined && (
             <p className="text-2xs text-fg-subtle">{(artifact.size / 1024).toFixed(1)} KB</p>
           )}

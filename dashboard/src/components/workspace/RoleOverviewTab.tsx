@@ -22,6 +22,7 @@
 'use client'
 
 import { useMemo } from 'react'
+import Link from 'next/link'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Card } from '@/components/ui/Card'
@@ -119,11 +120,21 @@ export function RoleOverviewTab({ job, persona }: RoleOverviewTabProps) {
           }
         >
           {whyYouFit.items.length === 0 ? (
-            <p className="text-2xs text-fg-subtle leading-relaxed">
-              No persona-grounded matches yet. Build a persona for{' '}
-              <span className="text-fg-muted font-medium">{job.company}</span>{' '}
-              to surface the intersection.
-            </p>
+            <div className="flex flex-col gap-2 items-start">
+              <p className="text-2xs text-fg-subtle leading-relaxed">
+                {persona
+                  ? <>The persona for <span className="text-fg-muted font-medium">{job.company}</span> doesn&rsquo;t share any ATS keywords with this JD. Refresh the persona to pick up newer terms.</>
+                  : <>No persona for <span className="text-fg-muted font-medium">{job.company}</span> yet. Build one to surface keyword-grounded reasons you fit.</>
+                }
+              </p>
+              <Link
+                href={`/insights?tab=personas&company=${encodeURIComponent(job.company ?? '')}`}
+                className="inline-flex items-center gap-1.5 text-2xs font-medium text-accent hover:underline"
+              >
+                Run persona deep research
+                <Icon name="arrow-right" size={10} />
+              </Link>
+            </div>
           ) : (
             <ul className="flex flex-wrap gap-1.5" aria-label="Why you fit">
               {whyYouFit.items.map((item) => (
@@ -141,12 +152,8 @@ export function RoleOverviewTab({ job, persona }: RoleOverviewTabProps) {
           )}
         </Card>
 
-        <Card
-          padding="md"
-          title="Matched skills"
-          description={matchedSkills.length === 0 ? 'No matched skills recorded' : undefined}
-        >
-          {matchedSkills.length > 0 && (
+        {matchedSkills.length > 0 ? (
+          <Card padding="md" title="Matched skills">
             <ul className="flex flex-wrap gap-1.5" aria-label="Matched skills">
               {matchedSkills.map((skill) => (
                 <li key={skill}>
@@ -156,8 +163,21 @@ export function RoleOverviewTab({ job, persona }: RoleOverviewTabProps) {
                 </li>
               ))}
             </ul>
-          )}
-        </Card>
+          </Card>
+        ) : (
+          // BUG-018: previously this rendered an empty card with only a
+          // "No matched skills recorded" description. Replace with a
+          // pill+CTA so the user knows where matched_skills comes from
+          // (G2 pipeline) and what to do — kick off a build to populate.
+          <Card padding="md" title="Matched skills">
+            <p className="text-2xs text-fg-subtle leading-relaxed">
+              No matched skills recorded yet — G2 fills this in when it generates a tailored resume for this role.
+            </p>
+            <Pill tone="neutral" size="xs" className="mt-2">
+              Populated after first resume build
+            </Pill>
+          </Card>
+        )}
 
         {gaps.length > 0 && (
           <Card

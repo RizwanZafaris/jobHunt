@@ -36,6 +36,11 @@ class TranscriptTurn(TypedDict, total=False):
 class InterviewPrepState(TypedDict, total=False):
     # ─── Inputs (set at entry) ──────────────────────────────────────────
     application_id: str             # uuid, public.applications.id
+    user_id: Optional[str]          # owning tenant (public.users.id); seeded by
+                                    # g3_run from the application row and forwarded
+                                    # to create_interview_prep so the NOT-NULL
+                                    # interview_prep.user_id is set. Falls back to
+                                    # the seed UUID inside g3_io if absent.
     application: dict               # full row from public.applications
     job_id: int                     # public.jobs.id (INTEGER)
     job: dict                       # full row from public.jobs
@@ -61,6 +66,28 @@ class InterviewPrepState(TypedDict, total=False):
     # ─── Merged + matched ───────────────────────────────────────────────
     likely_questions: list[dict]       # union(3 predictors), deduped, sorted, capped at 20
     star_stories: list[dict]           # [{question, story_id|None, match_quality, needs_rizwan_input}]
+
+    # ─── Tier 2 G3 — story_bank integration (Phase 2 §4.2) ──────────────
+    # 2026-05-12: story_retriever_node + gap_analyzer_node consume the G9
+    # story_bank via search_story_bank / agents.story_bank_agent.search_stories.
+    # Keyed by question index (string of int) so the prep pack template can
+    # zip them with likely_questions.
+    retrieved_stories: dict             # {q_idx: {story: StoryBankRow.asdict(), similarity: float, source_text, source_experience_id}}
+    # ─── Tier 4 G3 — proof_points sidecar (roadmap §6.4) ───────────────
+    # 2026-05-12: story_retriever_node also pulls top-3 proof points per
+    # question via agents.proof_point_agent.search_proof_points. The
+    # prep_pack renderer surfaces them under each question alongside
+    # stories so the candidate has a crisp "you can also mention X
+    # (link)" cue at-a-glance.
+    retrieved_proof_points: dict        # {q_idx: list[ProofPointMatch.asdict()]}
+    # Per-question gap suggestions for low-similarity (< 0.5) hits.
+    story_gaps: list[dict]              # [{question, missing_competency, reframe_suggestion}]
+    # Identity-lock drops: competencies fabricated by gap_analyzer that
+    # aren't in profile_master.core_competencies. Surfaced in transcript.
+    persona_critic_drops: list[str]
+    # Stories that were credited on the most recent outcome log (used by
+    # interview_studio post_log_outcome).
+    credited_story_ids: list[str]
 
     # ─── Mock loop ──────────────────────────────────────────────────────
     mock_target_question: dict | None  # the one question we're rehearsing

@@ -31,13 +31,19 @@ import os
 from functools import lru_cache
 from typing import Any
 
-from fastapi import HTTPException
+from fastapi import Header, HTTPException
 from jose import jwt
 from jose.exceptions import ExpiredSignatureError, JWTError
 
 
 _SUPABASE_AUDIENCE = "authenticated"
 _ALGORITHM = "HS256"
+
+# The shipped placeholder for `settings.secret_key` / `SECRET_KEY`. Treated as
+# "unset" everywhere — a deployment that never overrode it has no real secret,
+# so authorizing against it would let anyone in. Keep in sync with
+# config/settings.py:Settings.secret_key.
+_PLACEHOLDER_SECRET = "change-me-in-production"
 
 
 def _get_jwt_secret() -> str:
@@ -111,3 +117,87 @@ def verify_supabase_jwt(token: str) -> dict[str, Any]:
         raise
     except Exception as exc:  # noqa: BLE001 — defensive: any decode-time bug → 401
         raise HTTPException(status_code=401, detail="invalid_token") from exc
+
+
+# ── Service-vs-user secret (Phase 1, P1-1) ─────────────────────────────────────
+#
+# Two kinds of caller authenticate against this system:
+#
+#   1. **End users** — browser sessions carrying a Supabase JWT
+#      (`Authorization: Bearer …`), verified by `verify_supabase_jwt` above and
+#      resolved to a tenant row by `api.context.get_current_user`.
+#
+#   2. **Service callers** — the RQ worker, the embedded APScheduler crons, and
+#      internal/admin tooling. They have no user session; they present a shared
+#      `X-Secret-Key` and act as the system (no tenant guess).
+#
+# Historically `api/server.py:verify_secret` covered case (2) for every
+# endpoint. We keep that name/shape but (a) make it **fail closed** when the
+# secret is missing or still the shipped placeholder, and (b) expose a
+# dedicated `verify_service_secret` so worker/cron/internal code paths can be
+# annotated explicitly as service-to-service rather than reusing the historical
+# name. Both share `_resolve_service_secret` so the fail-closed rule lives in
+# exactly one place.
+
+
+def _resolve_service_secret() -> str:
+    """Return the configured service secret, or raise 500 if it's unusable.
+
+    Fail-closed: an unset secret or the shipped ``"change-me-in-production"``
+    placeholder means the deployment never configured one. Authorizing against
+    that value would accept *any* request that happens to send the placeholder,
+    so we refuse to authenticate at all (500 ``auth_misconfigured``) rather
+    than fall open. Read from the environment first so tests / runtime overrides
+    take effect without rebuilding the settings singleton, then fall back to
+    ``settings.secret_key``.
+    """
+    secret = os.getenv("SECRET_KEY")
+    if not secret:
+        # Fall back to the pydantic settings value (which itself defaults to the
+        # placeholder when SECRET_KEY is unset).
+        try:
+            from config.settings import get_settings
+
+            secret = get_settings().secret_key
+        except Exception:  # noqa: BLE001 — settings import/parse must not 500-mask
+            secret = None
+    if not secret or secret == _PLACEHOLDER_SECRET:
+        raise HTTPException(status_code=500, detail="auth_misconfigured")
+    return secret
+
+
+def is_service_secret_configured() -> bool:
+    """Best-effort check used by callers that want to branch without raising."""
+    try:
+        _resolve_service_secret()
+        return True
+    except HTTPException:
+        return False
+
+
+def verify_service_secret(x_secret_key: str | None = Header(default=None)) -> bool:
+    """FastAPI dependency for service-to-service callers (worker / cron / admin).
+
+    Accepts the request iff ``X-Secret-Key`` exactly matches the configured
+    service secret. Fails **closed**:
+
+    - secret unset or still the placeholder  → 500 ``auth_misconfigured``
+      (the server is the one that's broken, not the caller);
+    - header missing or wrong                → 401 ``invalid_secret``.
+    """
+    expected = _resolve_service_secret()  # raises 500 if misconfigured
+    if not x_secret_key or x_secret_key != expected:
+        raise HTTPException(status_code=401, detail="invalid_secret")
+    return True
+
+
+def check_service_secret(x_secret_key: str | None) -> bool:
+    """Non-dependency variant: True iff the value matches the service secret.
+
+    Returns False on a missing/wrong key. Still raises 500 if the server has no
+    real secret configured — that's a server fault, not an auth decision, and
+    callers should surface it rather than silently treat everything as
+    unauthenticated.
+    """
+    expected = _resolve_service_secret()
+    return bool(x_secret_key) and x_secret_key == expected

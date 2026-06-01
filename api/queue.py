@@ -26,13 +26,35 @@ Why RQ (and not Celery)?
 ENV vars:
   - REDIS_URL           connection string (default redis://localhost:6379/0)
   - RQ_QUEUE_NAME       queue name (default 'jobhunt')
+  - RQ_QUEUE_PREFIX     OPTIONAL latency-class queue split (default = RQ_QUEUE_NAME).
+                        When set, work is routed to `{prefix}:{class}` queues
+                        ('interactive' / 'batch' / 'cron') so separate worker
+                        pools can drain them independently. When UNSET, every
+                        enqueue lands on the single RQ_QUEUE_NAME queue exactly
+                        as before — single-user prod is unchanged. (P2-1.)
   - WORKER_CONCURRENCY  read by api/worker.py, NOT here
+
+Queue latency classes (P2-1):
+  Each `kind` maps to a latency class via `_KIND_QUEUE`:
+    - interactive  user is waiting (resume build, interview prep, LinkedIn
+                   draft, story extract, voice calibration)
+    - batch        fire-and-forget background work (scoring, legitimacy,
+                   persona deep-research) — must never starve interactive
+    - cron         reserved for per-tenant jobs fanned out by scheduled cron
+                   (no `kind` routes here yet; the batch worker pool also
+                   drains it)
+  Unmapped kinds default to 'batch'. This mapping is INERT until
+  RQ_QUEUE_PREFIX is set — see `_get_queue`.
 
 Job retry policy:
   - timeout=900s        (15 min — G2 worst-case is ~5 min, G1 ~3 min)
   - result_ttl=86400    (1 day — surface results to UI for a day)
   - failure_ttl=604800  (7 days — keep failure detail around for triage)
-  - max_retries=3       handled by api/worker.py via Retry(max=3, intervals=[60, 240, 960])
+  - max_retries=3       NOT via RQ-native Retry (it is not wired). Recovery is
+                        the orphan reaper (api/orphan_reaper.py): the worker
+                        marks the row failed(retry=True) -> status back to
+                        'queued', attempts++, and the reaper re-enqueues stuck
+                        'queued'/'running' rows up to 3 attempts each tick.
 
 Idempotency rule:
   Two enqueues of the same (user_id, kind, payload) within the same
@@ -51,9 +73,65 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
+class TenantQueueFull(Exception):
+    """Raised by the enqueue path when a tenant is at/over their per-tenant
+    in-flight job cap (P2-3 per-tenant fairness).
+
+    The API layer translates this to HTTP 429 (Too Many Requests). It is a
+    *fairness* signal, not an error: the tenant already has the configured
+    maximum of simultaneously-active (queued+running) jobs of this latency
+    class, so a NEW one is refused to keep one tenant's batch from starving
+    everyone else on the shared single-FIFO queue.
+
+    A dedup/idempotency hit is NEVER refused — returning an already-queued
+    run id is not a new in-flight job, so it bypasses the cap entirely.
+
+    Attributes:
+        user_id      the tenant who hit the cap
+        queue_class  the latency class ('interactive'/'batch'/'cron')
+        cap          the configured cap value
+        in_flight    the observed in-flight count at refusal time
+    """
+
+    def __init__(self, user_id, queue_class: str, cap: int, in_flight: int):
+        self.user_id = str(user_id)
+        self.queue_class = queue_class
+        self.cap = cap
+        self.in_flight = in_flight
+        super().__init__(
+            f"tenant {self.user_id} is at the in-flight cap for "
+            f"queue_class={queue_class}: {in_flight}/{cap} active jobs"
+        )
+
+
+# ─── Queue latency-class registry ──────────────────────────────────────────
+# The three latency classes. 'cron' has no `kind` mapped to it today; it
+# exists so scheduled-cron fan-out (a later PR) can target a low-priority
+# pool, and so the batch worker can be told to also drain it.
+QUEUE_CLASSES = ("interactive", "batch", "cron")
+_DEFAULT_QUEUE_CLASS = "batch"
+
+# kind → latency class. Anything not listed defaults to 'batch'.
+_KIND_QUEUE: dict[str, str] = {
+    # interactive — a human is blocked on the result
+    "g2_resume": "interactive",
+    "g3_interview": "interactive",
+    "g4_linkedin_post": "interactive",
+    "g9_story_extract": "interactive",
+    "g11_voice_calibration": "interactive",
+    # batch — fire-and-forget; must not starve interactive
+    "g5_score": "batch",
+    "legitimacy_check": "batch",
+    "g1_discovery": "batch",
+}
+
+
 # ─── Redis + RQ singletons ─────────────────────────────────────────────────
 _redis = None
-_queue = None
+# RQ Queue cache. Keyed by the resolved RQ queue NAME so that when the split
+# is OFF every class collapses to the same single-queue object (today's
+# behavior) and when it's ON each class gets its own cached Queue.
+_queues: dict[str, Any] = {}
 
 
 def _get_redis():
@@ -77,10 +155,44 @@ def _get_redis():
     return _redis
 
 
-def _get_queue():
-    """Singleton RQ Queue."""
-    global _queue
-    if _queue is None:
+def _resolve_queue_name(queue_class: str | None = None) -> str:
+    """Map a latency class to the actual RQ queue name.
+
+    CRITICAL back-compat: if `RQ_QUEUE_PREFIX` is unset, the class is
+    ignored entirely and we return the single `RQ_QUEUE_NAME` (default
+    'jobhunt') — identical to pre-split behavior. The queue split only
+    activates once an operator sets `RQ_QUEUE_PREFIX` AND brings up the
+    matching worker pools (railway.toml's worker-interactive/worker-batch);
+    until then everything funnels through one queue so nothing can be
+    enqueued onto a class no worker is listening on.
+
+    When the prefix IS set, the name is `{prefix}:{class}`, e.g.
+    'jobhunt:interactive'.
+    """
+    base = os.environ.get("RQ_QUEUE_NAME", "jobhunt")
+    prefix = os.environ.get("RQ_QUEUE_PREFIX")
+    if not prefix:
+        # Split disabled → single shared queue (today's behavior).
+        return base
+    cls = queue_class or _DEFAULT_QUEUE_CLASS
+    return f"{prefix}:{cls}"
+
+
+def _get_queue(queue_class: str | None = None):
+    """Singleton RQ Queue for a latency class.
+
+    `queue_class` is one of `QUEUE_CLASSES` (or None → the default 'batch').
+    Callers that pass nothing keep getting the single queue when the split
+    is off, so existing call sites (admin queue-health, orphan reaper) are
+    unaffected.
+
+    Queues are cached by resolved NAME, so with the split OFF every class
+    resolves to the same name and shares one Queue object — preserving the
+    old single-`_queue` singleton semantics.
+    """
+    name = _resolve_queue_name(queue_class)
+    q = _queues.get(name)
+    if q is None:
         try:
             from rq import Queue
         except ImportError as e:
@@ -88,9 +200,9 @@ def _get_queue():
                 "rq is not installed. Add `rq>=2.0` to requirements.txt "
                 "(see _pending_deps_queue.txt)."
             ) from e
-        name = os.environ.get("RQ_QUEUE_NAME", "jobhunt")
-        _queue = Queue(name, connection=_get_redis())
-    return _queue
+        q = Queue(name, connection=_get_redis())
+        _queues[name] = q
+    return q
 
 
 def _idempotency_key(user_id: UUID | str, kind: str, payload: dict[str, Any]) -> str:
@@ -103,6 +215,152 @@ def _idempotency_key(user_id: UUID | str, kind: str, payload: dict[str, Any]) ->
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     blob = f"{user_id}|{kind}|{canonical}".encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
+
+
+# ─── Per-tenant in-flight job cap (P2-3 per-tenant fairness) ───────────────
+#
+# A Redis counter per (user_id, queue_class) tracks how many of that
+# tenant's jobs are simultaneously active (queued+running). We INCR on a
+# fresh enqueue and DECR when the worker reaches a terminal state. Over the
+# cap we refuse NEW enqueues with TenantQueueFull. Every counter op fails
+# OPEN: on any Redis error we log and allow, so a counter bug can never
+# block real work.
+#
+# A TTL safety net is set on every INCR so a crashed worker (which never
+# DECRs) can't leak the counter forever — the key self-expires and the cap
+# auto-heals. The TTL is comfortably longer than the longest job timeout.
+
+# Longer than the longest RQ job_timeout (900s) plus retry/backoff headroom,
+# so the counter never expires out from under a legitimately-running job but
+# always self-heals after a crash within an hour.
+_INFLIGHT_TTL_SECONDS = 3600
+
+
+def _inflight_key(user_id: UUID | str, queue_class: str) -> str:
+    """Redis key for a tenant's in-flight counter in one latency class."""
+    return f"inflight:{user_id}:{queue_class}"
+
+
+def _inflight_cap() -> int:
+    """Resolve the configured per-tenant in-flight cap.
+
+    Reads `MAX_INFLIGHT_PER_TENANT` via config.settings (default 50).
+    Returns 0 when disabled or on any error — the caller treats <= 0 as
+    "no cap" so the feature is fully backward-compatible and fails safe
+    (a settings/import problem must not start refusing jobs).
+    """
+    try:
+        from config.settings import get_settings
+        return int(get_settings().max_inflight_per_tenant)
+    except Exception:
+        # Misconfig / import error → behave as if disabled (fail-open).
+        logger.debug("inflight cap: settings unavailable; treating as disabled")
+        return 0
+
+
+def _cap_enabled(cap: int | None = None) -> bool:
+    """True when the cap is active. `cap <= 0` (or unset) means disabled."""
+    c = _inflight_cap() if cap is None else cap
+    return c > 0
+
+
+def incr_inflight(user_id: UUID | str, queue_class: str) -> Optional[int]:
+    """INCR the tenant's in-flight counter and (re)set its TTL safety net.
+
+    Returns the post-increment count, or None on any Redis error (fail-open:
+    the caller proceeds without an accurate count rather than blocking work).
+    Re-setting the TTL on every INCR means an active tenant's key keeps
+    sliding forward, while a tenant that stops enqueuing lets it expire.
+    """
+    try:
+        r = _get_redis()
+        key = _inflight_key(user_id, queue_class)
+        # Pipeline so INCR + EXPIRE are one round-trip; not atomic vs other
+        # clients but we don't need strict atomicity for a generous cap.
+        pipe = r.pipeline()
+        pipe.incr(key)
+        pipe.expire(key, _INFLIGHT_TTL_SECONDS)
+        count = pipe.execute()[0]
+        return int(count)
+    except Exception as e:
+        logger.warning(
+            f"inflight: INCR failed for user={user_id} class={queue_class} "
+            f"({type(e).__name__}: {e}) — failing open (enqueue allowed)"
+        )
+        return None
+
+
+def decr_inflight(user_id: UUID | str, queue_class: str) -> None:
+    """DECR the tenant's in-flight counter when a job reaches a terminal state.
+
+    Guarded so it never goes negative (a stray double-decrement, or a DECR
+    after the TTL already reaped the key, must not push the counter below 0
+    and start over-crediting future enqueues) and never raises (it runs in
+    the worker's terminal/cleanup path, which must never crash on a counter
+    bug). On any Redis error we simply log and move on (fail-open).
+    """
+    try:
+        r = _get_redis()
+        key = _inflight_key(user_id, queue_class)
+        new_val = r.decr(key)
+        try:
+            if int(new_val) < 0:
+                # Clamp to 0 — the key was already gone (TTL reaped) or a
+                # double-decrement happened; never let it go negative.
+                r.set(key, 0)
+        except (TypeError, ValueError):
+            # Fake/mocked Redis may return a non-int; nothing to clamp.
+            pass
+    except Exception as e:
+        logger.warning(
+            f"inflight: DECR failed for user={user_id} class={queue_class} "
+            f"({type(e).__name__}: {e}) — ignoring (counter self-heals via TTL)"
+        )
+
+
+def queue_class_for_kind(kind: str) -> str:
+    """Public: map a job `kind` to its latency class (the cap counter key).
+
+    Mirrors the routing in `_enqueue_or_dedup` so the worker can decrement
+    the same `(user_id, queue_class)` counter the enqueue incremented,
+    without reaching into the private `_KIND_QUEUE` map.
+    """
+    return _KIND_QUEUE.get(kind, _DEFAULT_QUEUE_CLASS)
+
+
+def release_inflight(user_id: UUID | str, kind: str) -> None:
+    """Worker-side: free one in-flight slot for a finished job.
+
+    Resolves the job's latency class from its `kind`, then decrements the
+    tenant's counter. Never raises and never goes negative (delegates to
+    `decr_inflight`). No-ops cheaply when the cap is disabled so the worker
+    terminal path stays free of Redis traffic in single-user mode.
+    """
+    if not _cap_enabled():
+        return
+    decr_inflight(user_id, queue_class_for_kind(kind))
+
+
+def _over_inflight_cap(user_id: UUID | str, queue_class: str) -> tuple[bool, int, int]:
+    """Check whether a tenant is at/over their cap WITHOUT mutating the counter.
+
+    Returns (over, in_flight, cap). When the cap is disabled (<= 0) or on any
+    Redis error, returns (False, ...) so the enqueue proceeds — fail-open.
+    """
+    cap = _inflight_cap()
+    if cap <= 0:
+        return (False, 0, cap)
+    try:
+        r = _get_redis()
+        raw = r.get(_inflight_key(user_id, queue_class))
+        in_flight = int(raw) if raw is not None else 0
+    except Exception as e:
+        logger.warning(
+            f"inflight: GET failed for user={user_id} class={queue_class} "
+            f"({type(e).__name__}: {e}) — failing open (enqueue allowed)"
+        )
+        return (False, 0, cap)
+    return (in_flight >= cap, in_flight, cap)
 
 
 def _enqueue_or_dedup(
@@ -149,6 +407,10 @@ def _enqueue_or_dedup(
     existing = find_by_idempotency_key(key)
     if existing is not None:
         if existing.status in ACTIVE_STATUSES:
+            # DEDUP WINS OVER THE CAP: returning an already-active run id is
+            # not a new in-flight job, so we must NOT count it or refuse it.
+            # (A user re-clicking "Generate" while at the cap still gets the
+            # run they already have, never a 429.)
             logger.info(
                 f"queue: dedup hit kind={kind} key={key[:12]}… "
                 f"-> existing run {existing.id} (status={existing.status})"
@@ -159,12 +421,32 @@ def _enqueue_or_dedup(
             # a true retry the caller flips `force=True` (changes the
             # payload, changes the hash). Returning the terminal id here
             # is the least-surprising behavior; the API layer can decide
-            # to surface "already completed" to the user.
+            # to surface "already completed" to the user. Also not a new
+            # in-flight job → not counted, not refused.
             logger.info(
                 f"queue: terminal dedup hit kind={kind} key={key[:12]}… "
                 f"-> existing run {existing.id} (status={existing.status})"
             )
             return existing.id
+
+    # Resolve the latency class up front — both the cap and the enqueue key
+    # on it. When RQ_QUEUE_PREFIX is unset this is still the routing label
+    # used for the counter; the queue itself collapses to the single shared
+    # queue (back-compat).
+    queue_class = _KIND_QUEUE.get(kind, _DEFAULT_QUEUE_CLASS)
+
+    # P2-3 per-tenant fairness: this is a genuinely NEW in-flight job (no
+    # active/terminal dedup hit above), so it counts against the tenant's
+    # cap. Refuse with TenantQueueFull when at/over the cap. Disabled (cap
+    # <= 0) and any Redis error both fall open (over=False) — we never block
+    # real work on a counter problem.
+    over, in_flight, cap = _over_inflight_cap(user_id, queue_class)
+    if over:
+        logger.warning(
+            f"queue: tenant {user_id} at in-flight cap kind={kind} "
+            f"class={queue_class} ({in_flight}/{cap}) — refusing enqueue"
+        )
+        raise TenantQueueFull(user_id, queue_class, cap, in_flight)
 
     run = create_run(
         user_id=user_id,
@@ -173,23 +455,121 @@ def _enqueue_or_dedup(
         idempotency_key=key,
     )
 
-    q = _get_queue()
-    q.enqueue(
-        worker_func,
-        run.id,
-        job_timeout=job_timeout,
-        result_ttl=result_ttl,
-        failure_ttl=failure_ttl,
-        # `description` shows up in `rq info` and Sentry-style dashboards.
-        description=f"{kind} run_id={run.id} user_id={user_id}",
-        # `meta` is opaque dict stored on the RQ job for debugging.
-        meta={"run_id": run.id, "kind": kind, "user_id": str(user_id)},
-    )
-    logger.info(
-        f"queue: enqueued kind={kind} run_id={run.id} user_id={user_id} "
-        f"key={key[:12]}…"
-    )
-    return run.id
+    # Count this fresh active job against the tenant's cap. INCR happens
+    # AFTER create_run so we only ever count a run that actually exists; the
+    # worker DECRs once it reaches a terminal state (success or failure). On
+    # any Redis error this fails open (returns None) and the enqueue still
+    # proceeds — a counter blip must never block real work.
+    if _cap_enabled(cap):
+        incr_inflight(user_id, queue_class)
+
+    # 2026-05-12: in-process fallback when Redis is unreachable.
+    # Production reported `redis.exceptions.ConnectionError: Error 111
+    # connecting to localhost:6379` on every build-resume click because
+    # Railway's Redis plugin isn't deployed. Rather than 500 the user,
+    # we degrade gracefully: run the worker function in the current
+    # process via asyncio.create_task. Loses durability (API restart
+    # mid-build kills the work) but produces a working resume — which
+    # is the user's goal RIGHT NOW. The jobs_runs row is still created
+    # so the UI can poll for status.
+    try:
+        # `queue_class` was resolved above (it also keys the per-tenant cap).
+        # When RQ_QUEUE_PREFIX is unset this still resolves to the single
+        # shared queue (back-compat).
+        q = _get_queue(queue_class)
+        q.enqueue(
+            worker_func,
+            run.id,
+            job_timeout=job_timeout,
+            result_ttl=result_ttl,
+            failure_ttl=failure_ttl,
+            description=f"{kind} run_id={run.id} user_id={user_id}",
+            meta={"run_id": run.id, "kind": kind, "user_id": str(user_id)},
+        )
+        logger.info(
+            f"queue: enqueued kind={kind} class={queue_class} queue={q.name} "
+            f"run_id={run.id} user_id={user_id} key={key[:12]}… (via Redis)"
+        )
+        return run.id
+    except Exception as e:
+        # Detect Redis connectivity issues. We catch broad Exception
+        # because redis-py raises ConnectionError but also wraps in
+        # other types depending on version. The error message contains
+        # "connecting to" or "Connection refused" / "111" for the
+        # network-down case we care about. Other errors (auth, bad URL)
+        # also benefit from the fallback so we don't 500 on a
+        # misconfigured queue.
+        err_msg = str(e)
+        looks_like_redis_down = (
+            "connecting" in err_msg.lower()
+            or "connection refused" in err_msg.lower()
+            or "redis" in type(e).__name__.lower()
+            or "111" in err_msg
+        )
+        if not looks_like_redis_down:
+            # Unknown error — surface it instead of silently falling back.
+            logger.exception(
+                f"queue: enqueue failed for kind={kind} run_id={run.id} "
+                f"(non-Redis error — re-raising)"
+            )
+            raise
+        logger.warning(
+            f"queue: Redis unreachable ({type(e).__name__}: {err_msg[:120]}) "
+            f"— falling back to in-process execution for kind={kind} "
+            f"run_id={run.id}. Resume will build but won't survive an "
+            f"API restart. Deploy the Railway Redis plugin to fix."
+        )
+        # Run the worker function in-process via asyncio.create_task so
+        # the API request returns immediately. The worker function is
+        # synchronous (RQ design) but wraps async graphs internally via
+        # asyncio.run. We invoke it on a background thread so the API
+        # event loop isn't blocked.
+        _run_inprocess_fallback(worker_func, run.id)
+        return run.id
+
+
+def _run_inprocess_fallback(worker_func: str, run_id: str) -> None:
+    """Run an RQ worker function in-process via a background thread.
+
+    Used when Redis is unreachable so build-resume / build-prep / build-
+    linkedin all degrade gracefully to in-process execution. Threading
+    is the simplest approach — the worker function is synchronous and
+    uses asyncio.run internally, so we don't need to coordinate with
+    the API's event loop.
+
+    No durability — if the API container restarts mid-build, work is
+    lost. Acceptable in single-user mode until Redis is deployed.
+    """
+    import importlib
+    import threading
+
+    def _execute() -> None:
+        try:
+            module_path, func_name = worker_func.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            func = getattr(module, func_name)
+            logger.info(
+                f"queue.inprocess: starting worker_func={worker_func} "
+                f"run_id={run_id}"
+            )
+            func(run_id)
+            logger.info(
+                f"queue.inprocess: completed worker_func={worker_func} "
+                f"run_id={run_id}"
+            )
+        except Exception:
+            logger.exception(
+                f"queue.inprocess: worker_func={worker_func} run_id={run_id} "
+                f"FAILED — jobs_runs row will be marked 'failed' by the "
+                f"worker's mark_failed() call, OR by the orphan_reaper "
+                f"if mark_failed isn't reached."
+            )
+
+    threading.Thread(
+        target=_execute,
+        name=f"inprocess-{worker_func.split('.')[-1]}-{run_id[:8]}",
+        daemon=True,  # die on API shutdown — we accept the durability loss
+    ).start()
 
 
 # ─── Public API: one enqueue function per graph ────────────────────────────
@@ -306,6 +686,102 @@ def enqueue_g3_interview_prep(
     )
 
 
+def enqueue_g9_story_extract(
+    user_id: UUID | str,
+    *,
+    cv_hash: Optional[str] = None,
+    force: bool = False,
+) -> str:
+    """Enqueue a G9 STAR+R story extraction run for one user.
+
+    Triggered on master-CV update (the upload endpoint enqueues this so
+    the user's story_bank stays in sync with their latest CV) and from
+    the manual UI button (POST /workspace/stories/build).
+
+    `cv_hash` is folded into the idempotency payload — re-uploading the
+    SAME CV markdown collapses to a single run (cv_hash is the natural
+    dedup key). A real edit produces a new hash and a new run. Pass
+    `force=True` to bypass dedup (e.g. when retrying after a transient
+    LLM failure).
+
+    Returns the jobs_runs.id (UUID string). Cost is ~$0.20 per run.
+    """
+    payload: dict[str, Any] = {"force": bool(force)}
+    if cv_hash:
+        payload["cv_hash"] = str(cv_hash)
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="g9_story_extract",
+        payload=payload,
+        worker_func="api.worker.worker_run_g9",
+        # G9 is fixed-shape (no critic loop); 5 min is more than enough.
+        job_timeout=300,
+    )
+
+
+def enqueue_g5_score(
+    user_id: UUID | str,
+    job_id: int,
+    *,
+    force: bool = False,
+) -> str:
+    """Enqueue a G5 fit-score evaluation for one job.
+
+    Phase 2 §4.1: scoring is INFORMATIONAL (no auto-actions), so we never
+    block JobScout's persistence on this run. The auto-trigger inside
+    `JobScoutAgent.run` enqueues this for every freshly-upserted job and
+    forgets about it; the worker calls into `agents.scoring_agent.score_role`,
+    which idempotency-gates within a 7-day window.
+
+    `force=True` re-scores even if the job was scored < 7 days ago.
+
+    Returns the jobs_runs.id (UUID string). The G5 scoring call itself
+    costs ~$0.15 in LLM tokens.
+    """
+    payload: dict[str, Any] = {"job_id": int(job_id), "force": bool(force)}
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="g5_score",
+        payload=payload,
+        worker_func="api.worker.worker_run_g5",
+        # G5 is fixed-shape (no critic loop, no iteration). 5 min is more
+        # than enough; the four Sonnet calls + comp_cache + 2 RAG calls
+        # add up to ~12s.
+        job_timeout=300,
+    )
+
+
+def enqueue_g11_voice_calibration(
+    user_id: UUID | str,
+    *,
+    force: bool = False,
+) -> str:
+    """Enqueue a G11 voice-calibration run for one user.
+
+    Triggered on (a) the user clicking POST /profile/voice-calibration/run
+    and (b) auto-triggered when a writing-sample upload pushes the user
+    over 5 total samples AND ≥ 24h have passed since the last calibration.
+
+    Idempotency: re-enqueueing within the same queued/running window
+    collapses to the existing run. The graph itself is idempotent at
+    user_id (re-running just overwrites voice_calibration with a fresher
+    snapshot from whatever fresh + previously-used samples are present),
+    so back-to-back force=True runs are safe.
+
+    Cost: ~$0.08 per run. Bounded by structure (no critic loop, two LLM
+    calls).
+    """
+    payload: dict[str, Any] = {"force": bool(force)}
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="g11_voice_calibration",
+        payload=payload,
+        worker_func="api.worker.worker_run_g11",
+        # G11 is bounded to ~10s wall time; 2 min is generous.
+        job_timeout=120,
+    )
+
+
 def enqueue_g4_linkedin_post(
     user_id: UUID | str,
     *,
@@ -343,6 +819,39 @@ def enqueue_g4_linkedin_post(
         worker_func="api.worker.worker_run_g4",
         # LinkedIn drafts are short — 60s/call is plenty.
         job_timeout=180,
+    )
+
+
+def enqueue_legitimacy_check(
+    user_id: UUID | str,
+    job_id: int,
+    *,
+    force: bool = False,
+) -> str:
+    """Enqueue a Tier-2 legitimacy scoring run for one job.
+
+    Cheap (~$0.005 per run), so we don't apply a max_cost_usd cap — the
+    Perplexity signal is the only LLM call and it self-caps at one
+    sonar query. Caller (jobs_scout) enqueues this after the freshness
+    pipeline; the /workspace endpoint calls score_legitimacy directly
+    (no queue hop) because it's a user-facing button-press.
+
+    `force` flips the idempotency hash so a manual re-run after an
+    auto-scored row produces a fresh queued job rather than dedupping
+    to the existing terminal one.
+    """
+    payload: dict[str, Any] = {
+        "job_id": int(job_id),
+        "force": bool(force),
+    }
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="legitimacy_check",
+        payload=payload,
+        worker_func="api.worker.worker_run_legitimacy",
+        # Tight timeout — the heaviest call (Perplexity) has its own
+        # 30s timeout, plus the URL HEAD probe (5s). 90s is plenty.
+        job_timeout=120,
     )
 
 

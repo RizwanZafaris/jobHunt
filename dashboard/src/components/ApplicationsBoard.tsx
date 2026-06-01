@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { updateApplication, type ApplicationsResponse, type Application } from '@/lib/profile-api'
+import { Pill } from '@/components/ui/Pill'
 
 interface Props {
   initial: ApplicationsResponse
@@ -27,6 +28,8 @@ const SCORE_COLOR = (s: number) =>
 export default function ApplicationsBoard({ initial }: Props) {
   const router = useRouter()
   const [apps, setApps] = useState<Application[]>(initial.applications)
+  // BUG-012: surface the server-side threshold for the warning copy.
+  const applyThreshold = initial.apply_threshold ?? 85
 
   async function changeStatus(id: string, next: string) {
     const original = apps
@@ -98,6 +101,7 @@ export default function ApplicationsBoard({ initial }: Props) {
                     <select
                       value={a.status}
                       onChange={(e) => changeStatus(a.id, e.target.value)}
+                      aria-label={`Change status for ${a.company} application`}
                       className="text-2xs bg-surface border border-border-strong rounded px-1.5 py-0.5 text-fg-muted flex-1"
                     >
                       {COLUMNS.map((c) => (
@@ -118,8 +122,21 @@ export default function ApplicationsBoard({ initial }: Props) {
                   </div>
                   {a.applied_date && (
                     <p className="text-2xs text-fg-subtle mt-1">
-                      applied {new Date(a.applied_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                      applied {new Date(a.applied_date).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })}
                     </p>
+                  )}
+                  {/* BUG-012: explain *why* a rejection happened when the
+                       underlying match_score was already below the apply bar. */}
+                  {a.status === 'rejected' && a.threshold_violated && (
+                    <div className="mt-1.5">
+                      <Pill
+                        tone="warning"
+                        size="xs"
+                        title={`Underlying match score was ${a.job?.match_score ?? '—'} / 100; apply_threshold is ${applyThreshold}.`}
+                      >
+                        Applied below apply threshold (score &lt; {applyThreshold})
+                      </Pill>
+                    </div>
                   )}
                 </article>
               ))

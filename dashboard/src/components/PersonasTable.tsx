@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { type PersonaRow } from '@/lib/profile-api'
 import RegeneratePersonaButton from './RegeneratePersonaButton'
 import DeepResearchPersonaButton from './DeepResearchPersonaButton'
@@ -31,6 +31,13 @@ export default function PersonasTable({ personas }: Props) {
   const [filterQuality, setFilterQuality] = useState<string>('all')
   const [sortKey, setSortKey] = useState<SortKey>('synthesized')
   const [sortDesc, setSortDesc] = useState(true)
+  // BUG-017: relative-time strings ("2h ago") depend on Date.now() so they
+  // drift between SSR and CSR. Render the deterministic UTC date on the
+  // first pass, upgrade to relative time after the client mounts.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   const filtered = useMemo(() => {
     let arr = personas
@@ -53,9 +60,14 @@ export default function PersonasTable({ personas }: Props) {
         case 'examples':
           cmp = (a.n_examples_used || 0) - (b.n_examples_used || 0)
           break
-        case 'synthesized':
-          cmp = new Date(a.last_synthesized_at).getTime() - new Date(b.last_synthesized_at).getTime()
+        case 'synthesized': {
+          // Null last_synthesized_at (persona created but never synthesized)
+          // sorts to the bottom regardless of direction.
+          const at = a.last_synthesized_at ? new Date(a.last_synthesized_at).getTime() : 0
+          const bt = b.last_synthesized_at ? new Date(b.last_synthesized_at).getTime() : 0
+          cmp = at - bt
           break
+        }
         case 'quality':
           cmp =
             (QUALITY_ORDER[a.metadata?.persona_quality || 'unknown'] || 0) -
@@ -87,11 +99,13 @@ export default function PersonasTable({ personas }: Props) {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Search company..."
+          aria-label="Filter personas by company name"
           className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg w-48"
         />
         <select
           value={filterQuality}
           onChange={(e) => setFilterQuality(e.target.value)}
+          aria-label="Filter personas by quality tier"
           className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg"
         >
           <option value="all">All quality tiers</option>
@@ -135,7 +149,11 @@ export default function PersonasTable({ personas }: Props) {
               const required = p.ats_keyword_bank?.required || []
               const boost = p.ats_keyword_bank?.boost || []
               const totalKw = required.length + boost.length
-              const synthDate = new Date(p.last_synthesized_at)
+              // last_synthesized_at can be null for personas that exist but have
+              // never been synthesized (e.g. seeded from import). Bare new Date()
+              // on null returns Invalid Date and crashes the cell at toISOString().
+              const synthDate = p.last_synthesized_at ? new Date(p.last_synthesized_at) : null
+              const synthDateValid = synthDate && !isNaN(synthDate.getTime())
               return (
                 <tr key={p.company_name} className="hover:bg-surface-raised/30 transition-colors">
                   <td className="px-3 py-2">
@@ -168,8 +186,15 @@ export default function PersonasTable({ personas }: Props) {
                       <span className="text-fg-subtle">0</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-fg-muted" title={synthDate.toISOString()}>
-                    {relativeDate(synthDate)}
+                  <td
+                    className="px-3 py-2 text-fg-muted"
+                    title={synthDateValid ? synthDate!.toISOString() : 'Never synthesized'}
+                  >
+                    {synthDateValid
+                      ? mounted
+                        ? relativeDate(synthDate!)
+                        : absoluteDate(synthDate!)
+                      : <span className="text-fg-subtle">—</span>}
                   </td>
                   <td className="px-3 py-2 text-fg-muted">
                     {totalKw > 0 ? (
@@ -243,5 +268,11 @@ function relativeDate(d: Date): string {
   if (diffD < 7) return `${diffD}d ago`
   const diffW = Math.floor(diffD / 7)
   if (diffW < 4) return `${diffW}w ago`
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+}
+
+// SSR-safe deterministic date — pinned locale + timeZone so server and
+// client produce the same string before the relative-time upgrade.
+function absoluteDate(d: Date): string {
+  return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
 }

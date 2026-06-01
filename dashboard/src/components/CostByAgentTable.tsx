@@ -55,11 +55,13 @@ export default function CostByAgentTable({ agents, days }: Props) {
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Filter agent..."
+            aria-label="Filter cost rows by agent name"
             className="text-xs bg-surface-raised border border-border-strong rounded-lg px-3 py-1.5 text-fg w-48"
           />
           <select
             value={sortKey}
             onChange={(e) => setSortKey(e.target.value as SortKey)}
+            aria-label="Sort cost-by-agent table"
             className="text-xs bg-surface-raised border border-border-strong rounded-lg px-2 py-1.5 text-fg"
           >
             <option value="cost">Sort: cost</option>

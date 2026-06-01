@@ -25,7 +25,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from agents.referral_graph import (
     DEFAULT_MAX_HOPS,
@@ -37,11 +37,22 @@ from agents.referral_graph import (
 from api.context import get_current_user
 from api.rate_limits import RATE_LIMITS, limiter
 from api.users import User
-from db.client import get_supabase
+from db.client import aexecute, get_supabase
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/network", tags=["network"])
+
+
+def _escape_ilike(s: str) -> str:
+    """Escape SQL LIKE/ILIKE wildcards so user input matches literally.
+
+    Order matters: escape backslash FIRST so we don't double-escape the
+    backslashes we add for ``%`` and ``_``.
+    """
+    if not s:
+        return ""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 # ── Request models ────────────────────────────────────────────────────────
@@ -87,6 +98,22 @@ class ImportSummary(BaseModel):
     errors: list[str] = []
 
 
+class DraftIntroBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_company_id: UUID
+    introducer_person_id: UUID
+    target_role_summary: Optional[str] = None  # 1-line role description if known
+
+
+class DraftIntroResponse(BaseModel):
+    subject: str
+    body: str
+    introducer_name: str
+    target_company_name: str
+    confidence: float
+    cost_usd: float
+
+
 # ── /network/paths ────────────────────────────────────────────────────────
 @router.get("/paths", response_model=list[ReferralPath])
 def get_paths(
@@ -121,7 +148,7 @@ def search_people(
         .eq("user_id", str(user.id))
     )
     if q:
-        qb = qb.ilike("full_name", f"%{q}%")
+        qb = qb.ilike("full_name", f"%{_escape_ilike(q)}%")
     rows = (
         qb.order("created_at", desc=True)
           .limit(min(max(limit, 1), 100))
@@ -258,19 +285,28 @@ def create_edge(
 def target_coverage(
     user: User = Depends(get_current_user),
 ) -> list[TargetCoverageRow]:
-    """Per target_company: how many 1-hop / 2-hop intro paths exist + top path.
+    """Per target company: how many 1-hop / 2-hop intro paths exist + top path.
 
     This is the headline number on the /network surface. Pulls every
-    target_company for the user, runs find_paths(max_hops=2) for each,
-    aggregates counts.
+    company the user has marked is_target=true and not a phantom, runs
+    find_paths(max_hops=2) for each, aggregates counts.
+
+    B11: was querying a non-existent `target_companies` table → 500 on
+    every request. The real schema marks targets via `companies.is_target`;
+    `target_company_employees` joins by `target_company_id = companies.id`.
     """
     db = get_supabase()
     targets = (
-        db.table("target_companies")
-        .select("id, name, company_name")
+        db.table("companies")
+        .select("id, name")
         .eq("user_id", str(user.id))
+        .eq("is_target", True)
+        .neq("is_phantom", True)
         .execute()
     ).data or []
+
+    if not targets:
+        return []  # empty state, not 500
 
     rg = ReferralGraph(user.id)
     out: list[TargetCoverageRow] = []
@@ -289,7 +325,7 @@ def target_coverage(
         c2 = sum(1 for p in paths if p.hop_count == 2)
         out.append(TargetCoverageRow(
             target_company_id=UUID(str(t["id"])),
-            name=t.get("name") or t.get("company_name"),
+            name=t.get("name"),
             paths_count_1hop=c1,
             paths_count_2hop=c2,
             top_path=paths[0] if paths else None,
@@ -303,3 +339,103 @@ def target_coverage(
         )
     )
     return out
+
+
+# ── /network/draft-intro ───────────────────────────────────────────────────
+@router.post("/draft-intro", response_model=DraftIntroResponse)
+async def draft_intro(
+    body: DraftIntroBody,
+    user: User = Depends(get_current_user),
+) -> DraftIntroResponse:
+    """B9: Draft a warm-intro email FOR the introducer to send to the target.
+
+    Picks the highest-strength path through this introducer to the target
+    company, calls agents.intro_email_agent.draft_intro_email, returns the
+    drafted email. Never sends — the user reviews + sends manually.
+    Cost-capped at $0.10.
+    """
+    db = get_supabase()
+
+    # Verify the target company belongs to this user.
+    tc_rows = (await aexecute(
+        db.table("target_companies")
+        .select("id, name, company_name")
+        .eq("id", str(body.target_company_id))
+        .eq("user_id", str(user.id))
+        .limit(1)
+    )).data or []
+    if not tc_rows:
+        raise HTTPException(status_code=404, detail="no_intro_path_to_target")
+    target_company_name = tc_rows[0].get("company_name") or tc_rows[0].get("name") or ""
+
+    # Find paths to the target.
+    rg = ReferralGraph(user.id)
+    try:
+        paths = rg.find_paths(
+            target_company_id=str(body.target_company_id),
+            max_hops=2,
+            min_strength=DEFAULT_MIN_STRENGTH,
+            limit=20,
+        )
+    except Exception:
+        paths = []
+
+    # Filter to paths whose first hop matches the introducer.
+    matching = [
+        p for p in paths
+        if len(p.path) >= 2 and str(p.path[1].id) == str(body.introducer_person_id)
+    ]
+    if not matching:
+        raise HTTPException(status_code=404, detail="no_intro_path_to_target")
+
+    # Pick the strongest path.
+    best = max(matching, key=lambda p: p.total_strength)
+    introducer_name = best.path[1].full_name if len(best.path) >= 2 else ""
+
+    # Build candidate profile from user record.
+    candidate_profile: dict[str, Any] = {
+        "name": user.full_name or "",
+        "headline": getattr(user, "headline", None) or "",
+        "email": user.email,
+    }
+    # Try to enrich from users table row.
+    try:
+        u_rows = (await aexecute(
+            db.table("users")
+            .select("full_name, headline, linkedin_url, summary, location")
+            .eq("id", str(user.id))
+            .limit(1)
+        )).data or []
+        if u_rows:
+            ur = u_rows[0]
+            candidate_profile["name"] = ur.get("full_name") or candidate_profile["name"]
+            candidate_profile["headline"] = ur.get("headline") or candidate_profile["headline"]
+            candidate_profile["linkedin_url"] = ur.get("linkedin_url") or ""
+            candidate_profile["summary"] = ur.get("summary") or ""
+            candidate_profile["location"] = ur.get("location") or ""
+    except Exception:
+        pass  # profile enrichment is best-effort
+
+    target_role: dict[str, Any] = {"company": target_company_name}
+    if body.target_role_summary:
+        target_role["summary"] = body.target_role_summary
+
+    from agents.intro_email_agent import draft_intro_email
+    result = await draft_intro_email(
+        intro_path=best,
+        target_role=target_role,
+        candidate_profile=candidate_profile,
+        max_cost_usd=0.10,
+    )
+
+    if result.get("error") == "cost_capped":
+        raise HTTPException(status_code=422, detail="cost_capped")
+
+    return DraftIntroResponse(
+        subject=result.get("subject", ""),
+        body=result.get("body", ""),
+        introducer_name=introducer_name,
+        target_company_name=target_company_name,
+        confidence=best.total_strength,
+        cost_usd=result.get("cost_usd", 0.0),
+    )

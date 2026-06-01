@@ -25,24 +25,29 @@ Pricing notes:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import os
+import queue
 import re
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-Provider = Literal["anthropic", "openai", "google", "deepseek", "moonshot"]
+Provider = Literal["anthropic", "openai", "google", "deepseek", "moonshot", "openrouter"]
 
 # ─── Pricing table (USD per 1M tokens, input / output) ───────────────────────
 # Approximate as of 2026-Q2. Sources: provider pricing pages.
 # Used only for cost telemetry. Don't gate logic on these numbers.
 PRICING_PER_1M: dict[str, tuple[float, float]] = {
     # Anthropic
-    "claude-opus-4-7":            (15.0, 75.0),
+    # 2026-05-17: removed "claude-opus-4-7" entry — that id 404s at the
+    # API and keeping it in the price table let dead callers look healthy
+    # in cost telemetry while every request silently failed.
     "claude-opus-4-5-20251101":   (15.0, 75.0),
     "claude-opus-4-5":            (15.0, 75.0),
     "claude-sonnet-4-6":          (3.0, 15.0),
@@ -66,16 +71,33 @@ PRICING_PER_1M: dict[str, tuple[float, float]] = {
     "kimi-k2.6":                  (0.95, 4.0),    # latest, recommended for new code
     "kimi-k2.5":                  (0.60, 3.0),    # cheaper alternative, still SOTA
     "moonshot-v1-128k":           (2.0, 5.0),
+    # OpenRouter — ~5% markup over direct provider prices. The markup
+    # covers OpenRouter's aggregation fee. These are the routed model ids
+    # (anthropic/claude-opus-4-5, etc). Input/output rates match direct
+    # pricing × 1.05; unknown models fall through to 0.0.
+    "anthropic/claude-opus-4-5":       (15.75, 78.75),
+    "anthropic/claude-sonnet-4-6":     (3.15, 15.75),
+    "anthropic/claude-haiku-4-5":      (0.84, 4.20),
+    "openai/gpt-5":                    (5.25, 21.0),
+    "openai/gpt-4.1":                  (2.10, 8.40),
+    "openai/gpt-4o":                   (2.625, 10.50),
+    "google/gemini-2.5-pro":           (1.31, 5.25),
+    "google/gemini-2.5-flash":         (0.315, 2.625),
+    "deepseek/deepseek-chat":          (0.284, 1.155),
+    "deepseek/deepseek-reasoner":      (0.578, 2.30),
+    "moonshot/kimi-k2.6":              (1.0, 4.20),
+    "moonshot/kimi-k2.5":              (0.63, 3.15),
     # NB: plain "kimi-k2" is NOT a valid Moonshot model id. Removed from
     # pricing table — calls with that name will 404 at the API. The
     # _supports_json_response_format whitelist defaults to True for kimi-*
     # variants, which is correct (Moonshot supports response_format).
 }
 
-# OpenAI-compatible endpoints (DeepSeek + Kimi)
+# OpenAI-compatible endpoints (DeepSeek + Kimi + OpenRouter)
 OPENAI_COMPATIBLE_BASE_URLS = {
     "deepseek": "https://api.deepseek.com/v1",
     "moonshot": "https://api.moonshot.ai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
 }
 
 
@@ -91,6 +113,13 @@ class LLMResult:
     latency_ms: int = 0
     raw: Any = field(default=None, repr=False)
     tool_calls: list = field(default_factory=list)
+    # Anthropic prompt-caching telemetry. Only Anthropic returns these today;
+    # other providers leave them at 0. cache_creation_input_tokens = tokens
+    # written to the cache on this call (billed at 1.25× input rate);
+    # cache_read_input_tokens = tokens read from a previously cached prefix
+    # (billed at 0.10× input rate — the 90% discount).
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
     def to_log_dict(self) -> dict:
         d = asdict(self)
@@ -98,7 +127,23 @@ class LLMResult:
         return d
 
 
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+def _anthropic_cache_enabled() -> bool:
+    """
+    Feature flag for Anthropic prompt caching. Defaults ON (the cost is
+    purely positive — a cache miss costs the same as no cache, and a cache
+    hit gives a 90% input-token discount). Set ANTHROPIC_PROMPT_CACHE_ENABLED=0
+    to disable for staged rollback.
+    """
+    return os.environ.get("ANTHROPIC_PROMPT_CACHE_ENABLED", "1") != "0"
+
+
+def _estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_creation_input_tokens: int = 0,
+    cache_read_input_tokens: int = 0,
+) -> float:
     pricing = PRICING_PER_1M.get(model)
     if not pricing:
         # Try a prefix match (e.g. "gemini-2.5-pro-001" → "gemini-2.5-pro")
@@ -113,9 +158,17 @@ def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     # are None instead of an int, which used to crash this function.
     in_toks = int(input_tokens or 0)
     out_toks = int(output_tokens or 0)
-    in_cost = in_toks * pricing[0] / 1_000_000
-    out_cost = out_toks * pricing[1] / 1_000_000
-    return round(in_cost + out_cost, 6)
+    cache_create = int(cache_creation_input_tokens or 0)
+    cache_read = int(cache_read_input_tokens or 0)
+    in_rate, out_rate = pricing[0], pricing[1]
+    in_cost = in_toks * in_rate / 1_000_000
+    out_cost = out_toks * out_rate / 1_000_000
+    # Anthropic prompt-cache pricing: writes cost 1.25× the input rate, reads
+    # cost 0.10× the input rate. Per the Anthropic prompt-caching docs.
+    # Non-Anthropic providers always pass 0 for these so the math is a no-op.
+    cache_create_cost = cache_create * in_rate * 1.25 / 1_000_000
+    cache_read_cost = cache_read * in_rate * 0.10 / 1_000_000
+    return round(in_cost + out_cost + cache_create_cost + cache_read_cost, 6)
 
 
 def _resolve_temperature(model: str, requested: float) -> float:
@@ -130,7 +183,10 @@ def _resolve_temperature(model: str, requested: float) -> float:
     For everything else we honour the caller's requested temperature.
     Update this function — never hardcode at the call site.
     """
-    if model.startswith("kimi-k2"):
+    # B-OR1: OpenRouter models use "provider/model" format. Strip the prefix
+    # to check the native model name.
+    native_model = model.split("/", 1)[1] if "/" in model else model
+    if native_model.startswith("kimi-k2"):
         return 1.0
     return requested
 
@@ -148,14 +204,26 @@ def _supports_json_response_format(model: str) -> bool:
     Defaults to True for everything else (gpt-*, deepseek-chat, kimi-k2,
     moonshot-v1-*). Update this function — never hardcode at the call site.
     """
-    if model.startswith("deepseek-reasoner"):
+    # B-OR1: OpenRouter models use "provider/model" format. Strip the prefix
+    # to check the native model name.
+    native_model = model.split("/", 1)[1] if "/" in model else model
+    if native_model.startswith("deepseek-reasoner"):
         return False
     return True
 
 
 def infer_provider(model: str) -> Provider:
-    """Best-effort provider inference from model name. Used for back-compat."""
+    """Best-effort provider inference from model name. Used for back-compat.
+
+    OpenRouter models use the "provider/model" format (e.g.
+    "anthropic/claude-opus-4-5"). These are always routed through the
+    "openrouter" provider — the actual native provider is recorded in
+    agent_call_log.actual_provider for cost attribution.
+    """
     m = model.lower()
+    # OpenRouter prefix pattern — must be first, before native prefixes.
+    if "/" in m:
+        return "openrouter"
     if m.startswith("claude"):
         return "anthropic"
     if m.startswith(("gpt", "o1", "o3", "text-embedding")):
@@ -188,6 +256,7 @@ class LLMRouter:
         google_key: Optional[str] = None,
         deepseek_key: Optional[str] = None,
         moonshot_key: Optional[str] = None,
+        openrouter_key: Optional[str] = None,
         log_callback: Optional[callable] = None,
     ):
         self._keys: dict[Provider, Optional[str]] = {
@@ -197,6 +266,7 @@ class LLMRouter:
             "deepseek": deepseek_key or os.environ.get("DEEPSEEK_API_KEY"),
             "moonshot": moonshot_key or os.environ.get("KIMI_API_KEY")
                         or os.environ.get("MOONSHOT_API_KEY"),
+            "openrouter": openrouter_key or os.environ.get("OPENROUTER_API_KEY"),
         }
         self._clients: dict[Provider, Any] = {}
         # Optional callback fired after every successful call.
@@ -215,7 +285,9 @@ class LLMRouter:
         temperature: float = 0.3,
         tools: Optional[list] = None,
         agent_name: Optional[str] = None,
+        user_id: Optional[str] = None,
         json_response: bool = False,
+        cache_system: Optional[bool] = None,
         **provider_kwargs: Any,
     ) -> LLMResult:
         """
@@ -224,31 +296,58 @@ class LLMRouter:
         messages: [{"role": "user"|"assistant", "content": "..."}]
         tools: provider-specific tool definitions (e.g. Anthropic web_search,
                Gemini google_search grounding, OpenAI function tools).
+        cache_system: Anthropic-only opt-in for prompt caching of the system
+               block. Three modes:
+                 None  (default) — auto: wrap when system >= ~1024 tokens
+                                   (chars/4 heuristic). Used by G2.
+                 True            — force-wrap regardless of size. Safe even
+                                   below Anthropic's 1024-token minimum
+                                   (the marker is silently ignored, costs
+                                   nothing). Used by G6 follow-up graph,
+                                   where the same system prompt fires every
+                                   cron run and even a sub-1024 prompt may
+                                   hit the threshold under real tokenization.
+                 False           — never wrap (used by tests).
+               Honoured only when provider="anthropic" AND
+               ANTHROPIC_PROMPT_CACHE_ENABLED is not "0".
         """
+        # Per-tenant spend cap (Phase 3). No-op when PER_TENANT_BUDGET_ENABLED is
+        # off (default) — one env check. When on, raises BudgetExceeded BEFORE any
+        # spend, so an over-budget tenant never reaches a provider.
+        from agents.budget_gate import enforce_budget
+        await enforce_budget(user_id, agent_name=agent_name)
+
         start = time.perf_counter()
         try:
             if provider == "anthropic":
                 result = await self._call_anthropic(
-                    model, system, messages, max_tokens, temperature, tools, **provider_kwargs
+                    model, system, messages, max_tokens, temperature, tools,
+                    cache_system=cache_system,
+                    **provider_kwargs,
                 )
             elif provider == "openai":
                 result = await self._call_openai_compatible(
                     "openai", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "deepseek":
                 result = await self._call_openai_compatible(
                     "deepseek", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "moonshot":
                 result = await self._call_openai_compatible(
                     "moonshot", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "google":
                 result = await self._call_google(
                     model, system, messages, max_tokens, temperature, tools, **provider_kwargs
+                )
+            elif provider == "openrouter":
+                result = await self._call_openrouter(
+                    model, system, messages, max_tokens, temperature,
+                    tools, json_response, **provider_kwargs,
                 )
             else:
                 raise ValueError(f"Unknown provider: {provider}")
@@ -257,7 +356,13 @@ class LLMRouter:
             raise
 
         result.latency_ms = int((time.perf_counter() - start) * 1000)
-        result.cost_usd = _estimate_cost(model, result.input_tokens, result.output_tokens)
+        result.cost_usd = _estimate_cost(
+            model,
+            result.input_tokens,
+            result.output_tokens,
+            result.cache_creation_input_tokens,
+            result.cache_read_input_tokens,
+        )
 
         if self._log_callback:
             try:
@@ -296,6 +401,109 @@ class LLMRouter:
         parsed = _parse_json_loose(result.text)
         return parsed, result
 
+    async def ask_json_validated(
+        self,
+        provider: Provider,
+        model: str,
+        system: str,
+        messages: list[dict],
+        response_model: Any,
+        max_tokens: int = 4096,
+        temperature: float = 0.2,
+        agent_name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> tuple[Any, LLMResult]:
+        """
+        Like ask_json() but validates the response against a Pydantic
+        model. On ValidationError, retries ONCE with the validation
+        error appended to the user message. Fails loud on second failure.
+
+        Added 2026-05-27 (P0 audit) — closes the silent-data-corruption
+        gap from agents like scoring_agent that accept whatever shape
+        the LLM returns.
+
+        Returns (validated_model_instance, full_LLMResult).
+
+        Usage:
+            from pydantic import BaseModel
+            class FitScore(BaseModel):
+                score: int
+                reasoning: str
+                domain_match: bool
+
+            obj, result = await router.ask_json_validated(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                system="You are a scoring agent...",
+                messages=[{"role":"user","content":"Score this job..."}],
+                response_model=FitScore,
+            )
+            print(obj.score)  # IDE-typed; no None checks needed
+        """
+        # Local import so the router stays optional-dep friendly when
+        # callers don't use this method.
+        from pydantic import ValidationError
+
+        # First attempt
+        parsed, result = await self.ask_json(
+            provider=provider,
+            model=model,
+            system=system,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            agent_name=agent_name,
+            **kwargs,
+        )
+        try:
+            return response_model.model_validate(parsed), result
+        except ValidationError as first_err:
+            logger.warning(
+                "[%s] ask_json_validated: first attempt failed Pydantic validation "
+                "against %s — retrying once with error context. errors=%s",
+                agent_name or "?",
+                response_model.__name__,
+                first_err.errors()[:3],  # cap log noise
+            )
+
+        # Retry once, with the validation error appended so the model
+        # can self-correct. This is the cheapest possible self-repair
+        # loop and works ~90% of the time per OpenAI's structured-output
+        # blog. Failing twice means the prompt itself is broken, not
+        # the LLM — surface immediately so the caller can fix it.
+        repair_msg = (
+            "Your previous response did not match the required JSON schema. "
+            f"Pydantic validation errors:\n{first_err.errors()[:5]}\n"
+            f"Required schema (JSON Schema):\n{response_model.model_json_schema()}\n"
+            "Reply ONLY with valid JSON matching this schema — no prose."
+        )
+        repair_messages = list(messages) + [
+            {"role": "assistant", "content": result.text},
+            {"role": "user", "content": repair_msg},
+        ]
+
+        retry_parsed, retry_result = await self.ask_json(
+            provider=provider,
+            model=model,
+            system=system,
+            messages=repair_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            agent_name=f"{agent_name}.repair" if agent_name else "repair",
+            **kwargs,
+        )
+        try:
+            return response_model.model_validate(retry_parsed), retry_result
+        except ValidationError as second_err:
+            # Two-strike — fail loud with both errors so the caller can debug.
+            raise ValueError(
+                f"ask_json_validated: response failed Pydantic validation twice "
+                f"against {response_model.__name__}. "
+                f"First errors: {first_err.errors()[:3]}; "
+                f"Retry errors: {second_err.errors()[:3]}; "
+                f"Last raw text: {retry_result.text[:300]!r}"
+            ) from second_err
+
     # ─── Provider implementations ────────────────────────────────────────
     async def _call_anthropic(
         self,
@@ -305,14 +513,47 @@ class LLMRouter:
         max_tokens: int,
         temperature: float,
         tools: Optional[list],
+        cache_system: Optional[bool] = None,
         **kwargs,
     ) -> LLMResult:
         client = self._get_client("anthropic")
+
+        # Prompt caching: wrap large system prompts in a single text block with
+        # cache_control={"type":"ephemeral"} so Anthropic caches the prefix.
+        # On a cache hit, those input tokens are billed at 10% of the input
+        # rate (the 90% discount). Anthropic's minimum is 1024 tokens; below
+        # that the cache_control field is silently ignored, so we gate on a
+        # chars/4 heuristic to skip the wrapping when it can't help.
+        # Per https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching.
+        #
+        # Callers can override the heuristic via cache_system:
+        #   None  → auto (size-gated, default — G2 critic family relies on this)
+        #   True  → force-wrap. Used by G6 follow-up graph, where the same
+        #           system prompts fire every cron run; even sub-1024 prompts
+        #           may cross the threshold under real tokenization, and the
+        #           marker is a no-op below the minimum.
+        #   False → never wrap (tests; staged rollback at the call site).
+        system_arg: Any = system
+        if (
+            isinstance(system, str)
+            and _anthropic_cache_enabled()
+            and cache_system is not False
+        ):
+            size_eligible = len(system) >= 1024 * 4  # chars/4 ≈ 1024 tokens
+            if cache_system is True or size_eligible:
+                system_arg = [
+                    {
+                        "type": "text",
+                        "text": system,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+
         kw = dict(
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
-            system=system,
+            system=system_arg,
             messages=messages,
         )
         if tools:
@@ -337,12 +578,25 @@ class LLMRouter:
         usage = getattr(resp, "usage", None)
         in_toks = (getattr(usage, "input_tokens", 0) or 0) if usage else 0
         out_toks = (getattr(usage, "output_tokens", 0) or 0) if usage else 0
+        # Anthropic returns cache hits/misses on usage:
+        #   cache_creation_input_tokens — tokens written to the cache (1.25× rate)
+        #   cache_read_input_tokens     — tokens read from the cache (0.10× rate)
+        # Both default to 0 when caching is disabled, the prefix is too short,
+        # or the cache is not yet warm.
+        cache_create = (
+            (getattr(usage, "cache_creation_input_tokens", 0) or 0) if usage else 0
+        )
+        cache_read = (
+            (getattr(usage, "cache_read_input_tokens", 0) or 0) if usage else 0
+        )
         return LLMResult(
             text="\n".join(text_parts).strip(),
             provider="anthropic",
             model=model,
             input_tokens=int(in_toks),
             output_tokens=int(out_toks),
+            cache_creation_input_tokens=int(cache_create),
+            cache_read_input_tokens=int(cache_read),
             raw=resp,
             tool_calls=tool_calls,
         )
@@ -357,9 +611,21 @@ class LLMRouter:
         temperature: float,
         tools: Optional[list],
         json_response: bool,
+        agent_name: Optional[str] = None,
         **kwargs,
     ) -> LLMResult:
-        """OpenAI / DeepSeek / Moonshot all share OpenAI's chat completions schema."""
+        """OpenAI / DeepSeek / Moonshot all share OpenAI's chat completions schema.
+
+        2026-05-27 P1 audit: auto-attach `prompt_cache_key` for OpenAI
+        provider so the chat-completions API can cache the request prefix
+        (system prompt + early messages) for 5-15 minutes. Cache hits are
+        billed at 0 input tokens — pure win when the same agent fires
+        repeated calls. Key is derived from agent_name; callers can
+        override by passing `prompt_cache_key=...` in kwargs.
+        OpenAI minimum cacheable: 1024 tokens (~4KB). DeepSeek + Moonshot
+        have their own server-side caching, no header needed.
+        See https://platform.openai.com/docs/guides/prompt-caching
+        """
         client = self._get_client(provider)
         all_msgs = [{"role": "system", "content": system}] + messages
         kw: dict = dict(
@@ -372,6 +638,18 @@ class LLMRouter:
             kw["response_format"] = {"type": "json_object"}
         if tools:
             kw["tools"] = tools
+
+        # OpenAI prompt caching — only for openai provider, only when the
+        # system prompt is big enough to be cacheable. Skip for DeepSeek /
+        # Moonshot (different vendors, no such param).
+        if (
+            provider == "openai"
+            and agent_name
+            and len(system) >= 4096
+            and "prompt_cache_key" not in kwargs
+        ):
+            kw["prompt_cache_key"] = f"jobhunt::{agent_name}"
+
         kw.update(kwargs)
 
         resp = await client.chat.completions.create(**kw)
@@ -465,6 +743,76 @@ class LLMRouter:
             raw=resp,
         )
 
+    async def _call_openrouter(
+        self,
+        model: str,
+        system: str,
+        messages: list[dict],
+        max_tokens: int,
+        temperature: float,
+        tools: Optional[list],
+        json_response: bool,
+        **kwargs,
+    ) -> LLMResult:
+        """OpenRouter — OpenAI-compatible chat completions with provider-routing.
+
+        OpenRouter accepts model ids in "provider/model" format
+        (e.g. "anthropic/claude-opus-4-5") and routes to the underlying
+        provider. We pass the model id verbatim; OpenRouter handles the
+        native translation.
+
+        The response includes "provider" in the model_extra (when available)
+        so we can log the actual native provider for cost attribution.
+        """
+        client = self._get_client("openrouter")
+        all_msgs = [{"role": "system", "content": system}] + messages
+        kw: dict = dict(
+            model=model,
+            messages=all_msgs,
+            max_tokens=max_tokens,
+            temperature=_resolve_temperature(model, temperature),
+        )
+        if json_response and _supports_json_response_format(model):
+            kw["response_format"] = {"type": "json_object"}
+        if tools:
+            kw["tools"] = tools
+        # OpenRouter-specific: enable provider fallbacks for resiliency.
+        # If the primary routed provider is down, OR tries alternatives.
+        kw["extra_headers"] = {
+            "HTTP-Referer": "https://jobhunt.local",
+            "X-Title": "jobHunt",
+        }
+        kw.update(kwargs)
+
+        resp = await client.chat.completions.create(**kw)
+        choice = resp.choices[0]
+        text = choice.message.content or ""
+
+        tool_calls: list[dict] = []
+        if getattr(choice.message, "tool_calls", None):
+            for tc in choice.message.tool_calls:
+                tool_calls.append({
+                    "id": tc.id,
+                    "name": tc.function.name,
+                    "input": tc.function.arguments,
+                })
+
+        usage = getattr(resp, "usage", None)
+        in_toks = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+        out_toks = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+
+        # OpenRouter sometimes returns the actual native provider in model_extra.
+        # We don't mutate the result here; the log callback can read it from raw.
+        return LLMResult(
+            text=text.strip(),
+            provider="openrouter",
+            model=model,
+            input_tokens=int(in_toks),
+            output_tokens=int(out_toks),
+            raw=resp,
+            tool_calls=tool_calls,
+        )
+
     # ─── Lazy client instantiation ───────────────────────────────────────
     def _get_client(self, provider: Provider):
         if provider in self._clients:
@@ -478,6 +826,7 @@ class LLMRouter:
                 "google":    "GOOGLE_API_KEY",
                 "deepseek":  "DEEPSEEK_API_KEY",
                 "moonshot":  "KIMI_API_KEY",
+                "openrouter": "OPENROUTER_API_KEY",
             }[provider]
             raise RuntimeError(
                 f"No API key configured for '{provider}'. "
@@ -499,6 +848,18 @@ class LLMRouter:
             # 10+ min (e.g. Adyen 1022 build 55210ffa stalled here on
             # 2026-05-09). 180s gives Kimi K2.5 enough head-room for full
             # reasoning + JSON emission with our 8000/16000 max_tokens budget.
+            client = AsyncOpenAI(
+                api_key=key,
+                base_url=OPENAI_COMPATIBLE_BASE_URLS[provider],
+                timeout=180.0,
+                max_retries=2,
+            )
+        elif provider == "openrouter":
+            from openai import AsyncOpenAI
+            # OpenRouter uses OpenAI-compatible chat completions. 180s timeout
+            # mirrors deepseek/moonshot — reasoning models through OR can take
+            # just as long. max_retries=2 because OR has its own internal
+            # provider-fallback; we don't need to be overly aggressive.
             client = AsyncOpenAI(
                 api_key=key,
                 base_url=OPENAI_COMPATIBLE_BASE_URLS[provider],
@@ -543,27 +904,247 @@ def reset_router() -> None:
 
 
 # ─── Default cost-log callback ────────────────────────────────────────────
-def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
+def _derive_graph_and_node(agent_name: Optional[str]) -> tuple[Optional[str], Optional[str]]:
     """
-    Best-effort write to agent_call_log table. Non-fatal on failure.
-    The table is created lazily — if it doesn't exist yet, this is a no-op.
+    Derive (graph, node_name) from an agent_name string.
+
+    Convention:
+      - g1.*  / JobScout* / scout.*           -> graph='G1', node = stripped
+      - g2.*                                   -> graph='G2', node = stripped
+      - g3.*                                   -> graph='G3', node = stripped
+      - g4.* / linkedin.*                      -> graph='G4', node = stripped
+      - persona.* / company.* / boss.* /
+        profile.* / debug.*                    -> graph=None (utility),
+                                                 node = stripped
+      - Any other label (RizwanAgent,
+        ResumeBuilder, InterviewAgent,
+        CompanyAgent[X], BossAgent, ...)       -> graph=None, node = full name
+
+    2026-05-12 BUG-024: agent_call_log.graph was 100% NULL (1,092/1,092)
+    because nothing ever populated it. Without graph, the cost dashboard
+    cannot attribute spend to G1/G2/G3/G4 — $32.40 of telemetry was
+    untraceable. We now derive both fields at insert time from the only
+    populated identifier (agent_name).
     """
+    if not agent_name:
+        return None, None
+    name = agent_name
+    lower = name.lower()
+    # G1 — discovery / JobScout family.
+    if lower.startswith("g1.") or lower.startswith("jobscout") or lower.startswith("scout."):
+        node = name.split(".", 1)[1] if "." in name else name
+        return "G1", node
+    # G2 — resume builder family.
+    if lower.startswith("g2."):
+        return "G2", name.split(".", 1)[1]
+    # G3 — coach family.
+    if lower.startswith("g3."):
+        return "G3", name.split(".", 1)[1]
+    # G4 — LinkedIn / outreach family.
+    if lower.startswith("g4.") or lower.startswith("linkedin."):
+        node = name.split(".", 1)[1] if "." in name else name
+        return "G4", node
+    # G5 — reserved for the next phase; routed here so cost reports already
+    # have a slot when it lands. No-op until agents start emitting g5.*.
+    if lower.startswith("g5."):
+        return "G5", name.split(".", 1)[1]
+    # G6 — follow-up cadence family (Phase 1.3, 2026-05-12).
+    if lower.startswith("g6."):
+        return "G6", name.split(".", 1)[1]
+    # G7 — application answers (Tier 3, in flight).
+    if lower.startswith("g7."):
+        return "G7", name.split(".", 1)[1]
+    # G9 — STAR+R story extractor (Phase 1.2, 2026-05-12).
+    if lower.startswith("g9."):
+        return "G9", name.split(".", 1)[1]
+    # G11 — voice calibration (Tier 4, 2026-05-12).
+    if lower.startswith("g11."):
+        return "G11", name.split(".", 1)[1]
+    # Utility / non-graph workers — strip prefix for node_name, leave graph=None.
+    for prefix in ("persona.", "company.", "boss.", "profile.", "debug."):
+        if lower.startswith(prefix):
+            return None, name.split(".", 1)[1]
+    # Unknown / legacy bare names — keep as node_name verbatim.
+    return None, name
+
+
+# ── Async telemetry buffer (P3-5) ─────────────────────────────────────────
+# The per-call agent_call_log INSERT used to run synchronously inside
+# LLMRouter.ask(), on every LLM call's hot path — a network round-trip to
+# Supabase blocking each request before the caller got its result. We now
+# build the row on the calling side (identical shape/derivation as before) and
+# hand it to a bounded in-process queue; a single daemon thread drains the
+# queue in batches and bulk-inserts. Telemetry stays best-effort: the INSERT
+# can never raise into ask(), and a saturated queue drops rows (with a throttled
+# warning) rather than applying backpressure to live requests.
+#
+# Bound (10k rows ≈ a few MB) caps memory if the DB is unreachable for a while;
+# at single-user volume it's effectively never reached. atexit drains on a
+# graceful shutdown so a clean restart doesn't lose the last batch.
+_TELEMETRY_QUEUE_MAXSIZE = 10000
+_TELEMETRY_BATCH_SIZE = 100
+_telemetry_queue: "queue.Queue[dict]" = queue.Queue(maxsize=_TELEMETRY_QUEUE_MAXSIZE)
+_telemetry_thread: Optional[threading.Thread] = None
+_telemetry_thread_lock = threading.Lock()
+_telemetry_dropped = 0  # cumulative dropped-row counter (buffer-full events)
+
+
+def _telemetry_bulk_insert(rows: list[dict]) -> None:
+    """Best-effort bulk INSERT of buffered agent_call_log rows.
+
+    Runs only on the drain thread. supabase-py accepts a list payload, so a
+    full batch is one round-trip. Failure is swallowed (telemetry is
+    best-effort) but logged so silent gaps can be diagnosed.
+    """
+    if not rows:
+        return
     try:
         from db.client import get_supabase
+        get_supabase().table("agent_call_log").insert(rows).execute()
+    except Exception as e:
+        # Table may not exist yet, or DB unreachable — telemetry is best-effort.
+        logger.debug(
+            "agent_call_log bulk insert failed (non-fatal, %d rows): %s: %s",
+            len(rows), type(e).__name__, e,
+        )
+
+
+def _telemetry_drain_loop() -> None:
+    """Daemon loop: block for a row, opportunistically batch, bulk-insert."""
+    while True:
+        try:
+            first = _telemetry_queue.get()  # blocks until a row is available
+        except Exception:
+            return
+        batch = [first]
+        # Opportunistically coalesce whatever is already queued (no waiting).
+        while len(batch) < _TELEMETRY_BATCH_SIZE:
+            try:
+                batch.append(_telemetry_queue.get_nowait())
+            except queue.Empty:
+                break
+        _telemetry_bulk_insert(batch)
+
+
+def _ensure_telemetry_thread() -> None:
+    """Lazily start the single daemon drain thread on first enqueue.
+
+    Lazy (rather than at import) so importing this module has zero side
+    effects — tests that never emit telemetry never spawn a thread.
+    """
+    global _telemetry_thread
+    if _telemetry_thread is not None and _telemetry_thread.is_alive():
+        return
+    with _telemetry_thread_lock:
+        if _telemetry_thread is not None and _telemetry_thread.is_alive():
+            return
+        _telemetry_thread = threading.Thread(
+            target=_telemetry_drain_loop,
+            name="agent-call-log-telemetry",
+            daemon=True,
+        )
+        _telemetry_thread.start()
+
+
+def _drain_telemetry_on_exit() -> None:
+    """atexit hook: flush any rows still buffered at shutdown (bounded work)."""
+    rows: list[dict] = []
+    while len(rows) < _TELEMETRY_QUEUE_MAXSIZE:
+        try:
+            rows.append(_telemetry_queue.get_nowait())
+        except queue.Empty:
+            break
+    if rows:
+        # Insert in batches to keep any single round-trip reasonable.
+        for i in range(0, len(rows), _TELEMETRY_BATCH_SIZE):
+            _telemetry_bulk_insert(rows[i:i + _TELEMETRY_BATCH_SIZE])
+
+
+atexit.register(_drain_telemetry_on_exit)
+
+
+def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
+    """
+    Non-blocking telemetry: build the agent_call_log row and enqueue it for a
+    background daemon thread to bulk-insert. Best-effort — never raises, never
+    blocks ask() on a DB round-trip. On a full buffer we drop the row and warn
+    rather than apply backpressure to the live request.
+
+    The row shape + derivation below is IDENTICAL to the previous synchronous
+    writer; only WHERE the insert happens changed (queue → drain thread →
+    _telemetry_bulk_insert) per P3-5.
+
+    2026-05-12 (Bug #7 fix): agent_call_log gained user_id NOT NULL in the
+    multi-tenancy migration 001, but this writer was never updated. Every
+    INSERT silently failed with code 23502 because we wrapped the call in
+    a `try/except: pass`. Net result: 24 hours of production LLM calls
+    with ZERO rows in agent_call_log, breaking every /costs/* endpoint
+    (cost dashboard returned empty).
+
+    Same archetype as the 5 other user_id-NOT-NULL writers fixed earlier
+    today (rizwan_profile, jobs, companies, resume_builds, applications).
+
+    2026-05-12 (BUG-024): also derive `graph` and `node_name` from
+    agent_name so cost attribution by graph works again (was 100% NULL).
+    """
+    global _telemetry_dropped
+    try:
         from datetime import datetime, timezone
-        get_supabase().table("agent_call_log").insert({
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
+        graph, node_name = _derive_graph_and_node(agent_name)
+        # B-OR1: For OpenRouter calls, extract the actual native provider from
+        # the response extras (when available) for accurate cost attribution.
+        actual_provider = None
+        if result.provider == "openrouter":
+            raw = getattr(result, "raw", None)
+            if raw:
+                # OpenRouter returns the actual provider in model_extra.provider
+                # or in the response metadata. Best-effort extraction.
+                actual_provider = (
+                    getattr(raw, "provider", None)
+                    or (raw.model_extra or {}).get("provider")
+                    if hasattr(raw, "model_extra")
+                    else None
+                )
+                # If we still don't know, infer from the model name prefix.
+                if not actual_provider and "/" in result.model:
+                    actual_provider = result.model.split("/", 1)[0]
+        row = {
             "agent_name": agent_name,
+            "graph": graph,
+            "node_name": node_name,
             "provider": result.provider,
+            "actual_provider": actual_provider,
             "model": result.model,
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
             "cost_usd": result.cost_usd,
             "latency_ms": result.latency_ms,
             "called_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
-    except Exception:
-        # Table may not exist yet, or DB unreachable — telemetry is best-effort.
-        pass
+            "user_id": user_id,
+        }
+    except Exception as e:
+        # Row construction should never fail, but if it does, telemetry is
+        # best-effort — log and move on rather than break the LLM call.
+        logger.debug(f"agent_call_log row build failed (non-fatal): {type(e).__name__}: {e}")
+        return
+
+    _ensure_telemetry_thread()
+    try:
+        _telemetry_queue.put_nowait(row)
+    except queue.Full:
+        # Buffer saturated (DB likely unreachable). Drop the row — NEVER block
+        # or raise on the hot path. Warn once per 1000 drops to avoid log spam.
+        _telemetry_dropped += 1
+        if _telemetry_dropped % 1000 == 1:
+            logger.warning(
+                "agent_call_log telemetry buffer full — dropping rows "
+                "(%d dropped so far); DB likely unreachable",
+                _telemetry_dropped,
+            )
 
 
 # ─── JSON helper ──────────────────────────────────────────────────────────

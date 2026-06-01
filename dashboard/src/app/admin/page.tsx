@@ -18,8 +18,9 @@ export const metadata = {
 // CLAUDE.md). Replace with a real `getServerSession()` once auth ships.
 const ADMIN_ALLOWLIST: ReadonlyArray<string> = ['rizwanzaffar.pk@gmail.com']
 
-function getCurrentUserEmail(): string | null {
-  const fromCookie = cookies().get('user_email')?.value
+async function getCurrentUserEmail(): Promise<string | null> {
+  // Next 15: cookies() is async.
+  const fromCookie = (await cookies()).get('user_email')?.value
   if (fromCookie) return fromCookie
   // Local-dev convenience — matches CLAUDE.md's userEmail.
   if (process.env.NODE_ENV !== 'production') {
@@ -28,8 +29,8 @@ function getCurrentUserEmail(): string | null {
   return null
 }
 
-export default function AdminPage() {
-  const email = getCurrentUserEmail()
+export default async function AdminPage() {
+  const email = await getCurrentUserEmail()
   // TODO: surface a flash message via cookie or query param ('?flash=admin_only')
   // once we have a toast component. For now /today shows nothing extra.
   if (!email || !ADMIN_ALLOWLIST.includes(email)) {

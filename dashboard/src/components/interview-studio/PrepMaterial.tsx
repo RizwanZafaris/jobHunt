@@ -105,6 +105,29 @@ function asString(value: unknown, ...keys: string[]): string {
   return ''
 }
 
+/**
+ * BUG-035: download the prep pack as .md.
+ *
+ * Prefers the Supabase Storage URL when present. When the upload failed
+ * (prep_pack_url is null) but G3 still has prep_pack_md, fabricate a
+ * client-side Blob URL on the fly so the user can always download the
+ * pack — mirrors PR #88's fix for the same archetype in InterviewPrepTab.
+ */
+function downloadPrepPackMd(prep: InterviewPrep): void {
+  if (prep.prep_pack_url) {
+    window.location.href = prep.prep_pack_url
+    return
+  }
+  if (!prep.prep_pack_md) return
+  const blob = new Blob([prep.prep_pack_md], { type: 'text/markdown' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `interview-prep-${prep.id ?? 'pack'}.md`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function PrepMaterial({
   prep,
   conceptLevel,
@@ -140,15 +163,18 @@ export default function PrepMaterial({
               {String(prep.round_type)} round #{prep.round_number ?? 1}
             </Pill>
           )}
-          {prep.prep_pack_url && (
-            <a
-              href={prep.prep_pack_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-2xs underline hover:text-fg ml-auto"
+          {/* BUG-035 (mirrors PR #88 BUG-034 in InterviewPrepTab): when the
+              Storage upload fails (prep_pack_url is null) but G3 still
+              rendered prep_pack_md, build a client-side Blob URL on the
+              fly so the user can always download the .md content. */}
+          {(prep.prep_pack_url || prep.prep_pack_md) && (
+            <button
+              type="button"
+              onClick={() => downloadPrepPackMd(prep)}
+              className="text-2xs underline hover:text-fg ml-auto focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
             >
               Download .md
-            </a>
+            </button>
           )}
         </div>
       </Card>

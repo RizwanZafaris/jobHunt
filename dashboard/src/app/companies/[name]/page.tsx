@@ -1,11 +1,12 @@
 import Link from 'next/link'
 import { fetchCompanyKnowledge } from '@/lib/profile-api'
 import CompanyResearchButton from '@/components/CompanyResearchButton'
+import DeepResearchPersonaButton from '@/components/DeepResearchPersonaButton'
 import { AppShell } from '@/components/layout/AppShell'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { Pill } from '@/components/ui/Pill'
+import { Pill, PillTone } from '@/components/ui/Pill'
 import { Icon, IconName } from '@/components/ui/Icon'
 
 export const dynamic = 'force-dynamic'
@@ -47,9 +48,34 @@ interface CompanyData {
     last_scanned_at?: string | null
   } | null
   knowledge?: Array<{ section: string; content: string; source_url: string | null }>
+  /** BUG-011: persona-row freshness timestamp for stale-data flagging. */
+  last_synthesized_at?: string | null
 }
 
-export default async function CompanyDetailPage({ params }: { params: { name: string } }) {
+// BUG-011: relative-time formatter for the per-card freshness pill. SSR-safe
+// (renders an absolute date if the timestamp is missing / unparsable).
+function freshnessLabel(iso: string | null | undefined): {
+  label: string
+  ageDays: number
+  tone: PillTone
+} | null {
+  if (!iso) return null
+  const ts = Date.parse(iso)
+  if (Number.isNaN(ts)) return null
+  const ageMs = Date.now() - ts
+  const ageDays = Math.max(0, Math.floor(ageMs / 86_400_000))
+  let label: string
+  if (ageDays === 0) label = 'updated today'
+  else if (ageDays === 1) label = 'updated yesterday'
+  else if (ageDays < 7) label = `${ageDays} days ago`
+  else if (ageDays < 30) label = `${Math.floor(ageDays / 7)}w ago`
+  else label = `stale — ${ageDays} days old`
+  const tone: PillTone = ageDays >= 30 ? 'warning' : ageDays >= 7 ? 'info' : 'success'
+  return { label, ageDays, tone }
+}
+
+export default async function CompanyDetailPage(props: { params: Promise<{ name: string }> }) {
+  const params = await props.params;
   const name = decodeURIComponent(params.name)
   let data: CompanyData | undefined
   let error: string | null = null
@@ -65,6 +91,11 @@ export default async function CompanyDetailPage({ params }: { params: { name: st
   for (const k of knowledge) knowledgeBySection[k.section] = k
 
   const priorityTone = company?.priority === 'high' ? 'success' : company?.priority === 'medium' ? 'info' : 'neutral'
+
+  // BUG-011: persona-row freshness powers the per-card "X days ago" pill plus
+  // an inline "Refresh" CTA when the data is older than 30 days.
+  const freshness = freshnessLabel(data?.last_synthesized_at)
+  const isStale = !!(freshness && freshness.ageDays >= 30)
 
   return (
     <AppShell>
@@ -88,6 +119,16 @@ export default async function CompanyDetailPage({ params }: { params: { name: st
             <Pill tone={priorityTone as 'success' | 'info' | 'neutral'}>
               {company.priority} priority
             </Pill>
+          )}
+          {/* BUG-011: research-freshness pill, with HITL Refresh CTA if stale. */}
+          {freshness && (
+            <Pill tone={freshness.tone} title={`Persona last synthesized: ${new Date(data!.last_synthesized_at!).toUTCString()}`}>
+              <Icon name="refresh" size={10} />
+              Research {freshness.label}
+            </Pill>
+          )}
+          {isStale && (
+            <DeepResearchPersonaButton companyName={name} size="xs" label="Refresh" />
           )}
           {company.careers_url && (
             <a
@@ -134,7 +175,15 @@ export default async function CompanyDetailPage({ params }: { params: { name: st
               {RECRUITMENT_SECTIONS.map((s) => {
                 const k = knowledgeBySection[s]
                 if (!k) return null
-                return <KnowledgeCard key={s} section={s} content={k.content} sourceUrl={k.source_url} />
+                return (
+                  <KnowledgeCard
+                    key={s}
+                    section={s}
+                    content={k.content}
+                    sourceUrl={k.source_url}
+                    freshness={freshness}
+                  />
+                )
               })}
             </div>
           </section>
@@ -151,7 +200,15 @@ export default async function CompanyDetailPage({ params }: { params: { name: st
                 .map((s) => {
                   const k = knowledgeBySection[s]
                   if (!k) return null
-                  return <KnowledgeCard key={s} section={s} content={k.content} sourceUrl={k.source_url} />
+                  return (
+                    <KnowledgeCard
+                      key={s}
+                      section={s}
+                      content={k.content}
+                      sourceUrl={k.source_url}
+                      freshness={freshness}
+                    />
+                  )
                 })}
             </div>
           </section>
@@ -165,10 +222,12 @@ function KnowledgeCard({
   section,
   content,
   sourceUrl,
+  freshness,
 }: {
   section: string
   content: string
   sourceUrl: string | null
+  freshness: { label: string; ageDays: number; tone: PillTone } | null
 }) {
   const meta = SECTION_META[section] || { label: section, icon: 'document' as IconName }
   return (
@@ -177,6 +236,13 @@ function KnowledgeCard({
         <span className="flex items-center gap-2">
           <Icon name={meta.icon} size={14} className="text-fg-muted" />
           {meta.label}
+          {/* BUG-011: per-card freshness so users can read each section without
+              scrolling back to the header to check when it was last researched. */}
+          {freshness && (
+            <Pill tone={freshness.tone} size="xs">
+              {freshness.label}
+            </Pill>
+          )}
         </span>
       }
       actions={

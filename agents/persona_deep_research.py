@@ -42,10 +42,19 @@ from typing import Any, Optional
 
 import httpx
 
+from agents.concurrency import gather_bounded
 from agents.llm_router import get_router, _parse_json_loose
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Concurrency caps for the two per-item fan-outs in this module
+# (SCALABILITY.md P1 — bound unbounded asyncio.gather fan-outs).
+# Apify rag-web-browser is an external paid HTTP API; keep it modest.
+RESEARCH_QUERY_CONCURRENCY = 4
+# Embedding calls hit the LLM embeddings endpoint, one per knowledge
+# section (<= 13). Cap so a wide persona doesn't fire 13 at once.
+EMBED_CONCURRENCY = 5
 
 
 # ─── 13 company_knowledge sections (must match agents/company_agent.py) ──
@@ -188,8 +197,14 @@ async def gather_research(
 
     if queries is None:
         queries = build_queries(company)
-    tasks = [_fetch_apify(token, q[1], max_results=max_per_query) for q in queries]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Bounded fan-out: cap concurrent Apify HTTP calls (was an unbounded
+    # gather firing all ~8 queries at once). Order is preserved so the
+    # zip(queries, results) below stays aligned.
+    results = await gather_bounded(
+        [lambda q=q: _fetch_apify(token, q[1], max_results=max_per_query) for q in queries],
+        limit=RESEARCH_QUERY_CONCURRENCY,
+        return_exceptions=True,
+    )
 
     sources: list[ResearchSource] = []
     for (label, _query), res in zip(queries, results):
@@ -201,8 +216,8 @@ async def gather_research(
                 continue
             sources.append(ResearchSource(
                 query=label,
-                url=item.get("metadata.url") or item.get("searchResult.url") or "",
-                title=item.get("metadata.title") or item.get("searchResult.title") or "",
+                url=(item.get("metadata") or {}).get("url") or (item.get("searchResult") or {}).get("url") or "",
+                title=(item.get("metadata") or {}).get("title") or (item.get("searchResult") or {}).get("title") or "",
                 content=_truncate_md(md),
             ))
     return sources
@@ -463,7 +478,27 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
             logger.warning(f"embed failed (len={len(text)}): {type(e).__name__}: {str(e)[:200]}")
             return None
 
-    vectors = await asyncio.gather(*[_safe_embed(c) for _, c in cleaned])
+    # Bounded fan-out: cap concurrent embedding calls (was an unbounded
+    # gather firing one per section, up to 13). _safe_embed swallows its
+    # own errors (returns None), so no return_exceptions needed. Order is
+    # preserved to stay aligned with `cleaned`.
+    vectors = await gather_bounded(
+        [lambda c=c: _safe_embed(c) for _, c in cleaned],
+        limit=EMBED_CONCURRENCY,
+    )
+
+    # DB-1 (2026-05-29): company_knowledge uniqueness is now composite
+    # (user_id, company_name, section). The conflict target below must
+    # include user_id AND every row must carry it — switching the arbiter
+    # without writing user_id would turn a silent cross-tenant clobber into a
+    # hard 23502 on first insert. No user context here (deep-research runs
+    # from cron / on-demand), so fall back to the seed-user UUID via env
+    # override, mirroring db.client.upsert_company_knowledge.
+    import os
+    user_id = os.environ.get(
+        "RIZWAN_USER_ID",
+        "00000000-0000-0000-0000-000000000001",
+    )
 
     # Build rows; embedding may be None for a few but content still goes in
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -475,6 +510,7 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
             "content": content,
             "scraped_at": now_iso,
             "metadata": {"source": "deep_research"},
+            "user_id": user_id,
         }
         if vec is not None:
             row["embedding"] = vec
@@ -486,7 +522,7 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
     try:
         result = (
             db.table("company_knowledge")
-            .upsert(payload, on_conflict="company_name,section")
+            .upsert(payload, on_conflict="user_id,company_name,section")
             .execute()
         )
         n = len(result.data or [])
@@ -503,7 +539,7 @@ async def _upsert_knowledge(company: str, sections: dict[str, str]) -> int:
     for row in payload:
         try:
             db.table("company_knowledge").upsert(
-                row, on_conflict="company_name,section"
+                row, on_conflict="user_id,company_name,section"
             ).execute()
             written += 1
         except Exception as e:
@@ -579,6 +615,20 @@ def _upsert_persona(
         logger.warning(f"_upsert_persona: get_supabase failed: {e}")
         return {}
 
+    # DB-1 (2026-05-29): company_personas uniqueness is now composite
+    # (user_id, company_name). This writer uses an explicit lookup→update/
+    # insert (not on_conflict), so make it tenant-correct directly: scope the
+    # existing-row lookup by user_id (else tenant B's deep research could
+    # match — and then UPDATE — tenant A's persona row), and stamp user_id on
+    # the payload so the INSERT branch satisfies the NOT NULL user_id column.
+    # No user context here (cron/on-demand), so fall back to the seed-user
+    # UUID via env override, mirroring db.client.upsert_company.
+    import os
+    user_id = os.environ.get(
+        "RIZWAN_USER_ID",
+        "00000000-0000-0000-0000-000000000001",
+    )
+
     # system_prompt is NOT NULL on the table — fall back to a stub if
     # the LLM somehow returned empty so the upsert doesn't fail
     if not system_prompt or not system_prompt.strip():
@@ -593,6 +643,7 @@ def _upsert_persona(
             db.table("company_personas")
             .select("id, persona_version")
             .eq("company_name", company)
+            .eq("user_id", user_id)
             .limit(1)
             .execute()
             .data or []
@@ -610,6 +661,7 @@ def _upsert_persona(
     }
     payload = {
         "company_name": company,
+        "user_id": user_id,
         "system_prompt_template": system_prompt,
         "ats_keyword_bank": ats_keyword_bank or {},
         "success_patterns": success_patterns or [],

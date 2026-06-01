@@ -30,6 +30,23 @@ from agents.llm_router import (
     get_router,
     infer_provider,
 )
+from agents.llm_fallback import ask_with_fallback
+from agents.llm_hardening import HardenedLLMRouter, HardenedLLMError
+
+# Process-wide singleton — same pattern as get_router(). Wraps the raw
+# router with circuit breaker + retry + per-call timeout. 2026-05-27 P0
+# audit found 35 of 40 agents were calling the raw router directly,
+# bypassing all resilience guarantees. By exposing self.hardened (next
+# to the existing self.router shim) every subclass picks up protection
+# automatically.
+_HARDENED_ROUTER_SINGLETON: Optional[HardenedLLMRouter] = None
+
+
+def get_hardened_router_singleton() -> HardenedLLMRouter:
+    global _HARDENED_ROUTER_SINGLETON
+    if _HARDENED_ROUTER_SINGLETON is None:
+        _HARDENED_ROUTER_SINGLETON = HardenedLLMRouter(router=get_router())
+    return _HARDENED_ROUTER_SINGLETON
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -57,8 +74,26 @@ class BaseAgent(ABC):
     # ─── Router-based primary API ──────────────────────────────────────
     @property
     def router(self) -> LLMRouter:
-        """Process-wide singleton multi-provider router."""
+        """Process-wide singleton multi-provider router (raw).
+
+        Most callers should NOT use this directly — self.ask() / self.ask_json()
+        now route through the hardened router (circuit breaker + retry +
+        timeout). Kept exposed for tests and for agents that explicitly
+        opt-out via disable_hardening=True.
+        """
         return get_router()
+
+    @property
+    def hardened(self) -> HardenedLLMRouter:
+        """Process-wide hardened router: circuit breaker + retry + timeout.
+
+        Use directly for advanced flows (ask_with_fallback, ask_auto,
+        ask_json_with_fallback). For routine LLM calls BaseAgent.ask()
+        already routes through here.
+
+        Added 2026-05-27 (P0 audit) — see /Volumes/T7 Shield/JobHunt/AI_SYSTEM_AUDIT.md.
+        """
+        return get_hardened_router_singleton()
 
     async def ask(
         self,
@@ -69,6 +104,10 @@ class BaseAgent(ABC):
         tools: Optional[list] = None,
         provider: Optional[Provider] = None,
         model: Optional[str] = None,
+        disable_fallback: bool = False,
+        disable_hardening: bool = False,
+        max_retries: int = 2,
+        call_timeout: float = 180.0,
         **kwargs: Any,
     ) -> LLMResult:
         """
@@ -76,17 +115,79 @@ class BaseAgent(ABC):
         Defaults to (self.provider, self.model). Override per-call when
         you want to send THIS request to a different model than the agent's
         default (e.g. ensemble critic running on R1 + K2 from one node).
+
+        2026-05-26: wraps router.ask() with OpenRouter auto-fallback when
+        OPENROUTER_API_KEY is set. On retriable provider failure (rate
+        limit, overload, transient 5xx, timeout), the same logical request
+        is retried through OpenRouter. Set disable_fallback=True to opt
+        out (e.g. tests that want to surface raw provider errors).
+
+        2026-05-27 P0 audit: now routes through HardenedLLMRouter by
+        default — adds circuit breaker (3 consecutive failures → 5 min
+        cooldown), bounded retry (2 attempts), and per-call timeout (180s).
+        Set disable_hardening=True to opt out (e.g. tests asserting raw
+        provider behavior).
         """
-        return await self.router.ask(
-            provider=provider or self.provider,
-            model=model or self.model,
-            system=system,
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            tools=tools,
-            agent_name=self.name,
-            **kwargs,
+        if disable_fallback and disable_hardening:
+            # Raw path — exactly what 2026-05-26 used to do.
+            return await self.router.ask(
+                provider=provider or self.provider,
+                model=model or self.model,
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                agent_name=self.name,
+                **kwargs,
+            )
+        if disable_hardening:
+            # OpenRouter fallback only, no circuit breaker / timeout / retry.
+            return await ask_with_fallback(
+                provider=provider or self.provider,
+                model=model or self.model,
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                agent_name=self.name,
+                router=self.router,
+                **kwargs,
+            )
+        # Default: hardened path (circuit breaker + retry + timeout).
+        # Falls through to ask_with_fallback on HardenedLLMError so the
+        # OpenRouter rail still kicks in when the circuit is open.
+        try:
+            return await self.hardened.ask_safe(
+                provider=provider or self.provider,
+                model=model or self.model,
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                agent_name=self.name,
+                max_retries=max_retries,
+                call_timeout=call_timeout,
+                **kwargs,
+            )
+        except HardenedLLMError:
+            logger.warning(
+                "[%s] hardened router exhausted — falling through to OpenRouter rail",
+                self.name,
+            )
+            return await ask_with_fallback(
+                provider=provider or self.provider,
+                model=model or self.model,
+                system=system,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                tools=tools,
+                agent_name=self.name,
+                router=self.router,
+                **kwargs,
         )
 
     async def ask_json(

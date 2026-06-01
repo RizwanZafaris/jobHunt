@@ -27,6 +27,7 @@ import time
 from typing import Any
 
 from agents.llm_router import get_router, _parse_json_loose
+from agents.llm_hardening import get_hardened_router  # B-OR3: fallback resilience
 from config.settings import get_settings
 from resume_agents.g2_state import ResumeState, make_turn, truncate
 
@@ -340,6 +341,86 @@ based on common pitfalls — don't fabricate company-specific patterns from
 no data."""
 
 
+# Audit §5.4 — meta-critic transcript trim.
+#
+# The previous behaviour json.dumps()'d up to 50,000 chars of raw past-
+# transcripts into Gemini's context every iteration. That blob contained
+# full input_summary + output payloads for every turn of every prior build —
+# huge surface, mostly irrelevant for the question this node actually asks
+# ("have past builds for THIS company shown recurring failure patterns?").
+#
+# We now summarise each past build into compact (iteration, node, model,
+# score) tuples plus high-signal fields (polisher_score, n_fabrications,
+# top critic specific_fixes). Capped to the last 3 builds (was effectively
+# bounded by settings.g2_meta_critic_lookback=5). Raw transcripts remain
+# queryable via load_past_transcripts for one-off offline analysis; the
+# meta-critic LLM call itself simply doesn't need all of them.
+_META_CRITIC_HISTORY_CAP = 3
+_META_CRITIC_FIX_PREVIEW = 4          # specific_fixes per turn to forward
+
+
+def _summarize_past_transcript(build: dict) -> dict:
+    """Compress one resume_builds row into a meta-critic-friendly digest.
+
+    Input:  {"source": "resume_builds", "agent_transcript": [...turns...],
+             "polisher_score": int, "finalized_at": str}
+            OR a fallback agent_conversations row (cold-start shape).
+    Output: small dict with `turns: [{i, n, m, s, fix, fab}, ...]` plus
+            top-level polisher_score / finalized_at hints. Keys are short
+            because the digest goes verbatim into the LLM prompt.
+    """
+    source = build.get("source")
+    if source == "agent_conversations":
+        # Cold-start shape — flatten to a single conversational note.
+        return {
+            "source": "agent_conversations",
+            "speaker": build.get("speaker"),
+            "gap_identified": build.get("gap_identified"),
+            "gap_filled": build.get("gap_filled"),
+            "snippet": (build.get("message") or "")[:240],
+        }
+
+    turns = build.get("agent_transcript") or []
+    out_turns: list[dict] = []
+    for t in turns:
+        if not isinstance(t, dict):
+            continue
+        # Extract a score-ish signal where one exists. Different nodes
+        # surface it under different keys in their `output` dict.
+        out = t.get("output") if isinstance(t.get("output"), dict) else {}
+        score = (
+            out.get("ats_score")
+            or out.get("merged_score")
+            or out.get("persona_alignment_score")
+            or out.get("persona_score")
+            or out.get("final_score")
+        )
+        # Forward a tiny sample of the actionable feedback — that's the
+        # field meta_critic actually mines for recurring failure patterns.
+        fixes = out.get("specific_fixes")
+        if isinstance(fixes, list):
+            fixes_preview = [str(f)[:140] for f in fixes[:_META_CRITIC_FIX_PREVIEW]]
+        else:
+            fixes_preview = None
+        fabrications = out.get("fabrications")
+        n_fabs = len(fabrications) if isinstance(fabrications, list) else None
+        out_turns.append({
+            "i": t.get("iteration"),
+            "n": t.get("node"),
+            "m": t.get("model"),
+            "s": score,
+            "fix": fixes_preview,
+            "fab": n_fabs,
+        })
+    return {
+        "source": "resume_builds",
+        "polisher_score": build.get("polisher_score"),
+        "finalized_at": str(build.get("finalized_at") or "")[:19],
+        "n_turns": len(turns),
+        "turns": out_turns,
+    }
+
+
 async def meta_critic_node(state: ResumeState) -> dict:
     settings = get_settings()
     past = state.get("past_transcripts", [])
@@ -361,10 +442,23 @@ async def meta_critic_node(state: ResumeState) -> dict:
             ],
         }
 
-    user = f"""COMPANY: {state['company_name']}
-PAST TRANSCRIPTS (most recent first):
+    # Audit §5.4 — compact summary instead of the 50K-char raw dump. Cap
+    # to the last 3 builds (was up to 5 via g2_meta_critic_lookback). Raw
+    # transcripts remain available via load_past_transcripts for one-off
+    # offline analysis; meta-critic itself doesn't need them.
+    trimmed = past[:_META_CRITIC_HISTORY_CAP]
+    summaries = [_summarize_past_transcript(b) for b in trimmed]
+    history_block = json.dumps(summaries, indent=2, default=str)
 
-{json.dumps(past, indent=2, default=str)[:50000]}
+    user = f"""COMPANY: {state['company_name']}
+PAST BUILD SUMMARIES (most recent first, capped to last {_META_CRITIC_HISTORY_CAP}):
+
+Each prior build is summarised as compact (iteration, node, model, score,
+top specific_fixes, n_fabrications) tuples — full transcript bodies are
+intentionally elided (irrelevant to recurring-pattern detection and add
+~$5-15/mo at current build cadence).
+
+{history_block}
 
 Produce a JSON array of recurring failure patterns to warn the Writer about.
 Output strict JSON: {{"warnings": ["warning 1", "warning 2", ...]}}
@@ -494,6 +588,102 @@ ANTI-AI-TELL DISCIPLINE (these are why recruiters spot AI-written resumes):
 Output ONLY the resume markdown. No preamble, no commentary."""
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Direct persona injection helper (2026-05-12)
+#
+# The persona's ATS keyword bank + success/failure bullet shapes were
+# previously only reachable by the writer through `insider_expert_notes`
+# (two LLM hops: persona → insider_expert → writer). Even with the
+# persona_critic gate on the back end, the writer kept producing
+# non-persona-aligned bullets because the signal arrived diluted by an
+# intervening summarisation.
+#
+# This helper builds a short, structured persona block that gets spliced
+# DIRECTLY into the writer's user message — between the master CV
+# (source of truth, first) and the JD (shape signal, last). The writer
+# now anchors on:
+#   1) facts from master CV
+#   2) idiom from persona (this block)
+#   3) shape from JD
+# in that order.
+#
+# Returns "" when the persona is missing/empty so the f-string substitution
+# is a no-op on cold-start builds (no template errors).
+# ─────────────────────────────────────────────────────────────────────────
+def _build_writer_persona_block(persona: dict | None) -> str:
+    """Render the persona's ATS keyword bank + bullet-shape patterns as a
+    structured block the writer can anchor on directly.
+
+    Caps:
+      - banned / required / boost lists: 20 each (sanity guard)
+      - success / failure patterns:       6 each
+    Returns "" when there is nothing useful to inject — caller can safely
+    splice the return value into an f-string without conditional logic.
+    """
+    if not persona or not isinstance(persona, dict):
+        return ""
+
+    ats_bank = persona.get("ats_keyword_bank") or {}
+    if not isinstance(ats_bank, dict):
+        ats_bank = {}
+
+    def _clean_list(raw: Any, cap: int) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        out: list[str] = []
+        for item in raw:
+            if isinstance(item, str) and item.strip():
+                out.append(item.strip())
+            if len(out) >= cap:
+                break
+        return out
+
+    banned = _clean_list(ats_bank.get("banned"), 20)
+    required = _clean_list(ats_bank.get("required"), 20)
+    boost = _clean_list(ats_bank.get("boost"), 20)
+    success_patterns = _clean_list(persona.get("success_patterns"), 6)
+    failure_patterns = _clean_list(persona.get("failure_patterns"), 6)
+
+    # If literally none of the persona's keyword signals are populated,
+    # skip the whole block — no point in printing empty headers.
+    if not (banned or required or boost or success_patterns or failure_patterns):
+        return ""
+
+    lines: list[str] = [
+        "",
+        "────────────────────────────────────────────────────────────────────────",
+        "COMPANY PERSONA — ATS KEYWORD BANK (THIS COMPANY'S RECRUITER VOCABULARY):",
+        "────────────────────────────────────────────────────────────────────────",
+    ]
+    if banned:
+        lines.append(f"  banned:   {', '.join(banned)}")
+    if required:
+        lines.append(f"  required: {', '.join(required)}")
+    if boost:
+        lines.append(f"  boost:    {', '.join(boost)}")
+
+    if success_patterns:
+        lines.append("")
+        lines.append(
+            "SUCCESS-PATTERN BULLET SHAPES (mimic these in YOUR bullets where the"
+        )
+        lines.append("candidate's evidence supports the underlying claim):")
+        for p in success_patterns:
+            lines.append(f"  - {p}")
+
+    if failure_patterns:
+        lines.append("")
+        lines.append(
+            "FAILURE-PATTERN BULLET SHAPES (NEVER write a bullet that looks like this —"
+        )
+        lines.append("the company's recruiters skim past it in the 6-second triage):")
+        for p in failure_patterns:
+            lines.append(f"  - {p}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
 async def writer_node(state: ResumeState) -> dict:
     settings = get_settings()
     iteration = state.get("iteration", 0)
@@ -533,10 +723,19 @@ async def writer_node(state: ResumeState) -> dict:
     # (UK phone fabricated, location swapped to match JD geo, employer
     # office cities changed, citizenship invented). Putting the source of
     # truth FIRST gives the writer something concrete to start from.
+    #
+    # 2026-05-12 (audit §4.6): persona's banned/required/boost vocabulary
+    # and success/failure bullet shapes were only reaching the writer
+    # indirectly through `expert_notes` (two LLM hops). Splice a structured
+    # persona block DIRECTLY into the user message between master CV and
+    # JD. Writer anchor order is now: (1) facts from master CV,
+    # (2) idiom from persona, (3) shape from JD.
+    persona_block = _build_writer_persona_block(state.get("company_persona"))
+
     user = f"""CANDIDATE MASTER RESUME (source of truth — every fact in your
 output must trace back to this):
 {state['master_resume_md']}{warm_start_block}{intent_block}
-
+{persona_block}
 ────────────────────────────────────────────────────────────────────────
 TARGET JOB (use to decide WHICH parts of the CV to emphasise — NOT to
 invent facts that fit the JD better):
@@ -566,6 +765,17 @@ PREVIOUS DRAFT (if revising):
 Write the resume now. Apply IDENTITY LOCK and FACT INTEGRITY from the
 system prompt. Output ONLY markdown.
 """
+
+    # 2026-05-12 (G11 Tier 4): prepend the user's voice profile block to the
+    # user message so generated bullets sound like the user, not generic
+    # Sonnet. The block lives on profile_master.voice_calibration and is
+    # populated by the G11 graph after the user uploads 5+ writing samples.
+    # No-op (returns user unchanged) on cold-start — writers fall back to
+    # generic style. We prepend to the USER message (not system) so the
+    # large WRITER_SYSTEM prompt cache stays warm across users.
+    from agents.voice_injector import prepend_voice_block
+    user = prepend_voice_block(user, user_id=state.get("user_id"))
+
     result = await get_router().ask(
         provider="anthropic",
         model=settings.g2_writer_model,
@@ -866,13 +1076,31 @@ exhaustively. Return strict JSON only.
     )
     max_tokens_budget = 8000 if is_reasoning_model else 2000
 
+    # B-OR3: Build provider-specific fallback chain. Each critic has a
+    # primary native provider + OpenRouter fallback with the same model.
+    # OR fallback only triggers when the native key is exhausted or the
+    # provider is unhealthy (circuit breaker open).
+    _or_fallbacks = {
+        "deepseek": ("openrouter", "deepseek/deepseek-reasoner"),
+        "moonshot": ("openrouter", "moonshot/kimi-k2.5"),
+        "anthropic": ("openrouter", "anthropic/claude-opus-4-5"),
+        "openai": ("openrouter", "openai/gpt-4.1"),
+        "google": ("openrouter", "google/gemini-2.5-pro"),
+    }
+    fallback_chain = [_or_fallbacks[provider]] if provider in _or_fallbacks else []
+
     async def _attempt_call(retry: bool) -> tuple[dict, float, int, str, str] | None:
         """Returns (parsed, cost, latency, model_used, raw_text) on parse success,
         or None to signal the caller should retry with a larger budget."""
         try:
-            result = await get_router().ask(
-                provider=provider,
-                model=model,
+            # B-OR3: Use hardened router with fallback. ask_with_fallback
+            # handles retry + circuit breaker per provider, then falls back
+            # to OR if the native provider is failing.
+            hrouter = get_hardened_router()
+            result = await hrouter.ask_with_fallback(
+                primary_provider=provider,
+                primary_model=model,
+                fallback_chain=fallback_chain,
                 system=ATS_CRITIC_SYSTEM,
                 messages=[{"role": "user", "content": user}],
                 max_tokens=max_tokens_budget * (2 if retry else 1),
@@ -956,7 +1184,102 @@ async def ats_critic_a_node(state: ResumeState) -> dict:
     }
 
 
+# Audit §5.3 — adaptive ATS critic ensemble.
+# Critic B (Kimi K2) costs ~$0.05/iter. Empirically, once critic A
+# (DeepSeek-R1) has returned a high score with no fabrications, B's
+# marginal value drops to ~zero — wasted spend. We skip B when the
+# prior iteration's A signal indicates the draft is already in shape.
+# On iter 0 we still run both to establish a baseline.
+#
+# We read A's score from state, which (because of LangGraph's parallel
+# fan-out from writer → a + b + persona) is the value populated by
+# the PREVIOUS iteration's critic_a. That's the right proxy here —
+# writer was given that critique as input and tightened the draft
+# against it, so this iteration's A is overwhelmingly likely to land
+# at the same score band. When the proxy is wrong (rare regression),
+# the next loop re-engages B because merge → orchestrator routes
+# back to writer with fresh state.
+_ATS_CRITIC_B_SKIP_SCORE_FLOOR = 60
+
+
+def _should_skip_ats_critic_b(state: ResumeState) -> tuple[bool, str]:
+    """Decide whether ats_critic_b can be skipped this turn.
+
+    Returns (skip, reason). The reason is a short tag the transcript
+    records so the cost-savings decision is auditable per build.
+
+    Skip when ALL hold:
+      - iteration > 0                          (baseline iter always runs both)
+      - critic_a from prev iter is present     (we need a signal to defer to)
+      - critic_a has no _provider_error / _parse_error
+      - critic_a.ats_score >= floor (60)
+      - critic_a.fabrications is empty
+    """
+    iteration = state.get("iteration", 0) or 0
+    if iteration <= 0:
+        return False, "iter0_baseline"
+
+    critic_a = state.get("critic_a") or {}
+    if not critic_a:
+        return False, "no_prior_critic_a"
+
+    if critic_a.get("_provider_error") or critic_a.get("_parse_error"):
+        return False, "prior_critic_a_failed"
+
+    score_a = critic_a.get("ats_score") or 0
+    if score_a < _ATS_CRITIC_B_SKIP_SCORE_FLOOR:
+        return False, f"prior_score_a_below_floor:{score_a}"
+
+    fabrications = critic_a.get("fabrications") or []
+    if fabrications:
+        return False, f"prior_critic_a_flagged_fabrications:{len(fabrications)}"
+
+    return True, (
+        f"adaptive_skip:iter={iteration},prior_score_a={score_a},"
+        f"fabrications=0"
+    )
+
+
 async def ats_critic_b_node(state: ResumeState) -> dict:
+    """ATS Critic B (Kimi K2, ~$0.05/iter) — adaptive (audit §5.3).
+
+    On iter 1+ we early-return a sentinel
+    ``{"ats_score": 0, "_skipped_adaptive": True}`` when critic_a's
+    previous-iteration signal indicates the draft is already in shape.
+    merge_critique already treats ats_score=0 from a critic as "defer to
+    the other one" (see merge_critique_node — the ``score_a == 0`` /
+    ``score_b == 0`` branches), so the skip is safe: A's verdict carries
+    the merge. The skip decision is recorded in the transcript so the
+    cost-savings behaviour is observable per build.
+    """
+    iteration = state.get("iteration", 0) or 0
+    skip, reason = _should_skip_ats_critic_b(state)
+    if skip:
+        sentinel = {
+            "ats_score": 0,
+            "missing_keywords": [],
+            "specific_fixes": [],
+            "_skipped_adaptive": True,
+            "_skip_reason": reason,
+        }
+        return {
+            "critic_b": sentinel,
+            "transcript": [
+                make_turn(
+                    node="ats_critic_b",
+                    iteration=iteration,
+                    input_summary=f"adaptive skip ({reason})",
+                    output={
+                        "skipped": True,
+                        "reason": reason,
+                        "saved_usd_approx": 0.05,
+                    },
+                    cost_usd=0.0,
+                    latency_ms=0,
+                )
+            ],
+        }
+
     settings = get_settings()
     parsed, cost, latency, model, _raw = await _run_ats_critic(
         state,
@@ -971,7 +1294,7 @@ async def ats_critic_b_node(state: ResumeState) -> dict:
         "transcript": [
             make_turn(
                 node="ats_critic_b",
-                iteration=state.get("iteration", 0),
+                iteration=iteration,
                 provider="moonshot",
                 model=model,
                 output=parsed,
@@ -1780,36 +2103,40 @@ async def export_node(state: ResumeState) -> dict:
     else:
         status = "converged"
 
-    # ─── Render DOCX (via existing helper if present) ────────────────
+    # ─── Render DOCX + PDF and upload artifacts ──────────────────────
+    # 2026-05-31: switched from a pandoc subprocess (never installed in the
+    # API/worker images → always returned b"" → docx_url stayed None) to
+    # the pure-Python renderers in resume_agents/render.py (python-docx +
+    # reportlab, both already pinned). The canonical resume_md is persisted
+    # to the DB by finalize_resume_build regardless, and the download
+    # endpoint renders on-demand too — so these uploads are now a
+    # best-effort convenience, not the only path to a usable resume.
     docx_url = None
+    pdf_url = None
     md_url = None
     try:
         from db.client import upload_artifact
+        from resume_agents.render import markdown_to_docx_bytes, markdown_to_pdf_bytes
         import os, tempfile
 
-        # Markdown upload
+        slug = company_name.lower().replace(" ", "-")
+
+        # Markdown upload (legacy compatibility; resume_md DB column is canonical)
         with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8") as f:
             f.write(resume_md)
             md_path = f.name
         try:
             md_url = upload_artifact(
                 local_path=md_path,
-                remote_path=f"resumes/{company_name.lower().replace(' ', '-')}/{resume_build_id}.md",
+                remote_path=f"resumes/{slug}/{resume_build_id}.md",
                 content_type="text/markdown",
             )
         finally:
             if os.path.exists(md_path):
                 os.unlink(md_path)
 
-        # DOCX via pandoc — reuse the helper from pipeline.py if it lives there
-        try:
-            from pipeline import JobHuntPipeline
-            docx_bytes = JobHuntPipeline._md_to_docx_bytes(resume_md) if hasattr(
-                JobHuntPipeline, "_md_to_docx_bytes"
-            ) else _local_md_to_docx(resume_md)
-        except Exception:
-            docx_bytes = _local_md_to_docx(resume_md)
-
+        # DOCX via python-docx (no system deps)
+        docx_bytes = markdown_to_docx_bytes(resume_md)
         if docx_bytes:
             with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
                 f.write(docx_bytes)
@@ -1817,12 +2144,28 @@ async def export_node(state: ResumeState) -> dict:
             try:
                 docx_url = upload_artifact(
                     local_path=docx_path,
-                    remote_path=f"resumes/{company_name.lower().replace(' ', '-')}/{resume_build_id}.docx",
+                    remote_path=f"resumes/{slug}/{resume_build_id}.docx",
                     content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 )
             finally:
                 if os.path.exists(docx_path):
                     os.unlink(docx_path)
+
+        # PDF via reportlab (no system deps)
+        pdf_bytes = markdown_to_pdf_bytes(resume_md)
+        if pdf_bytes:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                f.write(pdf_bytes)
+                pdf_path = f.name
+            try:
+                pdf_url = upload_artifact(
+                    local_path=pdf_path,
+                    remote_path=f"resumes/{slug}/{resume_build_id}.pdf",
+                    content_type="application/pdf",
+                )
+            finally:
+                if os.path.exists(pdf_path):
+                    os.unlink(pdf_path)
     except Exception as e:
         logger.warning(f"G2 export upload failed: {e}")
 
@@ -1836,7 +2179,7 @@ async def export_node(state: ResumeState) -> dict:
         polisher_score=state.get("final_score"),
         resume_md=resume_md,
         resume_docx_url=docx_url,
-        resume_pdf_url=None,
+        resume_pdf_url=pdf_url,
         cover_email_md=cover_email_md,
         agent_transcript=state.get("transcript", []),
         cost_usd_total=state.get("cost_usd_total", 0),
@@ -1847,8 +2190,13 @@ async def export_node(state: ResumeState) -> dict:
     try:
         from db.client import get_supabase
         from datetime import datetime, timezone
+        # resume_path is consumed as TEXT (httpx .get(...).text) by the
+        # markdown + download endpoints, so it must point at the markdown
+        # object, not the DOCX. Prefer md_url; fall back to docx only if the
+        # md upload failed (the endpoints now read the resume_md DB column
+        # first anyway, so this is a tertiary safety net).
         get_supabase().table("jobs").update({
-            "resume_path": docx_url or md_url,
+            "resume_path": md_url or docx_url,
             "resume_generated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", job_id).execute()
     except Exception as e:
@@ -1856,6 +2204,7 @@ async def export_node(state: ResumeState) -> dict:
 
     return {
         "resume_docx_url": docx_url,
+        "resume_pdf_url": pdf_url,
         "transcript": [
             make_turn(
                 node="export",
@@ -1864,6 +2213,7 @@ async def export_node(state: ResumeState) -> dict:
                     "iterations": iteration,
                     "polisher_score": state.get("final_score"),
                     "docx_url": docx_url,
+                    "pdf_url": pdf_url,
                     "md_url": md_url,
                 },
             )
@@ -1871,23 +2221,7 @@ async def export_node(state: ResumeState) -> dict:
     }
 
 
-def _local_md_to_docx(md: str) -> bytes:
-    """Local pandoc fallback. Returns empty bytes if pandoc unavailable."""
-    import subprocess, tempfile, os
-    try:
-        with tempfile.NamedTemporaryFile(suffix=".md", delete=False, mode="w", encoding="utf-8") as f:
-            f.write(md)
-            md_path = f.name
-        docx_path = md_path.replace(".md", ".docx")
-        subprocess.run(
-            ["pandoc", md_path, "-o", docx_path],
-            check=True, capture_output=True, timeout=30,
-        )
-        with open(docx_path, "rb") as f:
-            data = f.read()
-        os.unlink(md_path)
-        os.unlink(docx_path)
-        return data
-    except Exception as e:
-        logger.warning(f"pandoc unavailable for DOCX render: {e}")
-        return b""
+# NOTE: the former `_local_md_to_docx` pandoc-subprocess helper was removed
+# 2026-05-31. pandoc was never installed in the API/worker images, so it
+# always raised and returned b"". DOCX/PDF rendering now lives in
+# resume_agents/render.py (pure-Python python-docx + reportlab).

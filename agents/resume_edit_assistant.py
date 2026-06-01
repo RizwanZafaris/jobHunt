@@ -67,7 +67,11 @@ logger = logging.getLogger(__name__)
 # ─── Constants ────────────────────────────────────────────────────────────
 # Defensive ceiling. A normal quick tweak on a 2-page resume is ~$0.04-0.06.
 QUICK_TWEAK_COST_CAP_USD = 0.10
-QUICK_TWEAK_MODEL = "claude-opus-4-7"
+# 2026-05-17: was "claude-opus-4-7" — that id 404s at the Anthropic API
+# (same bug PR #121 fixed in g4_linkedin_graph.py — the resume editor
+# was overlooked). Quick-tweak and rebuild-section were silently failing
+# every request. See agents/llm_router.PRICING_PER_1M for canonical id.
+QUICK_TWEAK_MODEL = "claude-opus-4-5-20251101"
 QUICK_TWEAK_MAX_TOKENS = 4096
 QUICK_TWEAK_TEMPERATURE = 0.2  # surgical, not creative
 
@@ -80,7 +84,7 @@ REBUILD_SECTION_TIMEOUT_S = 60
 # but critic + polish are JSON-classification and surgical-edit tasks where
 # Sonnet matches. Cuts rebuild_section cost from ~$0.60 ceiling to ~$0.25.
 # See docs/G3_G4_IMPROVEMENTS_2026_05_11.md §40.
-REBUILD_SECTION_WRITER_MODEL = "claude-opus-4-7"
+REBUILD_SECTION_WRITER_MODEL = "claude-opus-4-5-20251101"  # was "claude-opus-4-7" — 404s
 REBUILD_SECTION_CRITIC_MODEL = "claude-sonnet-4-6"
 REBUILD_SECTION_POLISH_MODEL = "claude-sonnet-4-6"
 

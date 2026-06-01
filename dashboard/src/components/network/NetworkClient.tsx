@@ -14,6 +14,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -22,15 +23,38 @@ import { Icon } from '@/components/ui/Icon'
 import { TextInput } from '@/components/ui/Field'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { IntroDraftModal } from '@/components/network/IntroDraftModal'
-import { LinkedInImportButton } from '@/components/network/LinkedInImportButton'
-import { MOCK_INTRO_DRAFT } from '@/lib/mock/network'
+import { PeopleFinderModal } from '@/components/network/PeopleFinderModal'
+import { submitDraftIntro } from '@/lib/api'
 import type {
-  ImportSummary,
   IntroDraft,
   Person,
   ReferralPath,
   TargetCoverage,
 } from '@/lib/types/network'
+
+// BUG-020: until /network/* endpoints are wired into api/server.py the
+// page renders the seeded mock fixture from dashboard/src/lib/mock/network.ts.
+// Showing those names with no disclaimer made the page look like it
+// reflected a real graph. We detect the seed by name overlap (cheap,
+// stable) and surface a warning pill near the warm-intros card so the
+// user knows what they're looking at.
+const SEED_FIXTURE_NAMES = new Set([
+  'Sarah Lin',
+  'Bob Patel',
+  'Alice Hwang',
+  'Raj Mehta',
+  'Imani Cole',
+  'José Ramírez',
+])
+
+function isDemoFixture(people: Person[]): boolean {
+  if (people.length === 0) return false
+  // Treat as demo if every loaded person is in the seed fixture set, OR
+  // if the total roster is suspiciously small (≤8) and contains seed
+  // names — real LinkedIn imports return hundreds of rows.
+  const seedHits = people.filter((p) => SEED_FIXTURE_NAMES.has(p.full_name)).length
+  return seedHits >= 3 && people.length <= 12
+}
 
 const KIND_LABEL: Record<string, string> = {
   me_first_degree: '1°',
@@ -49,17 +73,21 @@ export interface NetworkClientProps {
   people: Person[]
 }
 
-// TODO: replace with POST /network/draft-intro once that endpoint ships.
-// Today the mock returns after a 600ms delay so the loading state is visible.
-async function stubDraftIntro(_path: ReferralPath): Promise<IntroDraft> {
-  await new Promise((r) => setTimeout(r, 600))
-  return MOCK_INTRO_DRAFT
+// B9: real draft intro via POST /network/draft-intro
+async function draftIntroForPath(path: ReferralPath): Promise<IntroDraft> {
+  return submitDraftIntro({
+    target_company_id: path.target_company_id,
+    introducer_person_id: path.path[1].id,
+  })
 }
 
 export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps) {
+  const router = useRouter()
   const [search, setSearch] = useState('')
   const [activePath, setActivePath] = useState<ReferralPath | null>(null)
-  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null)
+  const [finderOpen, setFinderOpen] = useState(false)
+  // BUG-020 — disclaim that the loaded names are demo data.
+  const showDemoBanner = isDemoFixture(people)
 
   const filteredPeople = useMemo(() => {
     if (!search.trim()) return people
@@ -91,20 +119,11 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <LinkedInImportButton onSummary={setImportSummary} />
+          <Button variant="primary" size="md" onClick={() => setFinderOpen(true)}>
+            <Icon name="search" size={14} />
+            Find people
+          </Button>
         </div>
-        {importSummary && (
-          <p
-            role="status"
-            className="mt-3 text-2xs text-success"
-          >
-            Imported {importSummary.imported} contacts ·{' '}
-            {importSummary.edges_created} edges ·{' '}
-            {importSummary.employments_created} employments
-            {importSummary.skipped ? ` · skipped ${importSummary.skipped}` : ''}
-            {importSummary.errors.length > 0 ? ` · ${importSummary.errors.length} errors` : ''}
-          </p>
-        )}
       </Card>
 
       {/* Best warm intros */}
@@ -120,6 +139,11 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
             Top {topPaths.length} of {coverage.length} target companies
           </p>
         </header>
+        {showDemoBanner && (
+          <Pill tone="warning" size="xs">
+            Demo data — import LinkedIn CSV to replace
+          </Pill>
+        )}
         {topPaths.length === 0 ? (
           <EmptyState
             icon="users"
@@ -144,7 +168,7 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
             Target coverage
           </h2>
           <Link
-            href="/targets"
+            href="/companies"
             className="text-2xs font-medium text-fg-muted hover:text-fg underline-offset-2 hover:underline"
           >
             Manage targets
@@ -248,9 +272,16 @@ export function NetworkClient({ topPaths, coverage, people }: NetworkClientProps
       <IntroDraftModal
         open={activePath !== null}
         path={activePath}
-        draftIntro={stubDraftIntro}
+        draftIntro={draftIntroForPath}
         onClose={() => setActivePath(null)}
       />
+
+      {finderOpen && (
+        <PeopleFinderModal
+          onClose={() => setFinderOpen(false)}
+          onAdded={() => router.refresh()}
+        />
+      )}
     </>
   )
 }

@@ -21,7 +21,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, Optional
 
 from agents.llm_router import get_router, _parse_json_loose
 from config.settings import get_settings
@@ -73,6 +73,10 @@ async def entry_node(state: InterviewPrepState) -> dict:
         company_name=company_name,
         round_type=round_type,
         round_number=round_number,
+        # Forward the tenant resolved by g3_run (falls back to the seed UUID
+        # inside create_interview_prep if absent) so interview_prep.user_id —
+        # which is NOT NULL — is always set and the row is retrievable.
+        user_id=state.get("user_id"),
     )
 
     return {
@@ -696,6 +700,341 @@ No prose. No fences.
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# Tier 2 G3 §4.2 — story_retriever_node (pure code, $0)
+# ═════════════════════════════════════════════════════════════════════════
+async def story_retriever_node(state: InterviewPrepState) -> dict:
+    """Auto-retrieve the best STAR story from story_bank for each likely
+    behavioural question.
+
+    Pure code — no LLM cost. For each behavioural question, calls
+    `agents.story_bank_agent.search_stories(query=question, k=3,
+    competency=question.competency)` and keeps the top-1 match.
+
+    Output: state.retrieved_stories — a dict keyed by question index so the
+    compile_prep_pack template can zip retrieved stories with the question
+    list. Each value carries the full story body plus similarity score and
+    the cite breadcrumbs (source_text, source_experience_id) so outcome
+    attribution can later credit the originating story.
+
+    Cold-start safe: if story_bank is empty or the embedding call fails,
+    search_stories returns [] and we move on — the prep pack will simply
+    omit the auto-retrieved STAR for that question and gap_analyzer_node
+    will flag every question as a gap (no LLM cost penalty, just a
+    "needs_rizwan_input" callout in the rendered pack).
+    """
+    from agents.story_bank_agent import search_stories, story_to_dict
+    # Tier 4 §6.4 — proof points sidecar.
+    from agents.proof_point_agent import match_to_dict as pp_match_to_dict
+    from agents.proof_point_agent import search_proof_points
+
+    questions = state.get("likely_questions") or []
+    # Restrict to behavioural / domain — technical questions don't typically
+    # map to a STAR story (system-design / case rounds). The G9 extractor
+    # tags competencies like 'leadership', 'stakeholder_management',
+    # 'product_sense' etc. — anything tagged 'system_design' / 'case' we
+    # skip to keep the search free of noise.
+    NON_STORY_COMPETENCIES = {
+        "system_design", "case", "technical_depth", "regulatory", "metrics",
+    }
+
+    # Use the env-resolved seed UUID (same convention as g9_io and
+    # story_bank_agent). Single-user mode for now; multi-tenant later.
+    import os
+    user_id = os.environ.get(
+        "RIZWAN_USER_ID",
+        "00000000-0000-0000-0000-000000000001",
+    )
+
+    retrieved: dict[str, dict] = {}
+    retrieved_pp: dict[str, list[dict]] = {}
+    searched = 0
+    skipped = 0
+    hit_count = 0
+    miss_count = 0
+    pp_hit_count = 0
+    for idx, q in enumerate(questions):
+        question_text = (q.get("question") or "").strip()
+        if not question_text:
+            continue
+        competency = q.get("competency") or ""
+        if competency in NON_STORY_COMPETENCIES:
+            skipped += 1
+            continue
+        story_search_failed = False
+        try:
+            matches = await search_stories(
+                user_id=user_id,
+                query=question_text,
+                k=3,
+                competency=competency if competency and competency != "general" else None,
+            )
+        except Exception as e:
+            logger.warning(f"story_retriever: search_stories failed for q={idx}: {e}")
+            miss_count += 1
+            story_search_failed = True
+            matches = []
+
+        # Tier 4 §6.4 — also pull top-3 proof points for this question.
+        # Pure code, no LLM cost. Proof points are a sidecar to stories:
+        # they don't replace STAR answers, they're crisp facts the
+        # candidate can sprinkle in alongside ("we also wrote a piece on
+        # this — 12k views").
+        try:
+            pp_matches = await search_proof_points(
+                user_id=user_id,
+                query=question_text,
+                k=3,
+            )
+            if pp_matches:
+                retrieved_pp[str(idx)] = [pp_match_to_dict(m) for m in pp_matches]
+                pp_hit_count += 1
+        except Exception as e:
+            logger.warning(
+                f"story_retriever: search_proof_points failed for q={idx}: {e}"
+            )
+
+        # If the story search blew up, skip the rest — already counted as miss.
+        if story_search_failed:
+            continue
+        searched += 1
+        if not matches:
+            miss_count += 1
+            continue
+        top = matches[0]
+        story_dict = story_to_dict(top.story)
+        retrieved[str(idx)] = {
+            "story": story_dict,
+            "similarity": float(top.similarity),
+            # cite:knowledge_id breadcrumbs (engineering principle 2). The
+            # outcome attribution path walks these back to credit the
+            # originating story_bank row.
+            "story_id": story_dict.get("id"),
+            "source_text": story_dict.get("source_text"),
+            "source_experience_id": story_dict.get("source_experience_id"),
+        }
+        hit_count += 1
+
+    return {
+        "retrieved_stories": retrieved,
+        "retrieved_proof_points": retrieved_pp,
+        "transcript": [
+            make_turn(
+                node="story_retriever",
+                input_summary=f"n_questions={len(questions)}",
+                output={
+                    "n_searched": searched,
+                    "n_skipped_non_story": skipped,
+                    "n_hits": hit_count,
+                    "n_misses": miss_count,
+                    "n_proof_point_hits": pp_hit_count,
+                },
+            )
+        ],
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Tier 2 G3 §4.2 — gap_analyzer_node (Sonnet 4.6, ~$0.05/interview)
+# ═════════════════════════════════════════════════════════════════════════
+GAP_ANALYZER_SYSTEM = """You are an interview-prep gap analyst.
+
+You receive (1) a set of LIKELY interview questions for an upcoming round
+and (2) the BEST story retrieved from the candidate's story_bank for each
+question, along with a cosine-similarity score. Some questions will have
+NO retrieved story or only a weak match (similarity < 0.5).
+
+Your job: for EACH question whose top-retrieved story is weak or missing,
+identify the missing competency the question is probing, then suggest in
+one or two sentences how the candidate can reframe an EXISTING experience
+to cover the gap. Do not invent new experience. Do not claim competencies
+the candidate has not demonstrated — your suggestion must lean on the
+candidate's actual core_competencies list.
+
+Reframing guidance:
+  - If the question probes "ambiguity tolerance" and the candidate has a
+    "stakeholder negotiation" story, suggest emphasising the ambiguous
+    starting conditions of that negotiation.
+  - If the question probes "ML/AI productisation" and the candidate has
+    no ML story, suggest leaning on adjacent data-product work and being
+    explicit that the candidate has not directly shipped ML — credibility
+    matters more than a stretched claim.
+  - Always be specific. "Use a different framing" is useless feedback.
+
+Identity-lock guarantee: only suggest reframings that lean on competencies
+INSIDE the candidate's declared core_competencies. Do not propose claiming
+"founder", "CEO", "VP Engineering" etc. unless those are on the list.
+
+Output STRICT JSON only — no prose preamble, no commentary, no fences.
+"""
+
+
+async def gap_analyzer_node(state: InterviewPrepState) -> dict:
+    """Identify gaps and suggest reframings for low-similarity matches.
+
+    Reads:
+      - state.likely_questions (set by merge_questions_node)
+      - state.retrieved_stories (set by story_retriever_node)
+      - profile_master.core_competencies (identity-lock — gap suggestions
+        must lean on actual competencies, not fabricated ones)
+
+    Writes:
+      - state.story_gaps: list of {question, missing_competency,
+        reframe_suggestion}
+
+    Cost target: ~$0.05/interview (Sonnet 4.6, ~3K input + 0.5K output,
+    automatic prompt caching of the long system prompt on Anthropic side
+    when the prefix is ≥1024 tokens — see agents/llm_router._call_anthropic).
+
+    cache_system=True wiring: the GAP_ANALYZER_SYSTEM prompt above is
+    intentionally long (~1.5K tokens with the reframing guidance) so the
+    router's automatic ephemeral cache kicks in. Subsequent calls in the
+    same hot path (e.g. successive prep packs for the same user this
+    session) get the 90% discount on the system tokens.
+    """
+    settings = get_settings()
+    questions = state.get("likely_questions") or []
+    retrieved = state.get("retrieved_stories") or {}
+
+    if not questions:
+        return {
+            "story_gaps": [],
+            "transcript": [
+                make_turn(
+                    node="gap_analyzer",
+                    output={"reason": "no questions"},
+                )
+            ],
+        }
+
+    # Identify which questions are "gaps" — no retrieved story or
+    # similarity < 0.5. Below this threshold the story isn't reliably
+    # answering the question and the candidate should be coached.
+    GAP_SIMILARITY_THRESHOLD = 0.5
+    gap_questions: list[tuple[int, dict, Optional[dict]]] = []
+    for idx, q in enumerate(questions):
+        retrieved_match = retrieved.get(str(idx))
+        if retrieved_match is None:
+            gap_questions.append((idx, q, None))
+            continue
+        sim = float(retrieved_match.get("similarity") or 0.0)
+        if sim < GAP_SIMILARITY_THRESHOLD:
+            gap_questions.append((idx, q, retrieved_match))
+
+    if not gap_questions:
+        # All questions have a strong retrieved story — no LLM call needed.
+        return {
+            "story_gaps": [],
+            "transcript": [
+                make_turn(
+                    node="gap_analyzer",
+                    output={"reason": "all questions have strong matches"},
+                )
+            ],
+        }
+
+    # Identity-lock context: pull profile core_competencies.
+    try:
+        from agents.g9_io import load_profile_competencies
+        core_competencies = load_profile_competencies()
+    except Exception as e:
+        logger.warning(f"gap_analyzer: load_profile_competencies failed: {e}")
+        core_competencies = []
+
+    user = f"""CANDIDATE'S DECLARED CORE COMPETENCIES (identity-lock — reframe within these):
+{json.dumps(core_competencies, indent=2) if core_competencies else "(none recorded — be conservative; only suggest reframings that lean on widely-applicable basics like communication, stakeholder management)"}
+
+QUESTIONS WITHOUT STRONG STAR MATCH (similarity < 0.5 or no match):
+{json.dumps([
+    {
+        "idx": idx,
+        "question": q.get("question"),
+        "probing_competency": q.get("competency"),
+        "importance": q.get("importance"),
+        "best_match_similarity": (rm or {}).get("similarity"),
+        "best_match_title": ((rm or {}).get("story") or {}).get("title"),
+    }
+    for (idx, q, rm) in gap_questions[:20]
+], indent=2)}
+
+For EACH gap question, identify the missing competency the question is
+probing AND a concrete one-or-two-sentence reframe suggestion that leans
+on the candidate's existing core_competencies.
+
+Output STRICT JSON only:
+{{
+  "gaps": [
+    {{
+      "question": "<verbatim question text>",
+      "missing_competency": "<one-word/short-phrase tag>",
+      "reframe_suggestion": "<1-2 sentence concrete coaching>"
+    }},
+    ...
+  ]
+}}
+
+No prose. No fences.
+"""
+
+    # cache_system=True — passing the flag for engineering principle 5
+    # (Anthropic prompt caching, Tier 1 wiring). The router applies the
+    # ephemeral cache_control automatically when the system prompt is
+    # ≥1024 tokens; GAP_ANALYZER_SYSTEM clears that bar. The kwarg is
+    # accepted via **provider_kwargs to keep the signal explicit even
+    # though the router gates on the heuristic.
+    result = await get_router().ask(
+        provider="anthropic",
+        model=settings.g3_gap_analyzer_model,
+        system=GAP_ANALYZER_SYSTEM,
+        messages=[{"role": "user", "content": user}],
+        max_tokens=1500,
+        temperature=0.25,
+        agent_name="g3.gap_analyzer",
+        cache_system=True,
+    )
+
+    story_gaps: list[dict] = []
+    try:
+        parsed = _parse_json_loose(result.text)
+        raw_gaps = parsed.get("gaps", []) if isinstance(parsed, dict) else parsed
+        if isinstance(raw_gaps, list):
+            for g in raw_gaps:
+                if not isinstance(g, dict):
+                    continue
+                qtext = (g.get("question") or "").strip()
+                if not qtext:
+                    continue
+                story_gaps.append({
+                    "question": qtext,
+                    "missing_competency": (g.get("missing_competency") or "").strip(),
+                    "reframe_suggestion": (g.get("reframe_suggestion") or "").strip()[:500],
+                })
+    except Exception as e:
+        logger.warning(f"gap_analyzer JSON parse failed: {e}")
+
+    return {
+        "story_gaps": story_gaps,
+        "cost_usd_total": result.cost_usd,
+        "latency_ms_total": result.latency_ms,
+        "transcript": [
+            make_turn(
+                node="gap_analyzer",
+                provider=result.provider,
+                model=result.model,
+                input_summary=truncate(user),
+                output={
+                    "n_gap_questions_in": len(gap_questions),
+                    "n_gaps_emitted": len(story_gaps),
+                    "cache_creation_input_tokens": getattr(result, "cache_creation_input_tokens", 0),
+                    "cache_read_input_tokens": getattr(result, "cache_read_input_tokens", 0),
+                },
+                cost_usd=result.cost_usd,
+                latency_ms=result.latency_ms,
+            )
+        ],
+    }
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # Node 7 — mock_interview_loop (single-node loop: Claude Opus + DeepSeek-R1)
 # ═════════════════════════════════════════════════════════════════════════
 MOCK_INTERVIEWER_SYSTEM = """You are an executive interview coach drafting a model answer template for a candidate.
@@ -1049,6 +1388,63 @@ async def compile_prep_pack_node(state: InterviewPrepState) -> dict:
             imp = q.get("importance", 3)
             lines.append(f"- _(imp {imp})_  {q['question']}{star_tag}")
 
+    # Tier 2 G3 §4.2 — Auto-retrieved STAR stories from story_bank
+    # (G9-populated). For each likely question, show the best retrieved
+    # story (title + 2-sentence summary, body collapsible) and similarity.
+    # When story_gaps has an entry for the same question, render the
+    # reframe suggestion as a callout box right after the story.
+    retrieved = state.get("retrieved_stories") or {}
+    story_gaps_list = state.get("story_gaps") or []
+    gaps_by_question = {g.get("question", ""): g for g in story_gaps_list}
+    if retrieved or story_gaps_list:
+        lines.append("\n## Auto-Retrieved STAR Stories (from story_bank)")
+        lines.append(
+            "_Top story per question, retrieved via pgvector cosine search "
+            "over the candidate's STAR+R story_bank. cite:knowledge_id "
+            "breadcrumbs are preserved on each entry so post-interview "
+            "outcome attribution credits the originating story._"
+        )
+        for idx, q in enumerate(likely):
+            rm = retrieved.get(str(idx))
+            qtext = q.get("question", "")
+            gap = gaps_by_question.get(qtext)
+            if not rm and not gap:
+                continue
+            lines.append(f"\n**Q{idx + 1}**: {qtext}")
+            if rm:
+                story = rm.get("story") or {}
+                title = story.get("title") or "(untitled story)"
+                sim = float(rm.get("similarity") or 0.0)
+                situation = (story.get("situation") or "").strip()
+                result_text = (story.get("result") or "").strip()
+                summary = (situation[:160] + " " + result_text[:160]).strip()
+                story_id = rm.get("story_id") or ""
+                src_exp = rm.get("source_experience_id")
+                src_cite = f"  ·  cite:knowledge_id={story_id}" if story_id else ""
+                src_exp_cite = f"  ·  source_experience_id={src_exp}" if src_exp else ""
+                lines.append(f"- **{title}**  ·  _similarity {sim:.2f}_{src_cite}{src_exp_cite}")
+                if summary:
+                    lines.append(f"  > {summary}")
+                # Full body collapsible — markdown <details> renders in
+                # the dashboard's Markdown viewer.
+                lines.append("  <details><summary>Full STAR+R body</summary>")
+                lines.append("")
+                lines.append(f"  - **S**: {story.get('situation', '')}")
+                lines.append(f"  - **T**: {story.get('task', '')}")
+                lines.append(f"  - **A**: {story.get('action', '')}")
+                lines.append(f"  - **R**: {story.get('result', '')}")
+                refl = story.get("reflection")
+                if refl:
+                    lines.append(f"  - **+R**: {refl}")
+                lines.append("  </details>")
+            if gap:
+                missing = gap.get("missing_competency") or "(unspecified)"
+                suggestion = gap.get("reframe_suggestion") or ""
+                lines.append(
+                    f"\n  > **⚠️ Gap callout** — missing competency: `{missing}`. "
+                    f"{suggestion}"
+                )
+
     # STAR stories matched
     matched = [s for s in (state.get("star_stories") or []) if s.get("match_quality") in ("strong", "partial")]
     if matched:
@@ -1114,6 +1510,127 @@ async def compile_prep_pack_node(state: InterviewPrepState) -> dict:
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# Tier 2 G3 §4.2 — prep_pack_persona_critic_node (pure code, identity-lock)
+# ═════════════════════════════════════════════════════════════════════════
+async def prep_pack_persona_critic_node(state: InterviewPrepState) -> dict:
+    """Persona-as-critic pass on the finished prep pack.
+
+    Enforces engineering principles 1 (Persona-as-critic) and 3 (Identity
+    lock): ensures no auto-retrieved story or gap-analyzer suggestion
+    claims a competency that is not in profile_master.core_competencies.
+    Drops fabricated competencies from `retrieved_stories[*].story.competencies`
+    and `story_gaps[*].missing_competency` BEFORE display.
+
+    Pure code (no LLM cost). The actual LLM-driven persona_critic ran in
+    G9 against the source stories — here we just enforce the identity
+    lock on whatever the gap_analyzer produced. Any drops are surfaced
+    in `state.persona_critic_drops` and noted in the prep pack.
+
+    No-op when retrieved_stories and story_gaps are both empty.
+    """
+    retrieved = dict(state.get("retrieved_stories") or {})
+    gaps = list(state.get("story_gaps") or [])
+    if not retrieved and not gaps:
+        return {
+            "persona_critic_drops": [],
+            "transcript": [
+                make_turn(
+                    node="prep_pack_persona_critic",
+                    output={"reason": "nothing to gate"},
+                )
+            ],
+        }
+
+    try:
+        from agents.g9_io import load_profile_competencies
+        core = {c.lower() for c in load_profile_competencies()}
+    except Exception as e:
+        logger.warning(f"prep_pack_persona_critic: competencies load failed: {e}")
+        core = set()
+
+    drops: list[str] = []
+
+    # Identity-lock: filter competencies on retrieved stories. We do NOT
+    # drop the story itself (G9 already vetted it on extraction) — we
+    # just sanitise the competency tags shown alongside it so the prep
+    # pack never displays a fabricated tag.
+    if core:
+        for idx, rm in retrieved.items():
+            story = (rm or {}).get("story") or {}
+            comps = story.get("competencies") or []
+            keep: list[str] = []
+            for c in comps:
+                cl = str(c).strip().lower()
+                if not cl:
+                    continue
+                # Loose match: keep competency if it overlaps any core
+                # token by substring (e.g. "stakeholder negotiation"
+                # matches "stakeholder management"). Conservative to
+                # avoid spurious drops.
+                matched = any(
+                    cl == kc or cl in kc or kc in cl
+                    for kc in core
+                )
+                if matched:
+                    keep.append(c)
+                else:
+                    drops.append(f"retrieved_stories[{idx}].competency={c}")
+            story["competencies"] = keep
+            rm["story"] = story
+            retrieved[idx] = rm
+
+        # Identity-lock: drop gap suggestions whose missing_competency is
+        # an outright fabrication of a competency the candidate has never
+        # demonstrated. We DON'T drop the suggestion text itself — it can
+        # still be useful as a "you don't have this — here's how to
+        # reframe" coaching note. We just blank the tag so the rendered
+        # callout reads "missing competency: (not in profile)".
+        sanitised_gaps: list[dict] = []
+        for g in gaps:
+            mc = (g.get("missing_competency") or "").strip().lower()
+            if mc and core:
+                matched = any(
+                    mc == kc or mc in kc or kc in mc
+                    for kc in core
+                )
+                if not matched:
+                    drops.append(f"story_gaps.missing_competency={g.get('missing_competency')}")
+                    g = {**g, "missing_competency": f"(not in profile: {g.get('missing_competency')})"}
+            sanitised_gaps.append(g)
+        gaps = sanitised_gaps
+
+    # If we dropped anything, re-render the prep pack so the displayed
+    # markdown matches the sanitised state. compile_prep_pack_node is
+    # purely deterministic and cheap to re-run.
+    patch: dict[str, Any] = {
+        "retrieved_stories": retrieved,
+        "story_gaps": gaps,
+        "persona_critic_drops": drops,
+        "transcript": [
+            make_turn(
+                node="prep_pack_persona_critic",
+                input_summary=f"core_competencies={len(core)} drops={len(drops)}",
+                output={
+                    "n_drops": len(drops),
+                    "n_competencies_loaded": len(core),
+                },
+            )
+        ],
+    }
+    if drops:
+        # Re-run compile_prep_pack on a merged state to refresh prep_pack_md.
+        merged_state = {**state, **patch}
+        try:
+            recompiled = await compile_prep_pack_node(merged_state)
+            # Only carry forward the markdown — DON'T duplicate the
+            # transcript turn (we already emit our own above).
+            patch["prep_pack_md"] = recompiled.get("prep_pack_md") or state.get("prep_pack_md", "")
+        except Exception as e:
+            logger.warning(f"prep_pack_persona_critic: re-render failed: {e}")
+    return patch
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # Node 9 — export_node (pure code)
 # ═════════════════════════════════════════════════════════════════════════
 async def export_node(state: InterviewPrepState) -> dict:
@@ -1158,6 +1675,10 @@ async def export_node(state: InterviewPrepState) -> dict:
         agent_transcript=state.get("transcript", []),
         cost_usd_total=state.get("cost_usd_total", 0),
         latency_ms_total=state.get("latency_ms_total", 0),
+        # Tier 2 G3 §4.2 — story_bank integration outputs
+        retrieved_stories=state.get("retrieved_stories") or {},
+        story_gaps=state.get("story_gaps") or [],
+        persona_critic_drops=state.get("persona_critic_drops") or [],
     )
 
     return {

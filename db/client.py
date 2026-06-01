@@ -5,8 +5,10 @@ Supabase client — singleton with vector search helpers.
 from __future__ import annotations
 import asyncio
 import json
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
+from fastapi.concurrency import run_in_threadpool
 from supabase import create_client, Client
 from openai import AsyncOpenAI
 from config.settings import get_settings
@@ -15,12 +17,127 @@ _supabase: Optional[Client] = None
 _openai: Optional[AsyncOpenAI] = None
 
 
+# ── P2-5: Async DB seam (additive — no existing caller changed) ────────────
+# supabase-py is synchronous, so every `.execute()` is a blocking socket call.
+# Inside an async FastAPI handler that blocks the whole event loop, stalling
+# every other in-flight request on that worker (SCALABILITY.md P0 #3). The
+# seam below lets async call sites offload that blocking work to FastAPI's
+# threadpool WITHOUT rewriting the sync helpers — the sync functions stay the
+# single canonical implementation (preserving the DB-1 `on_conflict` edits and
+# Phase-1 `user_id` edits), and each async twin is a thin wrapper that calls
+# its sync counterpart via `run_in_threadpool`.
+#
+# Today NOTHING calls these (handler conversion is P2-8…N), so single-user
+# prod behaviour is byte-for-byte unchanged.
+
+# Module-level semaphore bounding concurrent DB work in the threadpool. The
+# threadpool is shared by every `run_in_threadpool` caller (and defaults to
+# ~40 workers in Starlette/AnyIO); without a bound, a burst of slow DB calls
+# could occupy all of them and starve unrelated offloaded work. Sized from
+# DB_THREADPOOL_CONCURRENCY (default 20). Created lazily so importing this
+# module never requires a running event loop (Semaphore binds to the loop on
+# first acquire on modern asyncio).
+_db_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_db_semaphore() -> asyncio.Semaphore:
+    """Return the lazily-constructed DB threadpool semaphore (singleton)."""
+    global _db_semaphore
+    if _db_semaphore is None:
+        concurrency = get_settings().db_threadpool_concurrency
+        _db_semaphore = asyncio.Semaphore(concurrency)
+    return _db_semaphore
+
+
+async def aexecute(query_builder: Any) -> Any:
+    """Run a synchronous supabase-py query off the event loop.
+
+    Async seam for the synchronous supabase-py client. Given any supabase-py
+    query builder (the object you'd normally call ``.execute()`` on — e.g.
+    ``get_supabase().table("jobs").select("*").eq("id", 1)``), this runs its
+    blocking ``.execute()`` in FastAPI's threadpool instead of on the event
+    loop, and returns the same ``APIResponse`` the sync ``.execute()`` would.
+
+    Bounded by a module-level semaphore (``DB_THREADPOOL_CONCURRENCY``, default
+    20) so a burst of slow queries can't swamp the shared threadpool.
+
+    Usage (in a future async handler — NOT wired anywhere yet)::
+
+        resp = await aexecute(
+            get_supabase().table("jobs").select("*").eq("id", job_id)
+        )
+        row = resp.data
+
+    This is purely additive: existing sync callers keep calling ``.execute()``
+    directly and are completely unaffected.
+    """
+    async with _get_db_semaphore():
+        return await run_in_threadpool(query_builder.execute)
+
+
 def get_supabase() -> Client:
+    """The shared **service-role** client (singleton).
+
+    Connects with the service-role key, which **bypasses RLS**. Correct for
+    worker/cron/system code that legitimately operates across the data, and the
+    default everywhere today. End-user request paths that want RLS enforced
+    should use ``get_user_supabase(access_token)`` instead (Phase 1, P1-2).
+    """
     global _supabase
     if _supabase is None:
         s = get_settings()
         _supabase = create_client(s.supabase_url, s.supabase_service_key)
     return _supabase
+
+
+def _is_single_user_mode() -> bool:
+    return os.getenv("RIZWAN_SINGLE_USER_MODE", "1") == "1"
+
+
+def get_user_supabase(access_token: Optional[str] = None) -> Client:
+    """Return a Supabase client scoped to the end user's JWT (Phase 1, P1-2).
+
+    Builds an **anon-key** client and applies the user's access token via
+    ``client.postgrest.auth(token)`` so PostgREST sends it as the request's
+    ``Authorization`` bearer. That makes ``auth.uid()`` resolve inside Postgres,
+    so the RLS policies defined in migration 001 (``auth.uid() = user_id``)
+    actually apply — turning tenant isolation into a DB-enforced guarantee
+    rather than relying solely on application-level ``.eq("user_id")`` filters.
+
+    Fallbacks that preserve today's behavior byte-for-byte:
+
+    - **Single-user mode** (``RIZWAN_SINGLE_USER_MODE=1``, the default): always
+      return the service-role singleton. Nothing changes for self-use.
+    - **No token** (e.g. a service/cron caller, or the token wasn't threaded
+      through yet): return the service-role singleton. Callers that *require*
+      RLS must pass a token in multi-tenant mode.
+    - **No anon key configured**: fall back to the service-role singleton (RLS
+      can't be applied without an anon client; we don't want to hard-fail a
+      partially-configured deployment).
+
+    A fresh client is created per call when a token is applied — these are NOT
+    cached, because the postgrest auth header is per-user and caching would risk
+    cross-tenant bleed. Client construction is cheap (no network on init).
+
+    NOTE: this is intentionally NOT wired into the ~70 endpoints here — that
+    mechanical conversion is Phase 1 finding 2 (endpoint scoping). This provides
+    the building block plus the ``Depends`` shim below and a couple of reference
+    usages.
+    """
+    if _is_single_user_mode() or not access_token:
+        return get_supabase()
+
+    s = get_settings()
+    anon_key = s.supabase_anon_key
+    if not anon_key:
+        # Can't build an RLS-scoped client without the anon key; degrade to the
+        # service-role singleton rather than failing the request outright.
+        return get_supabase()
+
+    client = create_client(s.supabase_url, anon_key)
+    # Apply the user JWT so PostgREST forwards it and auth.uid() resolves.
+    client.postgrest.auth(access_token)
+    return client
 
 
 def get_openai() -> AsyncOpenAI:
@@ -47,10 +164,30 @@ async def upsert_company_knowledge(
     section: str,
     content: str,
     source_url: Optional[str] = None,
-    metadata: dict = None
+    metadata: dict = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Store a company intelligence chunk with its embedding."""
+    """Store a company intelligence chunk with its embedding.
+
+    Multi-tenancy DB-1 (2026-05-29): the uniqueness on company_knowledge is
+    now composite — (user_id, company_name, section) — so the on_conflict
+    arbiter must include user_id, and the row MUST carry user_id. Before this
+    change the writer never set user_id at all: at single-user scale every
+    row already existed so the upsert always took the UPDATE branch and the
+    NOT NULL user_id column was never exercised. Switching the conflict
+    target to the composite key turns that latent gap into a hard 23502 on
+    any first-insert for a new (user_id, company, section) tuple — so we add
+    user_id here in the same change. user_id defaults to the seed-user UUID
+    via env override, mirroring upsert_job / upsert_company; multi-tenant
+    callers can pass an explicit user_id.
+    """
     embedding = await embed(content)
+    if user_id is None:
+        import os
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
     db = get_supabase()
 
     row = {
@@ -59,15 +196,16 @@ async def upsert_company_knowledge(
         "content": content,
         "embedding": embedding,
         "source_url": source_url,
-        "metadata": metadata or {}
+        "metadata": metadata or {},
+        "user_id": user_id,
     }
     if company_id:
         row["company_id"] = company_id
 
-    # Upsert: replace if same company + section
+    # Upsert: replace if same user + company + section (DB-1 composite key).
     result = db.table("company_knowledge").upsert(
         row,
-        on_conflict="company_name,section"
+        on_conflict="user_id,company_name,section"
     ).execute()
     return result.data[0] if result.data else {}
 
@@ -150,7 +288,8 @@ async def upsert_rizwan_profile(
             "embedding": embedding,
             "user_id": user_id,
         },
-        on_conflict="section",
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, section).
+        on_conflict="user_id,section",
     ).execute()
     return result.data[0] if result.data else {}
 
@@ -180,7 +319,12 @@ async def search_story_bank(topic: str, match_count: int = 3) -> list[dict]:
 _JOBS_COLUMNS = {
     "id", "title", "company", "company_id", "location", "url", "description",
     "jd_embedding", "source", "match_score", "fit_details", "status",
-    "report_path", "resume_path", "email_path", "interview_path",
+    # BUG-030 (2026-05-12): `report_path` removed from this allow-list — the
+    # column exists in db/schema.sql:63 for historical reasons but no code
+    # path has ever written to it. Leaving it in the upsert allow-list let
+    # callers silently pass a value that never reached the DB. The column
+    # itself is intentionally NOT dropped (drops are irreversible).
+    "resume_path", "email_path", "interview_path",
     "discovered_at", "applied_at", "updated_at",
     # Workflow v2
     "archetype", "legitimacy_tier", "legitimacy_signals",
@@ -194,6 +338,36 @@ _JOBS_COLUMNS = {
     "discovery_sources", "confidence_score", "freshness",
     "validation_failed", "validated_at",
 }
+
+
+_CONFIDENCE_BY_SOURCE = {
+    # First-party ATS APIs — high confidence (structured data, employer-owned).
+    "greenhouse": 80, "workday": 80, "lever": 80, "ashby": 80,
+    "smartrecruiters": 80, "bamboohr": 80, "jobvite": 80, "recruitee": 80,
+    "apify_career_page": 80,
+    # LinkedIn — medium-high (good metadata, occasional aggregator noise).
+    "linkedin": 70,
+    # Regional aggregators — medium (some staleness, but employer-confirmed).
+    "bayt": 60, "naukrigulf": 60, "gulftalent": 60, "indeed": 60,
+    # Generic web scrape / LLM-grounded — low (more validation needed).
+    "web": 50,
+    "perplexity_sonar": 50,
+}
+
+
+def _default_confidence_score(source: str | None) -> int:
+    """
+    Source-based default for jobs.confidence_score. Migration 011 added
+    the column but no backfill or writer-side default existed — 95% of
+    rows landed NULL. We seed a conservative default at upsert time so
+    downstream filters (e.g. confidence >= 60) work consistently.
+    Caller-supplied values always win.
+    """
+    if not source:
+        return 50
+    if source.startswith("ats_"):
+        return 80
+    return _CONFIDENCE_BY_SOURCE.get(source, 50)
 
 
 def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
@@ -211,6 +385,16 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
 
     user_id defaults to the seed user UUID via env override so callers
     in single-user mode (JobScoutAgent.run loop) don't need plumbing.
+
+    2026-05-12 (BUG-025): seed confidence_score from source when caller
+    didn't supply one (migration 011 had no backfill — 385/405 rows were
+    NULL pre-fix).
+
+    2026-05-12 (BUG-026): preserve the earliest discovered_at on
+    re-discovery. The previous behavior overwrote it every time JobScout
+    re-saw the same URL, causing resume_generated_at < discovered_at on
+    3 jobs (causally impossible). We now strip discovered_at from the
+    payload when the job already exists.
     """
     db = get_supabase()
     if user_id is None:
@@ -221,12 +405,51 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
         )
     payload = dict(job_data)
     payload["user_id"] = user_id  # always set — never let job_data null-shadow
+
+    # BUG-025: seed confidence_score from source if caller didn't supply.
+    if payload.get("confidence_score") is None:
+        payload["confidence_score"] = _default_confidence_score(payload.get("source"))
+
+    # BUG-026: preserve earliest discovered_at on re-discovery.
+    # If the URL already exists, never overwrite its discovered_at.
+    url = payload.get("url")
+    if url:
+        try:
+            existing = (
+                db.table("jobs")
+                .select("discovered_at")
+                .eq("url", url)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                # Drop discovered_at from the update payload — keep the
+                # original first-discovery timestamp.
+                payload.pop("discovered_at", None)
+        except Exception:
+            # Best-effort — if the lookup fails, fall through to upsert
+            # behaviour. (Misses the protection but doesn't break inserts.)
+            pass
+
     filtered = {k: v for k, v in payload.items() if k in _JOBS_COLUMNS}
     result = db.table("jobs").upsert(
         filtered,
-        on_conflict="url"
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, url)
+        # [partial: WHERE url IS NOT NULL]. user_id is always set above.
+        on_conflict="user_id,url"
     ).execute()
     return result.data[0] if result.data else {}
+
+
+async def aupsert_job(job_data: dict, user_id: str | None = None) -> dict:
+    """Async twin of ``upsert_job`` (P2-5 seam).
+
+    Runs the canonical sync ``upsert_job`` off the event loop. Per the
+    non-negotiable de-collision rule in SCALABILITY_BUILD_PLAN.md §1, this
+    must CALL the sync writer (so the DB-1 ``on_conflict`` and Phase-1
+    ``user_id`` logic stay single-sourced), never copy its body.
+    """
+    return await run_in_threadpool(upsert_job, job_data, user_id)
 
 
 def get_job(job_id: int) -> Optional[dict]:
@@ -235,16 +458,35 @@ def get_job(job_id: int) -> Optional[dict]:
     return result.data
 
 
+async def aget_job(job_id: int) -> Optional[dict]:
+    """Async twin of ``get_job`` (P2-5 seam).
+
+    Thin wrapper that runs the canonical sync ``get_job`` off the event loop
+    via the threadpool. NOT a reimplementation — same behaviour, same return.
+    """
+    return await run_in_threadpool(get_job, job_id)
+
+
 def update_job(job_id: int, updates: dict) -> dict:
     db = get_supabase()
     result = db.table("jobs").update(updates).eq("id", job_id).execute()
     return result.data[0] if result.data else {}
 
 
+async def aupdate_job(job_id: int, updates: dict) -> dict:
+    """Async twin of ``update_job`` (P2-5 seam). Delegates to the sync fn."""
+    return await run_in_threadpool(update_job, job_id, updates)
+
+
 def get_company_by_name(name: str) -> Optional[dict]:
     db = get_supabase()
     result = db.table("companies").select("*").ilike("name", name).limit(1).execute()
     return result.data[0] if result.data else None
+
+
+async def aget_company_by_name(name: str) -> Optional[dict]:
+    """Async twin of ``get_company_by_name`` (P2-5 seam). Delegates to sync fn."""
+    return await run_in_threadpool(get_company_by_name, name)
 
 
 _COMPANIES_COLUMNS = {
@@ -262,7 +504,24 @@ def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
     is NOT NULL but the writer here didn't pass it. Existing target rows
     have user_id set from prior backfills, but any first-discovery
     upsert (e.g. JobScout finding a brand-new company) crashed silently.
+
+    BUG-013 (2026-05-12): also gate against phantom names here. Any caller
+    passing a scraping-artifact name (e.g. "Adyen Careers",
+    "68 Vacancies Apr 2026", "Merchant Acquiring ...") gets a ValueError
+    instead of silently creating a row that would later be picked up by
+    persona deep-research and burn LLM spend.
     """
+    # Local import to avoid an import cycle (company_agent imports db.client).
+    from agents.company_agent import _is_phantom_company_name
+    name = (company_data or {}).get("name")
+    if _is_phantom_company_name(name):
+        raise ValueError(
+            f"upsert_company: refusing to insert phantom company name "
+            f"{name!r} (BUG-013 — looks like a job-listing fragment, date "
+            f"stamp, or pure title/function token). Caller should filter "
+            f"company names against agents.company_agent."
+            f"_is_phantom_company_name before reaching this point."
+        )
     db = get_supabase()
     if user_id is None:
         import os
@@ -274,9 +533,20 @@ def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
     payload["user_id"] = user_id
     filtered = {k: v for k, v in payload.items() if k in _COMPANIES_COLUMNS}
     result = db.table("companies").upsert(
-        filtered, on_conflict="name"
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, name).
+        filtered, on_conflict="user_id,name"
     ).execute()
     return result.data[0] if result.data else {}
+
+
+async def aupsert_company(company_data: dict, user_id: str | None = None) -> dict:
+    """Async twin of ``upsert_company`` (P2-5 seam).
+
+    Delegates to the canonical sync ``upsert_company`` via the threadpool —
+    including its BUG-013 phantom-name guard and DB-1 composite ``on_conflict``
+    — so behaviour (and the ValueError on phantom names) is identical.
+    """
+    return await run_in_threadpool(upsert_company, company_data, user_id)
 
 
 # ── Supabase Storage helpers ──────────────────────────────────────────────
@@ -318,9 +588,13 @@ def upload_artifact(local_path: str, remote_path: str, content_type: str = "appl
             if "Duplicate" not in str(upload_err) and "exists" not in str(upload_err).lower():
                 raise
 
-        # Return signed URL — supabase-py response shape varies by version
+        # Return signed URL — 7-day expiry (HARDEN-P0-5: was 365 days).
+        # 604800 seconds = 7 days.  After that the link is dead.
+        # Callers that need longer access should refresh via the
+        # /workspace/{id}/download endpoint which generates a fresh URL.
+        SEVEN_DAYS = 60 * 60 * 24 * 7  # 604800
         signed = db.storage.from_(ARTIFACTS_BUCKET).create_signed_url(
-            path=remote_path, expires_in=60 * 60 * 24 * 365
+            path=remote_path, expires_in=SEVEN_DAYS
         )
         # Try every known key
         if isinstance(signed, dict):
@@ -346,7 +620,7 @@ def upload_artifact(local_path: str, remote_path: str, content_type: str = "appl
                     "Authorization": f"Bearer {s.supabase_service_key}",
                     "Content-Type": "application/json",
                 },
-                json={"expiresIn": 60 * 60 * 24 * 365},
+                json={"expiresIn": 60 * 60 * 24 * 7},  # HARDEN-P0-5: 7 days
                 timeout=15,
             )
             if resp.status_code == 200:

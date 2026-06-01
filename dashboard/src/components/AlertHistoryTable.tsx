@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { type AlertHistoryEntry } from '@/lib/profile-api'
 
 interface Props {
@@ -41,7 +42,14 @@ function relativeTime(iso: string): string {
  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`
  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`
  if (diffSec < 86400 * 7) return `${Math.floor(diffSec / 86400)}d ago`
- return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+ return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
+}
+
+// SSR-safe absolute UTC time — used until the client mounts and we can
+// switch to relative time without a hydration mismatch. BUG-017.
+function absoluteUtc(iso: string): string {
+ if (!iso) return ''
+ return new Date(iso).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
 }
 
 function rowBorderClass(kind: string | null, fired: boolean | null): string {
@@ -56,14 +64,18 @@ function rowBorderClass(kind: string | null, fired: boolean | null): string {
 
 export default function AlertHistoryTable({ alerts, warning }: Props) {
  const isEmpty = alerts.length === 0
+ // BUG-017: avoid Date.now() drift between SSR and CSR.
+ const [mounted, setMounted] = useState(false)
+ useEffect(() => {
+   setMounted(true)
+ }, [])
 
  return (
  <section className="bg-surface border border-border rounded-xl overflow-hidden">
  <div className="px-4 py-3 border-b border-border">
  <h2 className="text-base font-semibold text-fg">Recent Alerts</h2>
  <p className="text-2xs text-fg-subtle mt-0.5">
- Last 10 cost-alerter entries from{' '}
- <code className="text-fg-muted">boss_audit_log</code>
+ Last 10 cost-alerter entries
  </p>
  </div>
 
@@ -107,7 +119,7 @@ export default function AlertHistoryTable({ alerts, warning }: Props) {
  className="px-3 py-2 text-fg-muted whitespace-nowrap align-top"
  title={a.created_at}
  >
- {relativeTime(a.created_at)}
+ {mounted ? relativeTime(a.created_at) : absoluteUtc(a.created_at)}
  </td>
  <td className="px-3 py-2 align-top">
  {parsed.kind ? (

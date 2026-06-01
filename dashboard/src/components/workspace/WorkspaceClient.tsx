@@ -3,13 +3,14 @@
  *
  * Five-tab shell: Role · Resume · Interview · Network · Apply.
  * The page (Server Component) hands the full bundle in; this client
- * component owns tab state, the sticky "Mark as applied" header, and
- * routes each tab to its dedicated component.
+ * component owns tab state, the sticky workspace tab strip, and routes
+ * each tab to its dedicated component.
  *
  * Layout decisions:
- *   • Sticky sub-header (under AppShell's top bar) with the company
- *     pill, role title, score, and a primary "Mark as applied" CTA.
- *     Visible from every tab so the user can apply from anywhere.
+ *   • Sticky tab strip (under AppShell's top bar) with the workspace
+ *     tabs only. Per BUG-012, the "Mark as applied" CTA lives solely
+ *     in the Apply tab right-rail card so the action is contextual
+ *     (alongside the checklist + applied-date copy) and not duplicated.
  *   • Tab strip is the existing TabStrip primitive but driven by
  *     internal state (no URL writes — simpler than RSC + searchParams
  *     ping-pong, and cheaper for tab switches).
@@ -22,7 +23,6 @@ import { useCallback, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { clsx } from 'clsx'
-import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Icon } from '@/components/ui/Icon'
 import { Pill } from '@/components/ui/Pill'
@@ -136,16 +136,43 @@ export function WorkspaceClient({ workspace: initial, initialTab }: WorkspaceCli
                 Applied {application?.applied_date ? `· ${application.applied_date}` : ''}
               </Pill>
             )}
-            {job.url && (
-              <a
-                href={job.url}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-2xs font-medium text-fg-muted hover:text-fg underline-offset-2 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent rounded"
-              >
-                Open posting <Icon name="arrow-up-right" size={10} />
-              </a>
-            )}
+            {/* BUG-022: when the validator has marked the posting closed,
+                 keep the link but flag it so the user is not surprised by
+                 a 404. Cheaper than a HEAD-probe and correct on the cases
+                 we actually care about (staleness, not transient errors). */}
+            {job.url && (() => {
+              const isLikelyDead = !!job.posting_closed_at
+              const closedOn = isLikelyDead
+                ? new Date(job.posting_closed_at as string).toLocaleDateString('en-US', {
+                    day: 'numeric',
+                    month: 'short',
+                    year: 'numeric',
+                    timeZone: 'UTC',
+                  })
+                : null
+              return (
+                <a
+                  href={job.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-disabled={isLikelyDead || undefined}
+                  title={
+                    isLikelyDead
+                      ? `This posting may have expired (closed ${closedOn})`
+                      : undefined
+                  }
+                  className={clsx(
+                    'inline-flex items-center gap-1 text-2xs font-medium underline-offset-2 hover:underline rounded',
+                    'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                    isLikelyDead
+                      ? 'text-fg-subtle line-through decoration-fg-subtle/60'
+                      : 'text-fg-muted hover:text-fg',
+                  )}
+                >
+                  Open posting <Icon name="arrow-up-right" size={10} />
+                </a>
+              )
+            })()}
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -158,7 +185,10 @@ export function WorkspaceClient({ workspace: initial, initialTab }: WorkspaceCli
         </div>
       </header>
 
-      {/* ── Sticky sub-header (Mark as applied) ───────────────────── */}
+      {/* ── Sticky workspace tab strip ───────────────────────────────
+       *   BUG-012: previously this row also held a duplicate "Mark as
+       *   applied" button. We keep just the tabs here — the action lives
+       *   on the Apply tab right-rail card alongside the checklist. */}
       <div className="sticky top-14 z-20 -mx-4 sm:-mx-6 lg:-mx-8 px-4 sm:px-6 lg:px-8 bg-bg/95 backdrop-blur-sm border-b border-border">
         <div className="flex items-center justify-between gap-3 py-2 flex-wrap">
           <nav role="tablist" aria-label="Workspace tabs" className="flex items-center gap-0.5 -mb-px">
@@ -186,24 +216,6 @@ export function WorkspaceClient({ workspace: initial, initialTab }: WorkspaceCli
               )
             })}
           </nav>
-          <Button
-            variant={isApplied ? 'success' : 'primary'}
-            size="sm"
-            onClick={handleMarkApplied}
-            disabled={isApplied || applying}
-            loading={applying}
-          >
-            {isApplied ? (
-              <>
-                <Icon name="check" size={12} /> Applied
-              </>
-            ) : (
-              <>
-                Mark as applied
-                <Icon name="check" size={12} />
-              </>
-            )}
-          </Button>
         </div>
       </div>
 

@@ -16,12 +16,31 @@ import { useEffect, useState } from 'react'
 import { Button, Icon } from '@/components/ui'
 import { ANGLE_LABEL, LINKEDIN_ANGLES, type LinkedInAngle } from '@/lib/types/linkedin'
 
+export interface CompanyOption {
+  id: string  // UUID
+  name: string
+  priority?: string | null  // 'high' | 'medium' | 'low'
+}
+
 export interface GenerateModalProps {
   onClose: () => void
   onSubmit: (args: { angle?: LinkedInAngle; targetCompanyId?: string; count: number }) => void | Promise<void>
+  /**
+   * Optional list of the user's target companies. When provided, the
+   * "Target company" field renders as a searchable dropdown of names
+   * (submitting the UUID). When absent, falls back to a free-text UUID
+   * input (legacy behaviour).
+   *
+   * 2026-05-14 fix: was a plain text field. User typed "Mastercard"
+   * as text → backend filter `.eq("company_id", "Mastercard")` returned
+   * 0 rows → graph fell back to all candidates → Marqeta won by data
+   * volume + placeholder priming. Real fix is a searchable dropdown
+   * keyed by NAME with UUID submitted under the hood.
+   */
+  companies?: CompanyOption[]
 }
 
-export function GenerateModal({ onClose, onSubmit }: GenerateModalProps) {
+export function GenerateModal({ onClose, onSubmit, companies }: GenerateModalProps) {
   const [angle, setAngle] = useState<LinkedInAngle | ''>('')
   const [targetCompanyId, setTargetCompanyId] = useState('')
   const [count, setCount] = useState(1)
@@ -105,17 +124,33 @@ export function GenerateModal({ onClose, onSubmit }: GenerateModalProps) {
         {/* Target company */}
         <label className="flex flex-col gap-1.5">
           <span className="text-2xs font-medium uppercase tracking-wide text-fg-subtle">
-            Target company id (optional)
+            Target company (optional)
           </span>
-          <input
-            type="text"
-            value={targetCompanyId}
-            onChange={(e) => setTargetCompanyId(e.target.value)}
-            placeholder="e.g. uuid of Marqeta"
-            className="bg-surface-raised border border-border rounded-md px-3 py-2 text-sm text-fg placeholder:text-fg-subtle focus:outline-none focus:border-accent"
-          />
+          {companies && companies.length > 0 ? (
+            <select
+              value={targetCompanyId}
+              onChange={(e) => setTargetCompanyId(e.target.value)}
+              className="bg-surface-raised border border-border rounded-md px-3 py-2 text-sm text-fg focus:outline-none focus:border-accent"
+            >
+              <option value="">Any (auto-pick from all targets)</option>
+              {companies.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                  {c.priority ? ` · ${c.priority}` : ''}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={targetCompanyId}
+              onChange={(e) => setTargetCompanyId(e.target.value)}
+              placeholder="UUID — companies list unavailable"
+              className="bg-surface-raised border border-border rounded-md px-3 py-2 text-sm text-fg placeholder:text-fg-subtle focus:outline-none focus:border-accent"
+            />
+          )}
           <span className="text-2xs text-fg-subtle">
-            Leave empty to draw from all of your target industries.
+            Pick a company to pin the news anchor, or leave on Any.
           </span>
         </label>
 

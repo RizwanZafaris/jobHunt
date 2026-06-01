@@ -76,6 +76,19 @@ rich>=13.9.0           # beautiful CLI output
 tqdm>=4.67.0           # progress bars
 aiosqlite>=0.20.0      # local SQLite cache
 
+# Observability (P3-2/P3-3/P3-5 — Sentry + OpenTelemetry + JSON logs).
+# All wiring in api/observability.py is env-gated and a NO-OP unless the
+# matching env var is set (SENTRY_DSN / OTEL_EXPORTER_OTLP_ENDPOINT / LOG_JSON),
+# so dev + single-user prod run byte-for-byte unchanged. The OTel/Sentry libs
+# are imported lazily INSIDE the init functions, so the module imports cleanly
+# even before these wheels land in an environment.
+sentry-sdk[fastapi]>=2.0                          # error tracking; send_default_pii=False
+opentelemetry-sdk>=1.27.0                          # traces/metrics SDK
+opentelemetry-exporter-otlp-proto-http>=1.27.0     # OTLP/HTTP exporter
+opentelemetry-instrumentation-fastapi>=0.48b0      # auto-instrument FastAPI (excl /health,/ready)
+opentelemetry-instrumentation-httpx>=0.48b0        # auto-instrument outbound httpx (provider calls)
+python-json-logger>=2.0.7                          # structured JSON logs when LOG_JSON is set
+
 # Dev
 pytest>=8.3.0
 pytest-asyncio>=0.24.0

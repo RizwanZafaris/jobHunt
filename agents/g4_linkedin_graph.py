@@ -48,6 +48,7 @@ from operator import add
 from typing import Annotated, Any, Optional, TypedDict
 
 from agents.llm_router import _parse_json_loose, get_router
+from agents.llm_hardening import get_hardened_router  # B-OR3: fallback resilience
 from db.client import get_supabase
 
 logger = logging.getLogger(__name__)
@@ -172,7 +173,7 @@ try:
     OPUS_MODEL   = _g4_s.g4_opus_model
 except Exception:
     SONNET_MODEL = "claude-sonnet-4-6"
-    OPUS_MODEL   = "claude-opus-4-7"
+    OPUS_MODEL   = "claude-opus-4-5-20251101"  # 2026-05-14: see settings.py
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -314,6 +315,28 @@ async def pick_angle_node(state: LinkedInState) -> dict:
     chosen_kid = parsed.get("chosen_knowledge_id")
     chosen_company = parsed.get("chosen_company_name")
 
+    # B14: When the LLM omits chosen_company_name from its JSON reply but
+    # still picked a knowledge row, look up the company from that row so
+    # persist_node never writes NULL into linkedin_drafts.source_company_name.
+    # First try the in-memory candidate_knowledge list (avoids a DB round trip
+    # in the common case), then fall back to a company_knowledge query.
+    if not chosen_company and chosen_kid:
+        for k in state.get("candidate_knowledge") or []:
+            if k.get("id") == chosen_kid and k.get("company_name"):
+                chosen_company = k["company_name"]
+                break
+        if not chosen_company:
+            try:
+                rs = (
+                    get_supabase().table("company_knowledge")
+                    .select("company_name")
+                    .eq("id", chosen_kid).limit(1).execute()
+                )
+                row = (rs.data or [{}])[0]
+                chosen_company = row.get("company_name") or chosen_company
+            except Exception:
+                pass
+
     # Resolve chosen_company_id from name if possible.
     chosen_company_id: Optional[str] = None
     if chosen_company:
@@ -451,11 +474,15 @@ async def draft_v1_node(state: LinkedInState) -> dict:
         news_block=_format_news_anchor(state),
     )
 
-    router = get_router()
+    # B-OR3: Use hardened router with OpenRouter fallback. If Anthropic
+    # is down/rate-limited, fall back to OR with the same Opus model.
+    # Fallback preserves the same quality tier; cost is ~5% higher.
+    router = get_hardened_router()
     try:
-        parsed, result = await router.ask_json(
-            provider="anthropic",
-            model=OPUS_MODEL,
+        parsed, result = await router.ask_json_with_fallback(
+            primary_provider="anthropic",
+            primary_model=OPUS_MODEL,
+            fallback_chain=[("openrouter", "anthropic/claude-opus-4-5")],
             system=DRAFT_V1_SYSTEM,
             messages=[{"role": "user", "content": user_msg}],
             max_tokens=2048,
@@ -463,7 +490,7 @@ async def draft_v1_node(state: LinkedInState) -> dict:
             agent_name="g4.draft_v1",
         )
     except Exception as e:
-        logger.exception("draft_v1 failed")
+        logger.exception("draft_v1 failed (all providers exhausted)")
         return {
             "transcript": [_make_turn(
                 "draft_v1", "anthropic", OPUS_MODEL,
@@ -952,6 +979,11 @@ async def persist_node(state: LinkedInState) -> dict:
     payload = {
         "user_id":              state["user_id"],
         "source_company_id":    state.get("chosen_company_id"),
+        # 2026-05-12 (migration 012): denormalise the company name alongside
+        # the FK so api/actions.py::_build_linkedin_post_due can read it in
+        # a single round-trip on /today. `chosen_company_name` is already
+        # in state from node_pick_angle; we just persist it.
+        "source_company_name":  state.get("chosen_company_name"),
         "source_knowledge_id":  state.get("chosen_knowledge_id"),
         "angle":                state.get("chosen_angle") or "industry_analysis",
         "hook":                 state.get("final_hook") or state.get("draft_v1_hook") or "",
@@ -1114,6 +1146,12 @@ async def run_g4_graph(
         cv_md = voice_profile.get("profile_md") or ""
 
     # ── compile + run ────────────────────────────────────────────────
+    # G4 is a strictly linear 6-node graph (no loops / conditional edges)
+    # and is NOT checkpointed at this call site, so there's no checkpoint
+    # thread_id to tenant-namespace. We still set an EXPLICIT recursion_limit
+    # (Phase 1, Finding 4) so a future cyclic edge fails with a controlled
+    # GraphRecursionError rather than relying on LangGraph's silent default.
+    G4_RECURSION_LIMIT = 25
     graph = build_g4_graph()
     state: LinkedInState = {
         "user_id": user_id,
@@ -1130,7 +1168,9 @@ async def run_g4_graph(
         "cost_cap_usd": float(max_cost_usd),
         "cost_capped": False,
     }
-    final_state: LinkedInState = await graph.ainvoke(state)
+    final_state: LinkedInState = await graph.ainvoke(
+        state, config={"recursion_limit": G4_RECURSION_LIMIT}
+    )
 
     cost = float(final_state.get("cost_usd_total", 0.0) or 0.0)
     if final_state.get("cost_capped"):

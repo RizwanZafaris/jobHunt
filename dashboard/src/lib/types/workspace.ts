@@ -33,6 +33,9 @@ export interface WorkspaceJob {
   resume_generated_at?: string | null
   validation_status?: string | null
   archetype?: string | null
+  /** BUG-022: set by agents/job_validator.py when the posting closes;
+   *  drives a "this posting may have expired" tooltip on "Open posting". */
+  posting_closed_at?: string | null
 }
 
 export interface WorkspaceFitDetails {
@@ -55,8 +58,12 @@ export interface WorkspaceApplication {
   follow_up_due?: string | null
   notes?: string | null
   cover_email?: string | null
-  pdf_url?: string | null
-  report_url?: string | null
+  // BUG-036 (2026-05-12): `pdf_url` / `report_url` removed from this type.
+  // Both columns survive in `applications` (db/schema.sql) for backwards
+  // compatibility, but no Python writer has populated them since the
+  // refactor that moved artefacts onto `resume_builds.resume_pdf_url`.
+  // Re-introducing the fields would tempt a future card to read columns
+  // that are guaranteed to be NULL — see Bug Log §17 BUG-036.
   created_at?: string | null
   updated_at?: string | null
 }
@@ -70,6 +77,12 @@ export interface ResumeArtifact {
   user_edited_at?: string | null
   resume_pdf_url?: string | null
   resume_docx_url?: string | null
+  /**
+   * Cover-email markdown emitted by G2's `cover_email_node`. Source of
+   * truth for the Apply tab's "Cover note ready" checklist row — the
+   * legacy `applications.cover_email` column is never written.
+   */
+  cover_email_md?: string | null
   cost_usd_total?: number | null
   latency_ms_total?: number | null
   company_name?: string | null
@@ -101,6 +114,12 @@ export interface AtsKeywordBank {
 export interface WorkspaceInterviewPrep {
   has_pack: boolean
   prep_pack_url?: string | null
+  /**
+   * Rendered prep-pack markdown. Always populated when G3 converges;
+   * acts as a fallback when the Supabase Storage upload returned None
+   * (graceful degradation in `interview_agents/g3_io.upload_prep_pack`).
+   */
+  prep_pack_md?: string | null
   status?: string | null
   round_type?: string | null
   round_number?: number | null

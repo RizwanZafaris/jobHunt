@@ -155,12 +155,32 @@ def create_interview_prep(
     company_name: str,
     round_type: str,
     round_number: int = 1,
+    user_id: Optional[str] = None,
 ) -> dict:
     """
     INSERT a new interview_prep row in 'running' state. Returns the row
     (so the graph can stash the uuid in state.interview_prep_id).
+
+    2026-06-01: bug surfaced when investigating "interview generation is not
+    working" — interview_prep gained `user_id NOT NULL` (no default) in the
+    multi-tenancy migration (2026_05_10_001), but this writer never set it.
+    Every INSERT therefore failed the NOT-NULL constraint, so NO interview_prep
+    row was ever persisted (live table had 0 rows) and every retrieval path
+    that filters `.eq("user_id", ...)` (GET /interview-studio/{app_id},
+    GET /jobs/{id}/detail artifacts, _credit_stories_for_outcome) had nothing
+    to surface. Same pattern + same fix as `resume_agents.g2_io.create_resume_build`
+    (2026-05-12) and the upsert_job / upsert_company / upsert_rizwan_profile
+    fixes: `user_id` defaults via env override so the LangGraph entry node
+    doesn't HAVE to plumb it through state, but callers (entry_node) may pass
+    the resolved tenant explicitly for correct multi-tenant attribution.
     """
+    import os
     from db.client import get_supabase
+    if user_id is None:
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
     payload = {
         "application_id": application_id,
         "job_id": job_id,
@@ -169,6 +189,7 @@ def create_interview_prep(
         "round_number": round_number,
         "status": "running",
         "iterations": 0,
+        "user_id": user_id,
     }
     result = get_supabase().table("interview_prep").insert(payload).execute()
     rows = result.data or []
@@ -196,6 +217,10 @@ def finalize_interview_prep(
     latency_ms_total: Optional[int] = None,
     graph_thread_id: Optional[str] = None,
     error: Optional[str] = None,
+    # Tier 2 G3 §4.2 — story_bank integration outputs
+    retrieved_stories: Optional[dict] = None,
+    story_gaps: Optional[list] = None,
+    persona_critic_drops: Optional[list] = None,
 ) -> dict:
     """UPDATE the interview_prep row at end-of-run (success or failure)."""
     from db.client import get_supabase
@@ -216,6 +241,12 @@ def finalize_interview_prep(
     if latency_ms_total is not None:       payload["latency_ms_total"] = latency_ms_total
     if graph_thread_id is not None:        payload["graph_thread_id"] = graph_thread_id
     if error is not None:                  payload["error"] = error[:5000]
+    # Tier 2 §4.2 — only write story_bank integration fields when the
+    # graph emitted them so existing callers that don't pass these
+    # kwargs don't accidentally null out a previously-written row.
+    if retrieved_stories is not None:      payload["retrieved_stories"] = retrieved_stories
+    if story_gaps is not None:             payload["story_gaps"] = story_gaps
+    if persona_critic_drops is not None:   payload["persona_critic_drops"] = persona_critic_drops
 
     result = (
         get_supabase()

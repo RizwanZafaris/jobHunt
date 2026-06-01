@@ -157,7 +157,7 @@ export default function JobsTable({ jobs }: Props) {
                   </td>
                   <td className="px-3 py-3 text-fg-subtle text-2xs whitespace-nowrap">
                     {job.discovered_at
-                      ? new Date(job.discovered_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+                      ? new Date(job.discovered_at).toLocaleDateString('en-US', { day: 'numeric', month: 'short', timeZone: 'UTC' })
                       : '—'}
                   </td>
                   <td className="px-3 py-3 whitespace-nowrap">

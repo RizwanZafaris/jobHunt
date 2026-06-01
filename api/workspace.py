@@ -158,6 +158,7 @@ def _get_latest_resume_build(db, *, job_id: int, user_id: UUID) -> Optional[dict
         .select(
             "id, job_id, application_id, company_name, persona_version, status, "
             "iterations, resume_md, resume_pdf_url, resume_docx_url, "
+            "cover_email_md, "
             "user_edited_md, user_edited_at, cost_usd_total, latency_ms_total, "
             "created_at, finalized_at, error"
         )
@@ -198,7 +199,10 @@ def _get_interview_prep_summary(db, *, job_id: int, user_id: UUID) -> Optional[d
     try:
         rows = (
             db.table("interview_prep")
-            .select("id, application_id, status, prep_pack_url, round_type, round_number, created_at")
+            .select(
+                "id, application_id, status, prep_pack_url, prep_pack_md, "
+                "round_type, round_number, created_at"
+            )
             .eq("job_id", job_id)
             .eq("user_id", str(user_id))
             .order("created_at", desc=True)
@@ -213,10 +217,21 @@ def _get_interview_prep_summary(db, *, job_id: int, user_id: UUID) -> Optional[d
     if not rows:
         return None
     row = rows[0]
-    has_pack = bool(row.get("prep_pack_url")) and row.get("status") == "converged"
+    # BUG-034 (2026-05-12): `has_pack` used to be gated on `prep_pack_url`
+    # alone. `interview_agents/g3_io.py::upload_prep_pack` returns None on
+    # storage error, leaving `prep_pack_url` NULL even though
+    # `prep_pack_md` holds the rendered markdown. That dead-column gate
+    # made the Interview-prep tab show "no pack" on every converged G3
+    # build where the storage step happened to fail. Source-of-truth is
+    # "G3 converged AND we have any pack content".
+    has_pack = (
+        row.get("status") == "converged"
+        and bool(row.get("prep_pack_url") or row.get("prep_pack_md"))
+    )
     return {
         "has_pack": has_pack,
         "prep_pack_url": row.get("prep_pack_url"),
+        "prep_pack_md": row.get("prep_pack_md"),
         "status": row.get("status"),
         "round_type": row.get("round_type"),
         "round_number": row.get("round_number"),
@@ -313,6 +328,10 @@ def _serialize_resume_build(row: Optional[dict[str, Any]]) -> Optional[dict[str,
         "user_edited_at": row.get("user_edited_at"),
         "resume_pdf_url": row.get("resume_pdf_url"),
         "resume_docx_url": row.get("resume_docx_url"),
+        # BUG-033 (2026-05-12): expose `cover_email_md` so the Apply tab
+        # checklist can gate "Cover note ready" on the real source (G2
+        # writes here; `applications.cover_email` is never written).
+        "cover_email_md": row.get("cover_email_md"),
         "cost_usd_total": row.get("cost_usd_total"),
         "latency_ms_total": row.get("latency_ms_total"),
         "company_name": row.get("company_name"),
@@ -413,6 +432,244 @@ def get_workspace(
     }
 
 
+# ─── GET /workspace/{job_id}/comp-band ─────────────────────────────────────
+#
+# Phase 1.1 — compensation intelligence. Powers (a) the workspace Apply tab
+# salary-expectation field, (b) G5 evaluation scoring (Phase 2), (c) G7
+# application assistant salary handling (Phase 3), (d) G8 offer negotiation
+# framing (Phase 4). One Perplexity Sonar call (~$0.02) per uncached
+# (company, role, level, location) tuple per 30 days.
+
+@router.get("/{job_id}/comp-band")
+async def get_comp_band_for_job(
+    job_id: int,
+    location_override: Optional[str] = Query(
+        default=None,
+        description=(
+            "Override the job's location (e.g. when the user is targeting a "
+            "different geo than the listing itself — common for Remote-x "
+            "ranges where one band per region exists)."
+        ),
+    ),
+    level_override: Optional[str] = Query(
+        default=None,
+        description=(
+            "Override the inferred level (Junior/Mid/Senior/Staff/Principal/"
+            "Director). When omitted, the agent uses the job's `archetype` "
+            "or falls back to extracting a level token from the title."
+        ),
+    ),
+    user_target_total_comp: Optional[int] = Query(
+        default=None,
+        ge=10_000,
+        le=10_000_000,
+        description=(
+            "User's own target total comp. Used to cap the strategy's anchor "
+            "at the market p90 — preventing accidental ATS auto-filter for "
+            "asking above-band."
+        ),
+    ),
+    force_refresh: bool = Query(
+        default=False,
+        description=(
+            "Bypass the 30-day cache and re-query Perplexity Sonar. "
+            "Costs ~$0.02. Use sparingly."
+        ),
+    ),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Comp-band for a job + the salary-field strategy.
+
+    Bundle response so the dashboard renders the salary section in one
+    round-trip:
+
+        GET /workspace/123/comp-band?level_override=Senior
+
+        {
+          "band": {
+            "company": "Stripe", "role": "Senior Product Manager",
+            "level": "Senior", "location": "Dubai, UAE",
+            "currency": "USD",
+            "p25": 150000, "p50": 180000, "p75": 215000, "p90": 260000,
+            "source_summary": "Glassdoor + Levels.fyi 2025-2026 ...",
+            "source_citations": [{"url": "...", "title": "..."}],
+            "cached": true, "age_days": 4, "cost_usd": 0,
+            "confidence": "high", "cache_id": "..."
+          },
+          "strategy": {
+            "approach": "range",
+            "low": 195000, "high": 240000,
+            "anchor": null,
+            "framing": "I'm targeting total comp in the USD 195,000-240,000 range...",
+            "rationale": "Market band is wide (44% spread above p50)..."
+          },
+          "generated_at": "2026-05-12T..."
+        }
+
+    The endpoint is scoped to the requesting user via
+    `_get_job_for_user(...)` — RLS on `comp_cache` plus tenant filter on
+    `jobs` together prevent cross-user leakage.
+    """
+    from agents.comp_research import (
+        band_to_dict,
+        get_comp_band,
+        strategy_to_dict,
+        suggest_salary_strategy,
+    )
+
+    db = get_supabase()
+    job = _get_job_for_user(db, job_id=job_id, user_id=user.id)  # 404 if not theirs
+
+    # Derive query inputs from the job row + overrides.
+    company = job.get("company") or ""
+    role = job.get("title") or ""
+    location = location_override or job.get("location") or None
+    # Level: prefer override, else heuristic from archetype/title.
+    level = level_override
+    if not level:
+        archetype = job.get("archetype")
+        if isinstance(archetype, str) and archetype:
+            level = archetype
+        else:
+            # Crude title-based fallback. Real Phase-2 level extraction will
+            # use a structured archetype detector — for now, this catches the
+            # 80% case (senior / staff / principal / lead / head / director).
+            title_lc = (role or "").lower()
+            for token in ("principal", "staff", "head of", "director",
+                          "lead", "senior", "junior", "intern"):
+                if token in title_lc:
+                    level = token.title()
+                    break
+
+    if not company or not role:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "missing_job_fields",
+                "message": (
+                    f"Cannot research comp without a company and a role title. "
+                    f"job={job_id}: company={company!r} title={role!r}."
+                ),
+            },
+        )
+
+    band = await get_comp_band(
+        company=company,
+        role=role,
+        level=level,
+        location=location,
+        user_id=user.id,
+        force_refresh=force_refresh,
+    )
+    strategy = suggest_salary_strategy(band, user_target=user_target_total_comp)
+
+    return {
+        "band": band_to_dict(band),
+        "strategy": strategy_to_dict(strategy),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# ─── G5 evaluation scoring endpoints ───────────────────────────────────────
+# Phase 2 §4.1: per-job 6-dimensional fit scoring + A/B/C/D/F letter grade.
+# Two endpoints — POST re-scores (Sonnet 4.6 calls, ~$0.15), GET surfaces
+# the existing score without spend. The dashboard's /today A-F filter chip
+# reads the surface `letter_grade` column directly off /jobs and only hits
+# this endpoint when the user opens a workspace and wants the per-dim
+# rationale.
+
+
+@router.post("/{job_id}/score")
+async def score_job_endpoint(
+    job_id: int,
+    force: bool = Query(
+        default=False,
+        description=(
+            "Bypass both the wallet guard (closed/validation-failed jobs) "
+            "AND the 7-day re-score staleness window. Costs ~$0.15."
+        ),
+    ),
+    user_target_total_comp: Optional[int] = Query(
+        default=None,
+        ge=10_000,
+        le=10_000_000,
+        description=(
+            "User's own target total comp for the comp dimension. When "
+            "omitted, the agent uses an industry-typical anchor for the "
+            "inferred level."
+        ),
+    ),
+    user_remote_preference: Optional[str] = Query(
+        default=None,
+        description="remote | hybrid | onsite | any",
+    ),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Score one job across 6 dimensions; persist the breakdown; return it.
+
+    Wallet-guarded via api._job_guards.load_open_job — refuses to score
+    closed/failed jobs unless force=True (per gap-closure §11.9).
+    Idempotent within a 7-day window unless force=True (auto-trigger from
+    JobScout consults this to keep cost bounded).
+
+    Returns the same dict shape that's written to
+    `jobs.fit_score_breakdown`:
+
+        {
+          "role_fit": 0-100, "growth": 0-100, "comp": 0-100,
+          "culture": 0-100, "remote": 0-100, "trajectory": 0-100,
+          "composite": 0-100, "letter_grade": "A"|"B"|"C"|"D"|"F",
+          "rationale": {dim: "one sentence reason"},
+          "cites": [{knowledge_id, section, similarity}, ...],
+          "persona_warnings": [],
+          "weights": {role_fit: 25, ...},
+          "cost_usd": 0.15,
+          "scored_at": "2026-05-12T...",
+          "scorer_version": "g5-v1"
+        }
+
+    Cost: ~$0.15/role (1× comp_cache hit lane + 4× Sonnet 4.6 + 0× code-
+    only dimensions). See `agents/scoring_agent.py` for the per-dim
+    breakdown.
+    """
+    from agents.scoring_agent import score_role
+
+    return await score_role(
+        job_id=job_id,
+        user_id=user.id,
+        force=force,
+        user_target_total_comp=user_target_total_comp,
+        user_remote_preference=user_remote_preference,
+    )
+
+
+@router.get("/{job_id}/score")
+async def get_job_score(
+    job_id: int,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Fetch the existing G5 fit_score_breakdown without re-scoring.
+
+    Returns the same dict shape as POST. If the job hasn't been scored
+    yet, returns {"scored": false} with a 200 (NOT a 404) so the
+    dashboard can render a "Score now" CTA rather than treating it as a
+    missing job.
+
+    Tenant-scoped: a job belonging to another user returns 404 via the
+    same `_get_job_for_user` pattern as the rest of this router.
+    """
+    from agents.scoring_agent import get_existing_score
+
+    # Tenancy + existence check first (404 if not theirs / missing).
+    db = get_supabase()
+    _get_job_for_user(db, job_id=job_id, user_id=user.id)
+
+    existing = await get_existing_score(job_id=job_id, user_id=user.id)
+    if existing is None:
+        return {"scored": False, "job_id": job_id}
+    return {"scored": True, "job_id": job_id, **existing}
+
+
 # ─── POST /workspace/{job_id}/build-resume ─────────────────────────────────
 @router.post("/{job_id}/build-resume")
 @limiter.limit(RATE_LIMITS["llm_generation"])
@@ -433,7 +690,63 @@ def build_resume(
     shipped in api/jobs_runs.py) every ~8s until status is terminal.
     """
     db = get_supabase()
-    _get_job_for_user(db, job_id=job_id, user_id=user.id)  # 404 if not theirs
+    job = _get_job_for_user(db, job_id=job_id, user_id=user.id)  # 404 if not theirs
+
+    # 2026-05-12: pre-flight staleness guardrail.
+    #
+    # G2 costs ~$0.50-$1.50 in LLM tokens per build (5 models, 3 iterations,
+    # ATS critics A/B, persona critic, polisher). Building a resume against
+    # a job posting that is closed, expired, or failed validation is
+    # **direct financial waste** — the user cannot apply to it anyway.
+    #
+    # Production incident (2026-05-12): OKX job 1641 "Senior Product Manager,
+    # Payment" was scraped from LinkedIn 1 year after its original posting
+    # date. The freshness pipeline didn't catch it because LinkedIn renders
+    # post age as plain text ("1 year ago") not as metadata. The user built
+    # a resume against it before noticing — pure waste of LLM spend.
+    #
+    # The validation_failed='stale_per_description' guard now closes such
+    # listings at discovery time (see agents/job_validation.py
+    # _detect_stale_age_marker), but jobs already in the DB before that fix
+    # remain stuck open. This is the layer that protects the user's wallet.
+    #
+    # Override: pass force=true to build against a closed posting (e.g. the
+    # user has insider knowledge that the role is actually still active).
+    if not force:
+        if job.get("posting_closed_at") is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "posting_closed",
+                    "message": (
+                        "This job posting is marked closed"
+                        + (
+                            f" ({job['validation_failed']})"
+                            if job.get("validation_failed")
+                            else ""
+                        )
+                        + ". Building a resume costs ~$1 in LLM tokens and "
+                        "you cannot apply to a closed posting. Pass "
+                        "force=true to override."
+                    ),
+                    "posting_closed_at": job.get("posting_closed_at"),
+                    "validation_failed": job.get("validation_failed"),
+                },
+            )
+        if job.get("validation_failed"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "validation_failed",
+                    "message": (
+                        f"This job failed validation "
+                        f"({job['validation_failed']}). Building a resume is "
+                        "likely wasted spend. Pass force=true to override."
+                    ),
+                    "validation_failed": job["validation_failed"],
+                },
+            )
+
     try:
         run_id = enqueue_g2_build(
             user_id=user.id,
@@ -813,6 +1126,67 @@ def mark_applied(
         logger.warning("jobs.applied_at backfill failed: %s", exc)
 
     return {"created": True, "updated": False, "application": row}
+
+
+# ─── POST /workspace/{job_id}/legitimacy-check ─────────────────────────────
+@router.post("/{job_id}/legitimacy-check")
+async def check_legitimacy(
+    job_id: int,
+    force: bool = Query(
+        default=False,
+        description="Bypass the 24h Perplexity cache and re-run all signals.",
+    ),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Run the 4-signal Tier 2 legitimacy agent for this job.
+
+    Signals (each weight 0.25):
+      1. Posting age      — discovered_at decay 7d→60d
+      2. URL reachability — httpx HEAD probe, cached 24h
+      3. Repost pattern   — distinct postings in 90d on (company, title)
+      4. Recent news      — Perplexity Sonar "is {company} hiring 2026?"
+
+    Composite score ∈ [0,1]. Tier:
+      score >= 0.7 → legitimate
+      0.5 ≤ score < 0.7 → caution
+      score < 0.5 → suspicious
+
+    Result is written back to jobs.legitimacy_score / .legitimacy_tier /
+    .legitimacy_signals. The /actions/today builder hides suspicious
+    cards by default (override with `?include_suspicious=true`).
+
+    Wallet guard: stale jobs (posting_closed_at or validation_failed) get
+    a 409 — they're already dead, no point in burning Perplexity dollars.
+    Pass `force=true` to override.
+
+    Per-job cost: ≤ $0.005 (only signal 5 has marginal cost; cache hits
+    drop this to $0).
+    """
+    from agents.legitimacy_agent import score_legitimacy
+    from api._job_guards import load_open_job
+
+    db = get_supabase()
+    # Wallet guard — stale postings refused unless force=true.
+    load_open_job(
+        db,
+        job_id=job_id,
+        user_id=user.id,
+        force=force,
+        cost_label="legitimacy check (~$0.005)",
+    )
+
+    result = await score_legitimacy(
+        job_id=job_id,
+        user_id=user.id,
+        force=force,
+    )
+    return {
+        "job_id": job_id,
+        "score": result.score,
+        "tier": result.tier,
+        "signals": result.signals,
+        "cost_usd": result.cost_usd,
+    }
 
 
 # ─── GET /workspace/{job_id}/resume.{format} ───────────────────────────────

@@ -1,22 +1,53 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAccessToken, isMultiTenantMode } from '@/lib/supabase/server'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const SECRET_KEY = process.env.API_SECRET_KEY || ''
 
 export const dynamic = 'force-dynamic'
+// Vercel function cap for long synchronous LLM upstreams (e.g. /boss/chat,
+// /personas/deep-research, /interview-prep) that can exceed the default timeout.
+export const maxDuration = 60
 
-async function handler(req: NextRequest, ctx: { params: { path: string[] } }) {
-  const path = ctx.params.path.join('/')
+async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[] }> }) {
+  // Next 15: route handler `params` is async.
+  const { path: pathSegments } = await ctx.params
+  const path = pathSegments.join('/')
   const search = req.nextUrl.search
   const target = `${API_URL}/${path}${search}`
 
-  const headers: Record<string, string> = {
-    'X-Secret-Key': SECRET_KEY,
+  // Auth forwarding (Phase 1, P1-7):
+  //   - SINGLE_USER mode (default): attach the shared X-Secret-Key, exactly as
+  //     before. Byte-for-byte unchanged when NEXT_PUBLIC_SINGLE_USER_MODE is
+  //     unset or "1".
+  //   - Multi-tenant mode (NEXT_PUBLIC_SINGLE_USER_MODE=0): read the Supabase
+  //     session server-side and forward Authorization: Bearer <access_token>.
+  //     If there's no session/token, fall back to X-Secret-Key so internal/
+  //     unauthenticated calls still reach the backend (which will 401 the
+  //     per-user endpoints appropriately).
+  const headers: Record<string, string> = {}
+  let authForwarded = false
+  if (isMultiTenantMode()) {
+    const token = await getAccessToken()
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+      authForwarded = true
+    }
+  }
+  if (!authForwarded) {
+    headers['X-Secret-Key'] = SECRET_KEY
   }
   const contentType = req.headers.get('content-type')
   if (contentType) headers['Content-Type'] = contentType
 
-  const init: RequestInit = { method: req.method, headers, cache: 'no-store' }
+  // Abort the upstream just before Vercel's hard kill so we return a clean
+  // 502 instead of a 504, even though the backend may keep working.
+  const init: RequestInit = {
+    method: req.method,
+    headers,
+    cache: 'no-store',
+    signal: AbortSignal.timeout(55_000),
+  }
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     init.body = await req.text()
   }

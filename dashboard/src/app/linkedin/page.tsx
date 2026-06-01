@@ -4,11 +4,9 @@
  * Header: stat strip (drafts pending review · scheduled this week · posted last week)
  * Tabs:   Drafts · Scheduled · Posted
  *
- * Today this page reads from dashboard/src/lib/mock/linkedin.ts. The
- * /linkedin/* endpoints in api/linkedin.py are authored but not yet
- * wired into api/server.py — see api/LINKEDIN.md "How to wire the
- * router" for the one-line include. When that lands, swap MOCK_* for
- * fetch calls (parallel: drafts, schedule, voice profile).
+ * Reads from api/linkedin.py (already wired in api/server.py). On
+ * fetch failure we surface an error banner — never fall back to mock
+ * data (B10 / 2026-05-16) because that hid the B1 worker outage in prod.
  *
  * Server component owns data hand-off; LinkedInClient runs the
  * interactive bits (tabs, modal, optimistic state on cards).
@@ -16,11 +14,17 @@
 import { AppShell } from '@/components/layout/AppShell'
 import { PageHeader, Stat } from '@/components/ui'
 import { LinkedInClient } from '@/components/linkedin/LinkedInClient'
-import {
-  MOCK_DRAFTS,
-  MOCK_LINKEDIN_STATS,
-  MOCK_POSTING_SCHEDULE,
-} from '@/lib/mock/linkedin'
+import { fetchLinkedInDrafts, fetchLinkedInSchedule, fetchCompanies } from '@/lib/api'
+import type { CompanyOption } from '@/components/linkedin/GenerateModal'
+import type { LinkedInDraft, LinkedInPostingSchedule } from '@/lib/types/linkedin'
+
+// B10: empty-state schedule used when the backend is unreachable. Must
+// match LinkedInPostingSchedule so LinkedInClient never crashes on null.
+const EMPTY_SCHEDULE: LinkedInPostingSchedule = {
+  slots: [],
+  postsPerWeek: 0,
+  nextSlot: null,
+}
 
 export const dynamic = 'force-dynamic'
 
@@ -30,12 +34,63 @@ export const metadata = {
     'News-anchored LinkedIn drafts with a user-approval gate. Never auto-posts.',
 }
 
-export default function LinkedInPage() {
-  // TODO: replace with parallel fetch of /linkedin/drafts, /linkedin/posting-schedule
-  //       once api/linkedin.py is wired into api/server.py — see api/LINKEDIN.md.
-  const drafts = MOCK_DRAFTS
-  const stats = MOCK_LINKEDIN_STATS
-  const schedule = MOCK_POSTING_SCHEDULE
+// BUG-019: header "Scheduled this week" used a date-window filter while
+// the tab badge counted drafts with status in {approved, scheduled}. The
+// two could legitimately differ, but produced confusing drift (header
+// said 2, the Scheduled tab said 4). Pick one definition — drafts with
+// status approved|scheduled — and use it everywhere on this page.
+function countScheduled(drafts: LinkedInDraft[]): number {
+  return drafts.filter((d) => d.status === 'approved' || d.status === 'scheduled').length
+}
+
+async function loadLinkedInData(): Promise<{
+  drafts: LinkedInDraft[]
+  schedule: LinkedInPostingSchedule
+  companies: CompanyOption[]
+  error: string | null
+}> {
+  // B10: previously fell back to MOCK_DRAFTS / MOCK_POSTING_SCHEDULE on
+  // any error, hiding real backend outages. Now surface the failure with
+  // a real-shape empty schedule so LinkedInClient doesn't crash on null.
+  try {
+    const [drafts, schedule, companiesRes] = await Promise.all([
+      fetchLinkedInDrafts(),
+      fetchLinkedInSchedule().catch(() => EMPTY_SCHEDULE),
+      fetchCompanies().catch(() => ({ companies: [] })),
+    ])
+    const rawCompanies = (companiesRes?.companies ?? []) as Array<{
+      id: string
+      name: string
+      priority?: string | null
+      is_target?: boolean
+    }>
+    const companies: CompanyOption[] = rawCompanies
+      .filter((c) => c?.id && c?.name && c.is_target !== false)
+      .map((c) => ({ id: c.id, name: c.name, priority: c.priority ?? null }))
+    return { drafts, schedule, companies, error: null }
+  } catch (err) {
+    return {
+      drafts: [],
+      schedule: EMPTY_SCHEDULE,
+      companies: [],
+      error: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
+export default async function LinkedInPage() {
+  const { drafts, schedule, companies, error } = await loadLinkedInData()
+  // B10: stats are derived directly from `drafts` now (no MOCK_LINKEDIN_STATS).
+  // postedLastWeek counts drafts marked posted in the last 7 days.
+  const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000
+  const stats = {
+    pendingReview: drafts.filter((d) => d.status === 'draft').length,
+    scheduledThisWeek: countScheduled(drafts),
+    postedLastWeek: drafts.filter((d) => {
+      if (d.status !== 'posted' || !d.postedAt) return false
+      return new Date(d.postedAt).getTime() >= sevenDaysAgo
+    }).length,
+  }
 
   return (
     <AppShell wide>
@@ -44,6 +99,17 @@ export default function LinkedInPage() {
         title="LinkedIn"
         description="News-anchored drafts with a user-approval gate. Never auto-posts. You review, you copy, you publish."
       />
+
+      {error && (
+        <div
+          role="alert"
+          className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2 text-2xs text-fg-muted"
+        >
+          <span className="font-medium text-fg">Couldn&rsquo;t reach the backend</span>
+          <span className="text-fg-subtle"> — refresh to retry.</span>
+          <span className="block text-fg-subtle/80 mt-0.5">{error}</span>
+        </div>
+      )}
 
       <section
         aria-label="LinkedIn engine summary"
@@ -68,7 +134,7 @@ export default function LinkedInPage() {
         />
       </section>
 
-      <LinkedInClient initialDrafts={drafts} schedule={schedule} />
+      <LinkedInClient initialDrafts={drafts} schedule={schedule} companies={companies} />
     </AppShell>
   )
 }

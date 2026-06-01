@@ -32,7 +32,12 @@ export default function DailyCostChart({ rows, days, warning }: Props) {
  const { chartData, providers } = useMemo(() => {
  const byDay: Record<string, Record<string, number>> = {}
  const providerSet = new Set<string>()
- for (const r of rows) {
+ // Guard: defend against a malformed backend payload where `rows` is
+ // missing or non-iterable (e.g. cost telemetry table was just truncated,
+ // or a partial 5xx response slipped through). Render empty state instead
+ // of crashing the whole /costs page.
+ const safeRows = Array.isArray(rows) ? rows : []
+ for (const r of safeRows) {
  providerSet.add(r.provider)
  if (!byDay[r.day]) byDay[r.day] = {}
  byDay[r.day][r.provider] = (byDay[r.day][r.provider] || 0) + Number(r.total_cost_usd || 0)
@@ -58,9 +63,6 @@ export default function DailyCostChart({ rows, days, warning }: Props) {
  Stacked by provider · last {days} days
  </p>
  </div>
- <p className="text-2xs text-fg-subtle">
- source: <code className="text-fg-muted">v_daily_llm_cost</code>
- </p>
  </div>
 
  {warning && (
@@ -73,8 +75,7 @@ export default function DailyCostChart({ rows, days, warning }: Props) {
  <div className="text-center py-10 border border-dashed border-border rounded-lg">
  <p className="text-sm text-fg-muted">No LLM calls logged yet.</p>
  <p className="text-xs text-fg-subtle mt-1">
- Cost rows appear here once <code className="text-fg-muted">USE_G2_GRAPH=true</code>{' '}
- is set on Railway and a resume build runs.
+ Cost rows appear here once a resume build runs and the cost ledger receives its first entries.
  </p>
  </div>
  ) : (

@@ -23,6 +23,7 @@ import os
 import sys
 from datetime import datetime
 
+from apscheduler.events import EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import pytz
@@ -93,6 +94,18 @@ async def run_weekly_cost_digest():
     return await CostAlerter().send_weekly_digest()
 
 
+async def run_g6_follow_up_cadence():
+    """Phase 1.3 G6 daily follow-up cadence (cron 09:00 in user timezone).
+
+    Iterates over every active application for the seed user and runs the
+    G6 graph for each. Costs ~$0.12/follow-up only for applications that
+    cross their cadence window — others short-circuit at cadence_checker
+    and cost $0. See agents.g6_io.run_g6_batch.
+    """
+    from agents.g6_io import run_g6_batch
+    return await run_g6_batch()
+
+
 async def run_interview_prep(job_id: int):
     """Generate interview prep for a specific job."""
     from agents.interview_agent import InterviewAgent
@@ -159,6 +172,26 @@ def start_scheduler():
 
     scheduler = AsyncIOScheduler(timezone=tz)
 
+    # P1-2 (external audit) / §6.5 (internal): harden scheduler defaults so a
+    # backlog of missed fires (e.g. after a Railway restart) coalesces into a
+    # single run instead of a thundering herd. Per-job `misfire_grace_time`
+    # overrides below still win — these defaults are the floor.
+    JOB_DEFAULTS = {
+        "coalesce": True,           # collapse missed fires into one
+        "max_instances": 1,         # never run more than one instance at once
+        "misfire_grace_time": 300,  # floor; per-job values still override
+    }
+    scheduler.configure(job_defaults=JOB_DEFAULTS)
+
+    def on_job_misfire(event):
+        """Log scheduler misfires so we can see them in Railway logs."""
+        logger.warning(
+            f"scheduler_misfire: job_id={event.job_id} "
+            f"scheduled_run_time={event.scheduled_run_time}"
+        )
+
+    scheduler.add_listener(on_job_misfire, EVENT_JOB_MISSED)
+
     # Parse times
     scout_h, scout_m = map(int, s.job_scout_time.split(":"))
     boss_h, boss_m = map(int, s.boss_agent_time.split(":"))
@@ -213,6 +246,24 @@ def start_scheduler():
     console.print(f"   Daily Cost Alert:  {s.daily_alert_time} (>= ${s.daily_cost_alert_usd:.0f} threshold)")
     console.print(f"   Weekly Digest:     Sundays {s.weekly_digest_time}")
 
+    # Phase 1.3 (G6): daily follow-up cadence at 09:00 in user timezone.
+    # Iterates over active applications; ~$0.12/follow-up only for the
+    # rows past their cadence window. Others short-circuit at cadence_
+    # checker and cost $0.
+    #
+    # misfire_grace_time=3600 (1h) — drafts are useful even an hour late;
+    # better late than never. coalesce=True + max_instances=1 inherit from
+    # JOB_DEFAULTS (P1-2 hardening).
+    g6_h, g6_m = map(int, s.g6_cadence_time.split(":"))
+    scheduler.add_job(
+        lambda: asyncio.create_task(run_g6_follow_up_cadence()),
+        CronTrigger(hour=g6_h, minute=g6_m, timezone=tz),
+        id="g6_followup_cadence",
+        name="G6 Daily Follow-up Cadence",
+        misfire_grace_time=3600,
+    )
+    console.print(f"   G6 Follow-ups:     daily {s.g6_cadence_time} (active apps only)")
+
     scheduler.start()
     console.print("[green]Scheduler running. Waiting for next trigger...[/green]")
 
@@ -221,6 +272,82 @@ def start_scheduler():
     except (KeyboardInterrupt, SystemExit):
         scheduler.shutdown()
         console.print("\n[yellow]Scheduler stopped.[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# Background scheduler (non-blocking) for embedding in the FastAPI process.
+#
+# BUG-053 fix (2026-05-13): Production cost dashboard showed TODAY (UTC) =
+# $0.00, last LLM call 17h ago — the scheduler was never running. Root cause:
+# Railway only invokes `python main.py api` which starts uvicorn but never
+# touches start_scheduler(). This embeds the same 6 cron jobs inside the
+# FastAPI lifespan so a single Railway service does both.
+# ---------------------------------------------------------------------------
+_bg_scheduler: AsyncIOScheduler | None = None
+
+
+def start_scheduler_background() -> AsyncIOScheduler:
+    """Non-blocking variant of start_scheduler() for the API process."""
+    global _bg_scheduler
+    if _bg_scheduler is not None:
+        logger.warning("start_scheduler_background called twice — skipping")
+        return _bg_scheduler
+
+    from config.settings import get_settings
+    s = get_settings()
+    tz = pytz.timezone(s.timezone)
+    _bg_scheduler = AsyncIOScheduler(timezone=tz)
+    _bg_scheduler.configure(job_defaults={
+        "coalesce": True, "max_instances": 1, "misfire_grace_time": 300,
+    })
+    _bg_scheduler.add_listener(
+        lambda ev: logger.warning(
+            "scheduler_misfire: job_id=%s scheduled_run_time=%s",
+            ev.job_id, ev.scheduled_run_time,
+        ),
+        EVENT_JOB_MISSED,
+    )
+
+    scout_h, scout_m = map(int, s.job_scout_time.split(":"))
+    boss_h, boss_m = map(int, s.boss_agent_time.split(":"))
+    g6_h, g6_m = map(int, s.g6_cadence_time.split(":"))
+    daily_alert_h, daily_alert_m = map(int, s.daily_alert_time.split(":"))
+    weekly_digest_h, weekly_digest_m = map(int, s.weekly_digest_time.split(":"))
+
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_pipeline()),
+        CronTrigger(hour=scout_h, minute=scout_m, timezone=tz),
+        id="job_scout", name="Daily Job Scout", misfire_grace_time=300,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_boss_agent()),
+        CronTrigger(hour=boss_h, minute=boss_m, timezone=tz),
+        id="boss_agent", name="Nightly Boss Agent", misfire_grace_time=300,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_persona_synthesis()),
+        CronTrigger(day_of_week="sun", hour=3, minute=0, timezone=tz),
+        id="persona_synthesis", name="Weekly Persona Synthesis", misfire_grace_time=3600,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_daily_cost_alert()),
+        CronTrigger(hour=daily_alert_h, minute=daily_alert_m, timezone=tz),
+        id="daily_cost_alert", name="Daily Cost Alert", misfire_grace_time=600,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_weekly_cost_digest()),
+        CronTrigger(day_of_week="sun", hour=weekly_digest_h, minute=weekly_digest_m, timezone=tz),
+        id="weekly_cost_digest", name="Weekly Cost Digest", misfire_grace_time=3600,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_g6_follow_up_cadence()),
+        CronTrigger(hour=g6_h, minute=g6_m, timezone=tz),
+        id="g6_followup_cadence", name="G6 Daily Follow-up Cadence", misfire_grace_time=3600,
+    )
+
+    _bg_scheduler.start()
+    logger.info("[bg-scheduler] started with %d cron jobs", len(_bg_scheduler.get_jobs()))
+    return _bg_scheduler
 
 
 def start_api():
@@ -289,6 +416,8 @@ if __name__ == "__main__":
                         help="Run daily cost-alert threshold check now (Phase 1.10)")
     parser.add_argument("--weekly-digest", action="store_true",
                         help="Send weekly cost digest now (Phase 1.10)")
+    parser.add_argument("--g6-followups", action="store_true",
+                        help="Run G6 follow-up cadence now (Phase 1.3)")
     parser.add_argument("--interview", action="store_true", help="Generate interview prep")
     parser.add_argument("--job-id", type=int, help="Job ID for interview prep")
     parser.add_argument("--company", type=str, help="Target a specific company")
@@ -322,6 +451,8 @@ if __name__ == "__main__":
         asyncio.run(run_daily_cost_alert())
     elif args.weekly_digest:
         asyncio.run(run_weekly_cost_digest())
+    elif args.g6_followups:
+        asyncio.run(run_g6_follow_up_cadence())
     elif args.interview and args.job_id:
         asyncio.run(run_interview_prep(args.job_id))
     elif args.now or args.company or args.role:

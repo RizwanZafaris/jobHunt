@@ -21,8 +21,8 @@ import type { Workspace, WorkspaceTabKey } from '@/lib/types/workspace'
 export const dynamic = 'force-dynamic'
 
 interface WorkspacePageProps {
-  params: { id: string }
-  searchParams?: { tab?: string }
+  params: Promise<{ id: string }>
+  searchParams?: Promise<{ tab?: string }>
 }
 
 const VALID_TABS: WorkspaceTabKey[] = ['role', 'resume', 'interview', 'network', 'apply']
@@ -34,14 +34,17 @@ function resolveInitialTab(raw?: string): WorkspaceTabKey {
   return 'role'
 }
 
-export async function generateMetadata({ params }: WorkspacePageProps) {
+export async function generateMetadata(props: WorkspacePageProps) {
+  const params = await props.params;
   return {
     title: `Application · ${params.id} · Job Hunt`,
     description: 'Application workspace — role brief, resume editor, warm intros, interview prep, apply.',
   }
 }
 
-export default async function WorkspacePage({ params, searchParams }: WorkspacePageProps) {
+export default async function WorkspacePage(props: WorkspacePageProps) {
+  const searchParams = await props.searchParams;
+  const params = await props.params;
   const jobId = Number(params.id)
   if (!Number.isFinite(jobId) || jobId <= 0) {
     notFound()
