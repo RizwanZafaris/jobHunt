@@ -65,32 +65,28 @@ class TestNetworkClient:
         assert "MOCK_INTRO_DRAFT" not in src, "NetworkClient still references MOCK_INTRO_DRAFT"
 
 
-class TestPeopleDiscoveryButton:
-    """2026-05-27: replaced LinkedInImportButton (CSV upload) with
-    PeopleDiscoveryButton (server-side Perplexity discovery)."""
+class TestPeopleFinder:
+    """Network discovery uses the Apollo people-finder against real backend
+    routes — the LinkedIn CSV upload was removed (2026-05-31)."""
 
-    def test_uses_real_fetch(self):
-        src = _read("components/network/PeopleDiscoveryButton.tsx")
-        assert "/api/proxy/actions/today/trigger-people-discovery" in src, (
-            "PeopleDiscoveryButton doesn't hit the trigger-people-discovery endpoint"
-        )
-        assert "fetch(" in src, "PeopleDiscoveryButton missing fetch call"
+    def test_finder_posts_to_real_endpoints(self):
+        src = _read("components/network/PeopleFinderModal.tsx")
+        assert "/api/proxy/apollo/search-people" in src, "finder doesn't call Apollo search"
+        assert "/api/proxy/network/people" in src, "finder doesn't add via /network/people"
 
-    def test_no_mock_delay(self):
-        src = _read("components/network/PeopleDiscoveryButton.tsx")
-        assert "setTimeout" not in src, "PeopleDiscoveryButton still uses artificial delay"
+    def test_no_mock_fallback(self):
+        src = _read("components/network/PeopleFinderModal.tsx")
+        assert "MOCK_IMPORT_SUMMARY" not in src
+        assert "setTimeout" not in src
 
-    def test_csv_button_deleted(self):
-        """The old LinkedInImportButton.tsx must not exist."""
-        import os
-        dashboard_root = os.path.join(
-            os.path.dirname(__file__), "..", "dashboard", "src"
-        )
-        path = os.path.join(dashboard_root, "components/network/LinkedInImportButton.tsx")
-        assert not os.path.exists(path), (
-            "LinkedInImportButton.tsx still exists — was supposed to be deleted "
-            "alongside the CSV upload removal."
-        )
+    def test_csv_upload_button_is_gone(self):
+        # The old CSV component must not exist, and no surface may reference it.
+        assert _read("components/network/LinkedInImportButton.tsx") == ""
+        for rel in ("components/network/NetworkClient.tsx",
+                    "components/workspace/NetworkTab.tsx"):
+            src = _read(rel)
+            assert "LinkedInImportButton" not in src
+            assert "import/linkedin-csv" not in src
 
 
 class TestLibApi:

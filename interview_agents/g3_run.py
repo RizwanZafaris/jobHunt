@@ -26,6 +26,22 @@ logger = logging.getLogger(__name__)
 # Process-wide compiled graph (with checkpointer if available)
 _GRAPH = None
 
+# ─── LangGraph runaway guard (Phase 1, Finding 4) ───────────────────────
+# The G3 mock-interview loop runs at most settings.g3_max_iterations (2)
+# times. Each iteration is a small fan-out of nodes; with the preamble +
+# tail the worst-case super-step count is well under LangGraph's default
+# of 25. We still set an EXPLICIT limit so a routing bug raises a
+# controlled GraphRecursionError instead of looping to the silent default.
+G3_RECURSION_LIMIT = 40
+
+
+def _default_user_id() -> str:
+    """Seed-user UUID in single-user mode (mirrors g2_run / g9_run)."""
+    return os.environ.get(
+        "RIZWAN_USER_ID",
+        "00000000-0000-0000-0000-000000000001",
+    )
+
 
 def _get_graph():
     """Lazy graph compile — only happens on first invocation."""
@@ -109,17 +125,35 @@ async def run_g3_graph(
 
     settings = get_settings()
 
-    # Resolve company name from the application/job if not provided
+    # Resolve company name AND the owning user_id from the application row.
+    # user_id tenant-namespaces the checkpoint thread_id (Phase 1, Finding
+    # 4) so two tenants never share a checkpoint thread. The applications
+    # row carries user_id; we fall back to the single-user seed UUID if the
+    # row can't be read (degrade gracefully — never break the build).
+    user_id: Optional[str] = None
     if not company_name:
         try:
             application = load_application(application_id)
             company_name = application.get("company") or ""
+            user_id = application.get("user_id")
             if not company_name and application.get("job_id"):
                 job = load_job(application["job_id"])
                 company_name = job.get("company") or ""
         except Exception as e:
             logger.warning(f"G3 run: company name resolution failed: {e}")
             company_name = ""
+    else:
+        # company_name supplied — still need the row's user_id for the
+        # thread namespace. Best-effort; failure degrades to the seed UUID.
+        try:
+            application = load_application(application_id)
+            user_id = application.get("user_id")
+        except Exception as e:
+            logger.warning(
+                f"G3 run: could not load application {application_id!r} "
+                f"for user_id ({e}) — using seed user for thread namespacing"
+            )
+    user_id = str(user_id) if user_id else _default_user_id()
 
     canonical = _canonicalize_company(company_name) if company_name else ""
     cap = (
@@ -127,12 +161,14 @@ async def run_g3_graph(
         else settings.g3_max_cost_usd
     )
     logger.info(
-        f"G3 run start: application_id={application_id} round={round_type}#{round_number}"
+        f"G3 run start: application_id={application_id} user_id={user_id}"
+        f" round={round_type}#{round_number}"
         f" company={company_name!r} → canonical={canonical!r} cost_cap=${cap:.2f}"
     )
 
     initial_state = {
         "application_id": application_id,
+        "user_id": user_id,
         "company_name": canonical,
         "round_type": round_type,
         "round_number": round_number,
@@ -145,11 +181,18 @@ async def run_g3_graph(
         "cost_usd_total": 0.0,
         "latency_ms_total": 0,
     }
-    thread_id = f"g3-app-{application_id}-r{round_number}"
+    # Tenant-namespace the checkpoint thread_id with user_id (Phase 1,
+    # Finding 4). Single-user mode → seed UUID → deterministic, unchanged.
+    thread_id = f"g3-{user_id}-app-{application_id}-r{round_number}"
 
     graph = _get_graph()
     try:
-        config = {"configurable": {"thread_id": thread_id}}
+        # recursion_limit set EXPLICITLY (Phase 1, Finding 4) so a routing
+        # bug stops with GraphRecursionError rather than the silent default.
+        config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": G3_RECURSION_LIMIT,
+        }
         final_state = await graph.ainvoke(initial_state, config=config)
         logger.info(
             f"G3 run done: application_id={application_id} "

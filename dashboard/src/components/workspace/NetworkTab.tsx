@@ -18,6 +18,7 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -25,7 +26,7 @@ import { Icon } from '@/components/ui/Icon'
 import { Pill } from '@/components/ui/Pill'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { IntroDraftModal } from '@/components/network/IntroDraftModal'
-import { PeopleDiscoveryButton, type DiscoveryResult } from '@/components/network/PeopleDiscoveryButton'
+import { PeopleFinderModal } from '@/components/network/PeopleFinderModal'
 import { submitDraftIntro } from '@/lib/api'
 import type { IntroDraft, ReferralPath } from '@/lib/types/network'
 
@@ -64,37 +65,37 @@ export function NetworkTab({
   targetResolved,
   onNetworkRefresh,
 }: NetworkTabProps) {
+  const router = useRouter()
   const [activePath, setActivePath] = useState<ReferralPath | null>(null)
-  const [discoveryResult, setDiscoveryResult] = useState<DiscoveryResult | null>(null)
+  const [finderOpen, setFinderOpen] = useState(false)
 
-  const handleDiscovery = (result: DiscoveryResult) => {
-    setDiscoveryResult(result)
+  const handleFinderAdded = () => {
     onNetworkRefresh?.()
+    router.refresh()
   }
+  const finderButton = (
+    <Button variant="primary" size="md" onClick={() => setFinderOpen(true)}>
+      <Icon name="search" size={14} />
+      Find people
+    </Button>
+  )
 
   // Empty state 1: zero people on file.
   if (networkSize === 0) {
     return (
-      <Card padding="md">
-        <EmptyState
-          icon="users"
-          title="Discover people at your target companies"
-          description={`We'll use Perplexity to find Recruiters, Heads of Talent, Hiring Managers, and Senior PMs at ${companyName} and your other target companies — no LinkedIn CSV upload required.`}
-          action={<PeopleDiscoveryButton onResult={handleDiscovery} />}
-          hint={
-            <>
-              Runs server-side via Perplexity Sonar (~60-120s for 20 companies).
-              Results land in your network graph automatically.
-            </>
-          }
-        />
-        {discoveryResult && (
-          <p role="status" className="mt-3 text-2xs text-success text-center">
-            Discovered {discoveryResult.total_people_persisted} people across{' '}
-            {discoveryResult.companies_processed} companies. Refresh to see paths.
-          </p>
+      <>
+        <Card padding="md">
+          <EmptyState
+            icon="users"
+            title={`Find people at ${companyName}`}
+            description={`Search Apollo for people who work at ${companyName} and add them to your network to surface warm referral paths.`}
+            action={finderButton}
+          />
+        </Card>
+        {finderOpen && (
+          <PeopleFinderModal company={companyName} onClose={() => setFinderOpen(false)} onAdded={handleFinderAdded} />
         )}
-      </Card>
+      </>
     )
   }
 
@@ -124,19 +125,19 @@ export function NetworkTab({
   // Empty state 3: target resolved but zero paths.
   if (paths.length === 0) {
     return (
-      <Card padding="md">
-        <EmptyState
-          icon="users"
-          title={`No warm intros to ${companyName} yet`}
-          description={`We checked your ${networkSize} contacts — no one currently works there, and no two-hop introducer connects you. Discover more people via Perplexity, or apply cold this round.`}
-          action={<PeopleDiscoveryButton onResult={handleDiscovery} />}
-        />
-        {discoveryResult && (
-          <p role="status" className="mt-3 text-2xs text-success text-center">
-            Discovered {discoveryResult.total_people_persisted} people. Refresh to recompute paths.
-          </p>
+      <>
+        <Card padding="md">
+          <EmptyState
+            icon="users"
+            title={`No warm intros to ${companyName} yet`}
+            description={`We checked your ${networkSize} contacts — no one currently works there, and no two-hop introducer connects you. Find more people at ${companyName} or apply cold this round.`}
+            action={finderButton}
+          />
+        </Card>
+        {finderOpen && (
+          <PeopleFinderModal company={companyName} onClose={() => setFinderOpen(false)} onAdded={handleFinderAdded} />
         )}
-      </Card>
+      </>
     )
   }
 
@@ -148,9 +149,15 @@ export function NetworkTab({
           <h2 id="warm-intros-title" className="text-base font-semibold text-fg tracking-tight">
             Warm intros to {companyName}
           </h2>
-          <p className="text-2xs text-fg-subtle">
-            {paths.length} path{paths.length === 1 ? '' : 's'} from your {networkSize}-person network
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-2xs text-fg-subtle">
+              {paths.length} path{paths.length === 1 ? '' : 's'} from your {networkSize}-person network
+            </p>
+            <Button variant="secondary" size="sm" onClick={() => setFinderOpen(true)}>
+              <Icon name="search" size={14} />
+              Find more
+            </Button>
+          </div>
         </header>
         <ol className="flex flex-col gap-2" aria-label="Warm-intro paths">
           {paths.map((p) => (
@@ -167,6 +174,10 @@ export function NetworkTab({
         draftIntro={draftIntroForPath}
         onClose={() => setActivePath(null)}
       />
+
+      {finderOpen && (
+        <PeopleFinderModal company={companyName} onClose={() => setFinderOpen(false)} onAdded={handleFinderAdded} />
+      )}
     </>
   )
 }

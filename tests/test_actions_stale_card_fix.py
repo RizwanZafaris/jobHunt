@@ -150,27 +150,54 @@ class TestAdyenScenario:
 
 # ─── Fix 2 — dismiss filter ──────────────────────────────────────────────
 class TestDismissFilter:
+    """Migration 042 pushed the active-snooze predicate into Postgres:
+    the query now applies
+    ``.or_("snoozed_until.is.null,snoozed_until.gt.<now>")`` server-side and
+    returns ONLY active dismissals, instead of fetching every row and
+    filtering snoozes in Python. The mock chain therefore includes the
+    ``.or_(...)`` link, and the rows the mock yields are exactly what the DB
+    would return after applying the predicate.
+    """
+
     def test_active_dismissed_ids_returns_permanent(self):
         """snoozed_until=None → permanent → always in active set."""
         with patch.object(A, "get_supabase") as gs:
-            gs.return_value.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
+            gs.return_value.table.return_value.select.return_value.eq.return_value.or_.return_value.execute.return_value.data = [
                 {"job_id": 1, "snoozed_until": None},
                 {"job_id": 2, "snoozed_until": None},
             ]
             result = A._active_dismissed_job_ids("test-user")
             assert result == {1, 2}
 
-    def test_active_dismissed_ids_filters_expired_snooze(self):
-        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    def test_active_dismissed_ids_collects_db_filtered_active_rows(self):
+        """With the filter pushed down, Postgres returns only active rows
+        (future snooze + permanent); the expired-snooze row never comes
+        back. The function must collect every job_id the DB hands it."""
         future = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
         with patch.object(A, "get_supabase") as gs:
-            gs.return_value.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
-                {"job_id": 10, "snoozed_until": past},    # expired, NOT in active
+            gs.return_value.table.return_value.select.return_value.eq.return_value.or_.return_value.execute.return_value.data = [
                 {"job_id": 20, "snoozed_until": future},  # still active
                 {"job_id": 30, "snoozed_until": None},    # permanent
             ]
             result = A._active_dismissed_job_ids("test-user")
             assert result == {20, 30}
+
+    def test_active_dismissed_ids_pushes_snooze_filter_into_query(self):
+        """The expired-snooze exclusion must happen server-side via
+        ``.or_("snoozed_until.is.null,snoozed_until.gt.<now>")`` — NOT in a
+        Python loop. Assert the query is constructed with that predicate,
+        which is the contract PostgREST honors at runtime (mirrors
+        idx_dismissals_active from migration 042)."""
+        with patch.object(A, "get_supabase") as gs:
+            eq_ret = gs.return_value.table.return_value.select.return_value.eq.return_value
+            eq_ret.or_.return_value.execute.return_value.data = []
+            A._active_dismissed_job_ids("test-user")
+            # Exactly one .or_(...) call, with the active-snooze predicate.
+            eq_ret.or_.assert_called_once()
+            (predicate,), _kwargs = eq_ret.or_.call_args
+            assert predicate.startswith("snoozed_until.is.null,snoozed_until.gt."), (
+                f"active-snooze filter must be pushed into the query; got {predicate!r}"
+            )
 
     def test_active_dismissed_ids_db_error_returns_empty(self):
         """Defensive: a DB error must NOT black out /today."""

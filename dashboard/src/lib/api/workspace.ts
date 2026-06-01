@@ -43,8 +43,39 @@ function buildHeaders(extra?: Record<string, string>): Record<string, string> {
 }
 
 /**
+ * A retryable build gate (e.g. persona quality too low, posting closed,
+ * validation failed). Carries the structured backend payload so the UI can
+ * render the real message and offer a "Build anyway" (force=true) retry.
+ */
+export class ResumeBuildGateError extends Error {
+  code: string
+  status: number
+  retryWithForce: boolean
+  raw: Record<string, unknown>
+  constructor(args: {
+    code: string
+    status: number
+    message: string
+    retryWithForce: boolean
+    raw: Record<string, unknown>
+  }) {
+    super(args.message)
+    this.name = 'ResumeBuildGateError'
+    this.code = args.code
+    this.status = args.status
+    this.retryWithForce = args.retryWithForce
+    this.raw = args.raw
+  }
+}
+
+/**
  * Throw a typed error from a non-2xx response, including the body when
  * possible. Centralised so every callsite reports failures consistently.
+ *
+ * When the backend returns a STRUCTURED detail object with a `code` (the
+ * persona-quality / posting-closed / validation-failed gates), throw a typed
+ * {@link ResumeBuildGateError} that preserves `retry_with_force` so callers can
+ * offer a force retry — instead of flattening it to an opaque string.
  */
 async function throwForStatus(res: Response, op: string): Promise<never> {
   let body: string | null = null
@@ -60,11 +91,30 @@ async function throwForStatus(res: Response, op: string): Promise<never> {
       if (typeof json.detail === 'string') {
         detail = json.detail
       } else if (json.detail && typeof json.detail === 'object') {
-        const dt = json.detail as { message?: unknown; code?: unknown }
-        if (typeof dt.message === 'string') detail = dt.message
-        else if (typeof dt.code === 'string') detail = dt.code
+        const dt = json.detail as Record<string, unknown>
+        const message =
+          typeof dt.message === 'string'
+            ? dt.message
+            : typeof dt.code === 'string'
+              ? (dt.code as string)
+              : detail
+        if (typeof dt.code === 'string') {
+          // 409 gates (posting_closed/validation_failed) all say "pass
+          // force=true to override"; 400 persona gate sets retry_with_force.
+          const retryWithForce =
+            dt.retry_with_force === true || res.status === 409
+          throw new ResumeBuildGateError({
+            code: dt.code as string,
+            status: res.status,
+            message,
+            retryWithForce,
+            raw: dt,
+          })
+        }
+        detail = message
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof ResumeBuildGateError) throw e
       detail = body.slice(0, 240)
     }
   }

@@ -36,7 +36,7 @@ from agents.referral_graph import (
 )
 from api.context import get_current_user
 from api.users import User
-from db.client import get_supabase
+from db.client import aexecute, get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -343,14 +343,13 @@ async def draft_intro(
     db = get_supabase()
 
     # Verify the target company belongs to this user.
-    tc_rows = (
+    tc_rows = (await aexecute(
         db.table("target_companies")
         .select("id, name, company_name")
         .eq("id", str(body.target_company_id))
         .eq("user_id", str(user.id))
         .limit(1)
-        .execute()
-    ).data or []
+    )).data or []
     if not tc_rows:
         raise HTTPException(status_code=404, detail="no_intro_path_to_target")
     target_company_name = tc_rows[0].get("company_name") or tc_rows[0].get("name") or ""
@@ -387,13 +386,12 @@ async def draft_intro(
     }
     # Try to enrich from users table row.
     try:
-        u_rows = (
+        u_rows = (await aexecute(
             db.table("users")
             .select("full_name, headline, linkedin_url, summary, location")
             .eq("id", str(user.id))
             .limit(1)
-            .execute()
-        ).data or []
+        )).data or []
         if u_rows:
             ur = u_rows[0]
             candidate_profile["name"] = ur.get("full_name") or candidate_profile["name"]

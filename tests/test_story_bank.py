@@ -247,6 +247,9 @@ class TestSearchStories:
         query_emb = [0.0, 1.0]
 
         fake_db = MagicMock()
+        # RPC layer (migration 018) returns no rows here, so the client-side
+        # cosine fallback that this test sets up below is what runs.
+        fake_db.rpc.return_value.execute.return_value.data = []
         chain = fake_db.table.return_value.select.return_value
         chain.eq.return_value.not_.is_.return_value.execute.return_value.data = [
             {"id": "a", "user_id": RIZWAN_UUID, "title": "A",
@@ -275,6 +278,9 @@ class TestSearchStories:
 
         emb = [1.0, 0.0]
         fake_db = MagicMock()
+        # RPC layer (migration 018) returns no rows here, so the client-side
+        # cosine fallback that this test sets up below is what runs.
+        fake_db.rpc.return_value.execute.return_value.data = []
         chain = fake_db.table.return_value.select.return_value
         chain.eq.return_value.not_.is_.return_value.execute.return_value.data = [
             {"id": "a", "user_id": RIZWAN_UUID, "title": "A",

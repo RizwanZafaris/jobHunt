@@ -27,10 +27,16 @@ import yaml
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from agents.base_agent import BaseAgent
+from agents.concurrency import gather_bounded
 from config.settings import get_settings
 from db.client import upsert_job, upsert_company, get_company_by_name, get_supabase
 
 logger = logging.getLogger(__name__)
+
+# Max concurrent GPT-4.1 scoring chunks. Each chunk is one ask_openai
+# call covering 25 jobs; with hundreds of jobs an unbounded gather would
+# fire ~dozens of LLM calls at once (SCALABILITY.md P1 — bound fan-outs).
+SCORE_CHUNK_CONCURRENCY = 4
 
 
 def _serper_enabled() -> bool:
@@ -1054,6 +1060,152 @@ class JobScoutAgent(BaseAgent):
 
     # ── Expiry Validation ─────────────────────────────────────────────────────
 
+    # ── Company-URL sanity check (2026-05-27 mislabel fix) ─────────────────
+    # Bug: Perplexity sometimes returns URLs for OTHER companies when
+    # asked about a target. Example from production: query="STC Pay"
+    # returned a pnc.wd5.myworkdayjobs.com URL (PNC Bank). We mislabeled
+    # that row as STC Pay because the parser trusted the query context.
+    # Fix: validate URL hostname/path against the target company before
+    # accepting the candidate.
+    _KNOWN_ATS_HOSTS: tuple[str, ...] = (
+        "boards.greenhouse.io", "boards-api.greenhouse.io", "job-boards.greenhouse.io",
+        "jobs.lever.co", "api.lever.co",
+        "jobs.ashbyhq.com",
+        "jobs.smartrecruiters.com", "api.smartrecruiters.com",
+        "myworkdayjobs.com",
+    )
+
+    def _company_slug(self, company_name: str) -> str:
+        """Lowercase, alphanumeric-only slug for fuzzy URL matching.
+
+        "Standard Chartered" → "standardchartered"
+        "American Express GBT (Global Business Travel)" → "americanexpressgbtglobalbusinesstravel"
+        "STC Pay / STC Bank" → "stcpaystcbank"
+        """
+        return re.sub(r"[^a-z0-9]", "", (company_name or "").lower())
+
+    def _url_matches_company(
+        self,
+        url: str,
+        company_name: str,
+        company_domain: Optional[str] = None,
+        careers_url: Optional[str] = None,
+    ) -> bool:
+        """Sanity check: does the URL plausibly belong to this company?
+
+        Accept if ANY of:
+          1. URL hostname contains company_domain (most reliable)
+          2. URL hostname equals or is a subdomain of careers_url's host
+             (catches brand-disjoint Workday tenants like
+             travelhrportal=AmexGBT, peopleplus=SCB)
+          3. Hostname's first label OR full host contains a slug variant
+             of the company name (paypal.wd1.myworkdayjobs.com → PayPal)
+          4. URL is on a known generic ATS AND path contains a slug variant
+             (boards.greenhouse.io/okx → OKX)
+
+        Rules 3 and 4 BOTH run even when one fails — Workday URLs can
+        match either way depending on whether the company name slug
+        appears in the hostname subdomain or in the URL path.
+
+        Returns False otherwise — prefers false negatives (a few legit
+        candidates rejected) over false positives (PNC Bank job labeled
+        as STC Pay).
+        """
+        if not url or not company_name:
+            return False
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+            path = (parsed.path or "").lower()
+        except Exception:
+            return False
+        if not host:
+            return False
+
+        slug = self._company_slug(company_name)
+        if not slug or len(slug) < 2:
+            return False
+        # Build short-slug variants — first 1-2-3 words for multi-word
+        # company names. "American Express GBT (Global Business Travel)"
+        # → ("american", "americanexpress", "americanexpressgbt", "amex"...).
+        words = re.findall(r"[a-z0-9]+", company_name.lower())
+        slug_variants: set[str] = set()
+        for n in range(1, min(len(words), 4) + 1):
+            variant = "".join(words[:n])
+            if len(variant) >= 3:
+                slug_variants.add(variant)
+        slug_variants.add(slug)
+        # Hand-coded abbreviations for common multi-word company names.
+        # (Amex, JPMC, GS, BoA…) — extend as needed when scouts mislabel.
+        abbrev_map = {
+            "americanexpress": ("amex", "aexp"),
+            "jpmorganchase": ("jpmc", "jpmorgan"),
+            "goldmansachs": ("goldman", "gs"),
+            "bankofamerica": ("bofa", "boa"),
+            "standardchartered": ("scb", "stanchart", "peopleplus"),
+            "emiratesnbd": ("enbd", "liv"),
+        }
+        for k, vs in abbrev_map.items():
+            if k in slug:
+                slug_variants.update(vs)
+
+        # Rule 1 — explicit company_domain match.
+        if company_domain:
+            cd = company_domain.lower().replace("https://", "").replace("http://", "").strip("/")
+            cd_base = cd.split("/", 1)[0]
+            if cd_base and cd_base in host:
+                return True
+
+        # Rule 2 — careers_url cross-check (catches brand-disjoint ATS tenants).
+        if careers_url:
+            try:
+                careers_host = (urlparse(careers_url).hostname or "").lower()
+                if careers_host and (careers_host == host or host.endswith("." + careers_host)
+                                     or careers_host.endswith("." + host)):
+                    return True
+                # Also accept if careers_url's first label matches URL's first label
+                # (e.g. careers points to travelhrportal.wd1, URL is on same subdomain).
+                if careers_host:
+                    if careers_host.split(".", 1)[0] == host.split(".", 1)[0]:
+                        return True
+            except Exception:
+                pass
+
+        # Token-boundary matcher (2026-05-29 hardening). Match a slug variant
+        # against whole host/path TOKENS — not naive substrings. The old
+        # `any(v in path ...)` accepted "stc" inside "westcoast" and "unit"
+        # inside "opportunity" — short-slug false positives that violate this
+        # function's stated "prefer false negatives" contract. Equality covers
+        # every real ATS tenant/slug; a length-gated prefix match (len >= 5)
+        # allows distinctive compound slugs (finastra, worldline, checkout)
+        # without re-opening the short-slug hole.
+        def _tok_match(tokens: list[str]) -> bool:
+            for tok in tokens:
+                if not tok:
+                    continue
+                for v in slug_variants:
+                    if tok == v or (len(v) >= 5 and tok.startswith(v)):
+                        return True
+            return False
+
+        host_tokens = re.split(r"[^a-z0-9]+", host)
+        path_tokens = re.split(r"[^a-z0-9]+", path)
+
+        # Rule 3 — hostname slug match. Workday encodes the company in the
+        # first host label; tokenising the whole host also catches
+        # "careers.adyen.com" → "adyen".
+        if _tok_match(host_tokens):
+            return True
+
+        # Rule 4 — generic ATS path slug match (Greenhouse / Lever / Ashby /
+        # SmartRecruiters use /<company-slug>/... path patterns).
+        is_generic_ats = any(known in host for known in self._KNOWN_ATS_HOSTS)
+        if is_generic_ats and _tok_match(path_tokens):
+            return True
+
+        return False
+
     # ── JobScout v2 — per-target Perplexity discovery + 7-safeguard validation ──
     async def _discover_via_perplexity(
         self,
@@ -1108,13 +1260,35 @@ class JobScoutAgent(BaseAgent):
                     logger.warning("Perplexity discovery failed for %s: %s", name, e)
                     return name, [], 0.0
 
+        # Re-pull domain per company for the sanity check below.
+        # rows already has (id, name, domain, careers_url) — index it by name.
+        rows_by_name = {(r.get("name") or ""): r for r in rows}
+
         results = await asyncio.gather(*(_one(c) for c in rows))
+        mislabel_count = 0
         for name, cands, cost in results:
             total_cost += cost
+            co_row = rows_by_name.get(name) or {}
+            company_domain = co_row.get("domain")
+            careers_url = co_row.get("careers_url")
             for c in cands:
                 url = c.get("url") or ""
                 title = c.get("title") or f"{name} — product role"
                 if not url:
+                    continue
+                # 2026-05-27 mislabel fix: drop URLs that obviously belong
+                # to a different company. Real production bug: searching
+                # "STC Pay" returned pnc.wd5.myworkdayjobs.com URLs and
+                # "MagnatiPay" returned worldpay.wd5 URLs. Without this
+                # guard, those rows landed in /today labeled with the
+                # wrong company name.
+                if not self._url_matches_company(url, name, company_domain, careers_url):
+                    mislabel_count += 1
+                    logger.info(
+                        "Perplexity mislabel rejected — query=%r url=%s "
+                        "(URL doesn't match this company; would have been mislabeled)",
+                        name, url,
+                    )
                     continue
                 all_candidates.append({
                     "title": title,
@@ -1127,6 +1301,11 @@ class JobScoutAgent(BaseAgent):
                     "_published_at": c.get("published_at"),
                 })
 
+        if mislabel_count:
+            self.log(
+                f"   Perplexity mislabels filtered: {mislabel_count} "
+                f"(URLs from other companies — see logs)"
+            )
         self.log(f"   Perplexity per-target discovery: {len(all_candidates)} candidates · ${total_cost:.4f}")
         return all_candidates
 
@@ -1400,8 +1579,15 @@ Return JSON only."""
                 logger.warning(f"Scoring chunk offset={offset} failed: {e}")
                 return {}
 
-        chunk_results = await asyncio.gather(
-            *[score_chunk(chunk, i * chunk_size) for i, chunk in enumerate(chunks)]
+        # Bounded fan-out: cap concurrent GPT-4.1 scoring calls (was an
+        # unbounded gather firing one LLM call per 25-job chunk). Order is
+        # preserved, but score_map is keyed by id so it wouldn't matter.
+        chunk_results = await gather_bounded(
+            [
+                lambda chunk=chunk, off=i * chunk_size: score_chunk(chunk, off)
+                for i, chunk in enumerate(chunks)
+            ],
+            limit=SCORE_CHUNK_CONCURRENCY,
         )
         score_map: dict[int, dict] = {}
         for partial in chunk_results:

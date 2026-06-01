@@ -25,10 +25,13 @@ Pricing notes:
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import logging
 import os
+import queue
 import re
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any, Literal, Optional
@@ -282,6 +285,7 @@ class LLMRouter:
         temperature: float = 0.3,
         tools: Optional[list] = None,
         agent_name: Optional[str] = None,
+        user_id: Optional[str] = None,
         json_response: bool = False,
         cache_system: Optional[bool] = None,
         **provider_kwargs: Any,
@@ -307,6 +311,12 @@ class LLMRouter:
                Honoured only when provider="anthropic" AND
                ANTHROPIC_PROMPT_CACHE_ENABLED is not "0".
         """
+        # Per-tenant spend cap (Phase 3). No-op when PER_TENANT_BUDGET_ENABLED is
+        # off (default) — one env check. When on, raises BudgetExceeded BEFORE any
+        # spend, so an over-budget tenant never reaches a provider.
+        from agents.budget_gate import enforce_budget
+        await enforce_budget(user_id, agent_name=agent_name)
+
         start = time.perf_counter()
         try:
             if provider == "anthropic":
@@ -318,17 +328,17 @@ class LLMRouter:
             elif provider == "openai":
                 result = await self._call_openai_compatible(
                     "openai", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "deepseek":
                 result = await self._call_openai_compatible(
                     "deepseek", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "moonshot":
                 result = await self._call_openai_compatible(
                     "moonshot", model, system, messages, max_tokens, temperature,
-                    tools, json_response, **provider_kwargs,
+                    tools, json_response, agent_name=agent_name, **provider_kwargs,
                 )
             elif provider == "google":
                 result = await self._call_google(
@@ -390,6 +400,109 @@ class LLMRouter:
         )
         parsed = _parse_json_loose(result.text)
         return parsed, result
+
+    async def ask_json_validated(
+        self,
+        provider: Provider,
+        model: str,
+        system: str,
+        messages: list[dict],
+        response_model: Any,
+        max_tokens: int = 4096,
+        temperature: float = 0.2,
+        agent_name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> tuple[Any, LLMResult]:
+        """
+        Like ask_json() but validates the response against a Pydantic
+        model. On ValidationError, retries ONCE with the validation
+        error appended to the user message. Fails loud on second failure.
+
+        Added 2026-05-27 (P0 audit) — closes the silent-data-corruption
+        gap from agents like scoring_agent that accept whatever shape
+        the LLM returns.
+
+        Returns (validated_model_instance, full_LLMResult).
+
+        Usage:
+            from pydantic import BaseModel
+            class FitScore(BaseModel):
+                score: int
+                reasoning: str
+                domain_match: bool
+
+            obj, result = await router.ask_json_validated(
+                provider="anthropic",
+                model="claude-sonnet-4-6",
+                system="You are a scoring agent...",
+                messages=[{"role":"user","content":"Score this job..."}],
+                response_model=FitScore,
+            )
+            print(obj.score)  # IDE-typed; no None checks needed
+        """
+        # Local import so the router stays optional-dep friendly when
+        # callers don't use this method.
+        from pydantic import ValidationError
+
+        # First attempt
+        parsed, result = await self.ask_json(
+            provider=provider,
+            model=model,
+            system=system,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            agent_name=agent_name,
+            **kwargs,
+        )
+        try:
+            return response_model.model_validate(parsed), result
+        except ValidationError as first_err:
+            logger.warning(
+                "[%s] ask_json_validated: first attempt failed Pydantic validation "
+                "against %s — retrying once with error context. errors=%s",
+                agent_name or "?",
+                response_model.__name__,
+                first_err.errors()[:3],  # cap log noise
+            )
+
+        # Retry once, with the validation error appended so the model
+        # can self-correct. This is the cheapest possible self-repair
+        # loop and works ~90% of the time per OpenAI's structured-output
+        # blog. Failing twice means the prompt itself is broken, not
+        # the LLM — surface immediately so the caller can fix it.
+        repair_msg = (
+            "Your previous response did not match the required JSON schema. "
+            f"Pydantic validation errors:\n{first_err.errors()[:5]}\n"
+            f"Required schema (JSON Schema):\n{response_model.model_json_schema()}\n"
+            "Reply ONLY with valid JSON matching this schema — no prose."
+        )
+        repair_messages = list(messages) + [
+            {"role": "assistant", "content": result.text},
+            {"role": "user", "content": repair_msg},
+        ]
+
+        retry_parsed, retry_result = await self.ask_json(
+            provider=provider,
+            model=model,
+            system=system,
+            messages=repair_messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            agent_name=f"{agent_name}.repair" if agent_name else "repair",
+            **kwargs,
+        )
+        try:
+            return response_model.model_validate(retry_parsed), retry_result
+        except ValidationError as second_err:
+            # Two-strike — fail loud with both errors so the caller can debug.
+            raise ValueError(
+                f"ask_json_validated: response failed Pydantic validation twice "
+                f"against {response_model.__name__}. "
+                f"First errors: {first_err.errors()[:3]}; "
+                f"Retry errors: {second_err.errors()[:3]}; "
+                f"Last raw text: {retry_result.text[:300]!r}"
+            ) from second_err
 
     # ─── Provider implementations ────────────────────────────────────────
     async def _call_anthropic(
@@ -498,9 +611,21 @@ class LLMRouter:
         temperature: float,
         tools: Optional[list],
         json_response: bool,
+        agent_name: Optional[str] = None,
         **kwargs,
     ) -> LLMResult:
-        """OpenAI / DeepSeek / Moonshot all share OpenAI's chat completions schema."""
+        """OpenAI / DeepSeek / Moonshot all share OpenAI's chat completions schema.
+
+        2026-05-27 P1 audit: auto-attach `prompt_cache_key` for OpenAI
+        provider so the chat-completions API can cache the request prefix
+        (system prompt + early messages) for 5-15 minutes. Cache hits are
+        billed at 0 input tokens — pure win when the same agent fires
+        repeated calls. Key is derived from agent_name; callers can
+        override by passing `prompt_cache_key=...` in kwargs.
+        OpenAI minimum cacheable: 1024 tokens (~4KB). DeepSeek + Moonshot
+        have their own server-side caching, no header needed.
+        See https://platform.openai.com/docs/guides/prompt-caching
+        """
         client = self._get_client(provider)
         all_msgs = [{"role": "system", "content": system}] + messages
         kw: dict = dict(
@@ -513,6 +638,18 @@ class LLMRouter:
             kw["response_format"] = {"type": "json_object"}
         if tools:
             kw["tools"] = tools
+
+        # OpenAI prompt caching — only for openai provider, only when the
+        # system prompt is big enough to be cacheable. Skip for DeepSeek /
+        # Moonshot (different vendors, no such param).
+        if (
+            provider == "openai"
+            and agent_name
+            and len(system) >= 4096
+            and "prompt_cache_key" not in kwargs
+        ):
+            kw["prompt_cache_key"] = f"jobhunt::{agent_name}"
+
         kw.update(kwargs)
 
         resp = await client.chat.completions.create(**kw)
@@ -831,10 +968,111 @@ def _derive_graph_and_node(agent_name: Optional[str]) -> tuple[Optional[str], Op
     return None, name
 
 
+# ── Async telemetry buffer (P3-5) ─────────────────────────────────────────
+# The per-call agent_call_log INSERT used to run synchronously inside
+# LLMRouter.ask(), on every LLM call's hot path — a network round-trip to
+# Supabase blocking each request before the caller got its result. We now
+# build the row on the calling side (identical shape/derivation as before) and
+# hand it to a bounded in-process queue; a single daemon thread drains the
+# queue in batches and bulk-inserts. Telemetry stays best-effort: the INSERT
+# can never raise into ask(), and a saturated queue drops rows (with a throttled
+# warning) rather than applying backpressure to live requests.
+#
+# Bound (10k rows ≈ a few MB) caps memory if the DB is unreachable for a while;
+# at single-user volume it's effectively never reached. atexit drains on a
+# graceful shutdown so a clean restart doesn't lose the last batch.
+_TELEMETRY_QUEUE_MAXSIZE = 10000
+_TELEMETRY_BATCH_SIZE = 100
+_telemetry_queue: "queue.Queue[dict]" = queue.Queue(maxsize=_TELEMETRY_QUEUE_MAXSIZE)
+_telemetry_thread: Optional[threading.Thread] = None
+_telemetry_thread_lock = threading.Lock()
+_telemetry_dropped = 0  # cumulative dropped-row counter (buffer-full events)
+
+
+def _telemetry_bulk_insert(rows: list[dict]) -> None:
+    """Best-effort bulk INSERT of buffered agent_call_log rows.
+
+    Runs only on the drain thread. supabase-py accepts a list payload, so a
+    full batch is one round-trip. Failure is swallowed (telemetry is
+    best-effort) but logged so silent gaps can be diagnosed.
+    """
+    if not rows:
+        return
+    try:
+        from db.client import get_supabase
+        get_supabase().table("agent_call_log").insert(rows).execute()
+    except Exception as e:
+        # Table may not exist yet, or DB unreachable — telemetry is best-effort.
+        logger.debug(
+            "agent_call_log bulk insert failed (non-fatal, %d rows): %s: %s",
+            len(rows), type(e).__name__, e,
+        )
+
+
+def _telemetry_drain_loop() -> None:
+    """Daemon loop: block for a row, opportunistically batch, bulk-insert."""
+    while True:
+        try:
+            first = _telemetry_queue.get()  # blocks until a row is available
+        except Exception:
+            return
+        batch = [first]
+        # Opportunistically coalesce whatever is already queued (no waiting).
+        while len(batch) < _TELEMETRY_BATCH_SIZE:
+            try:
+                batch.append(_telemetry_queue.get_nowait())
+            except queue.Empty:
+                break
+        _telemetry_bulk_insert(batch)
+
+
+def _ensure_telemetry_thread() -> None:
+    """Lazily start the single daemon drain thread on first enqueue.
+
+    Lazy (rather than at import) so importing this module has zero side
+    effects — tests that never emit telemetry never spawn a thread.
+    """
+    global _telemetry_thread
+    if _telemetry_thread is not None and _telemetry_thread.is_alive():
+        return
+    with _telemetry_thread_lock:
+        if _telemetry_thread is not None and _telemetry_thread.is_alive():
+            return
+        _telemetry_thread = threading.Thread(
+            target=_telemetry_drain_loop,
+            name="agent-call-log-telemetry",
+            daemon=True,
+        )
+        _telemetry_thread.start()
+
+
+def _drain_telemetry_on_exit() -> None:
+    """atexit hook: flush any rows still buffered at shutdown (bounded work)."""
+    rows: list[dict] = []
+    while len(rows) < _TELEMETRY_QUEUE_MAXSIZE:
+        try:
+            rows.append(_telemetry_queue.get_nowait())
+        except queue.Empty:
+            break
+    if rows:
+        # Insert in batches to keep any single round-trip reasonable.
+        for i in range(0, len(rows), _TELEMETRY_BATCH_SIZE):
+            _telemetry_bulk_insert(rows[i:i + _TELEMETRY_BATCH_SIZE])
+
+
+atexit.register(_drain_telemetry_on_exit)
+
+
 def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
     """
-    Best-effort write to agent_call_log table. Non-fatal on failure.
-    The table is created lazily — if it doesn't exist yet, this is a no-op.
+    Non-blocking telemetry: build the agent_call_log row and enqueue it for a
+    background daemon thread to bulk-insert. Best-effort — never raises, never
+    blocks ask() on a DB round-trip. On a full buffer we drop the row and warn
+    rather than apply backpressure to the live request.
+
+    The row shape + derivation below is IDENTICAL to the previous synchronous
+    writer; only WHERE the insert happens changed (queue → drain thread →
+    _telemetry_bulk_insert) per P3-5.
 
     2026-05-12 (Bug #7 fix): agent_call_log gained user_id NOT NULL in the
     multi-tenancy migration 001, but this writer was never updated. Every
@@ -849,8 +1087,8 @@ def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
     2026-05-12 (BUG-024): also derive `graph` and `node_name` from
     agent_name so cost attribution by graph works again (was 100% NULL).
     """
+    global _telemetry_dropped
     try:
-        from db.client import get_supabase
         from datetime import datetime, timezone
         user_id = os.environ.get(
             "RIZWAN_USER_ID",
@@ -874,7 +1112,7 @@ def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
                 # If we still don't know, infer from the model name prefix.
                 if not actual_provider and "/" in result.model:
                     actual_provider = result.model.split("/", 1)[0]
-        get_supabase().table("agent_call_log").insert({
+        row = {
             "agent_name": agent_name,
             "graph": graph,
             "node_name": node_name,
@@ -887,12 +1125,26 @@ def _default_log_callback(result: LLMResult, agent_name: Optional[str]) -> None:
             "latency_ms": result.latency_ms,
             "called_at": datetime.now(timezone.utc).isoformat(),
             "user_id": user_id,
-        }).execute()
+        }
     except Exception as e:
-        # Table may not exist yet, or DB unreachable — telemetry is best-effort.
-        # 2026-05-12: surface the error so silent failures can be diagnosed.
-        # Audit confirmed agent_call_log had 0 rows in 24h before this fix.
-        logger.debug(f"agent_call_log insert failed (non-fatal): {type(e).__name__}: {e}")
+        # Row construction should never fail, but if it does, telemetry is
+        # best-effort — log and move on rather than break the LLM call.
+        logger.debug(f"agent_call_log row build failed (non-fatal): {type(e).__name__}: {e}")
+        return
+
+    _ensure_telemetry_thread()
+    try:
+        _telemetry_queue.put_nowait(row)
+    except queue.Full:
+        # Buffer saturated (DB likely unreachable). Drop the row — NEVER block
+        # or raise on the hot path. Warn once per 1000 drops to avoid log spam.
+        _telemetry_dropped += 1
+        if _telemetry_dropped % 1000 == 1:
+            logger.warning(
+                "agent_call_log telemetry buffer full — dropping rows "
+                "(%d dropped so far); DB likely unreachable",
+                _telemetry_dropped,
+            )
 
 
 # ─── JSON helper ──────────────────────────────────────────────────────────

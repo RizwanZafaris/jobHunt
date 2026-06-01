@@ -121,36 +121,6 @@ def _today_local() -> date:
     return _utcnow().date()
 
 
-def _phantom_company_names(user_id: UUID) -> frozenset[str]:
-    """Return lowercase company_name strings flagged as phantoms.
-
-    Used to filter /today + /applications surfaces so the user never
-    sees fabricated companies (e.g. "Adyen Careers", "SuperApp",
-    "Merchant Acquiring ...") on action cards even before the cleanup
-    migration 028 runs.
-
-    Returns frozenset for fast `lower(company) in <frozenset>` membership.
-    Defensive — DB error returns empty (no filter applied).
-    """
-    try:
-        rows = (
-            get_supabase()
-            .table("company_personas")
-            .select("company_name")
-            .eq("user_id", str(user_id))
-            .eq("is_phantom", True)
-            .execute()
-            .data
-        ) or []
-        return frozenset((r.get("company_name") or "").strip().lower() for r in rows)
-    except Exception as e:  # pragma: no cover — defensive
-        import logging
-        logging.getLogger(__name__).warning(
-            "_phantom_company_names lookup failed (no filter applied): %s", e
-        )
-        return frozenset()
-
-
 def _is_aggregator_url(url: Optional[str]) -> bool:
     """Return True if the URL host matches a known aggregator pattern.
 
@@ -322,22 +292,31 @@ def _build_linkedin_post_due(user_id: UUID) -> Optional[dict[str, Any]]:
 def _active_dismissed_job_ids(user_id: UUID) -> set[int]:
     """Job IDs the user has dismissed (and not yet snooze-expired).
 
-    Reads job_card_dismissals (migration 036). Defensive — DB error
-    returns empty set so /today never blackouts because of this filter.
+    Reads job_card_dismissals (migrations 036 + 042). Defensive — a DB
+    error returns an empty set so /today never blackouts because of this
+    filter.
 
-    Filter logic:
+    Filter logic (pushed into Postgres, see migration 042):
       • snoozed_until IS NULL          → permanent dismissal, always filter
       • snoozed_until >  now()         → snooze still active, filter
       • snoozed_until <= now()         → snooze expired, do NOT filter
                                          (re-surface the card to give it
                                          another shot)
+
+    The active-snooze predicate is applied server-side via
+    `.or_("snoozed_until.is.null,snoozed_until.gt.<now>")` so we transfer
+    only the rows we actually need instead of fetching every dismissal and
+    filtering in Python. This is index-eligible against idx_dismissals_active
+    (user_id, job_id) INCLUDE (snoozed_until).
     """
+    now_iso = _utcnow().isoformat()
     try:
         rows = (
             get_supabase()
             .table("job_card_dismissals")
             .select("job_id, snoozed_until")
             .eq("user_id", str(user_id))
+            .or_(f"snoozed_until.is.null,snoozed_until.gt.{now_iso}")
             .execute()
             .data
         ) or []
@@ -347,15 +326,11 @@ def _active_dismissed_job_ids(user_id: UUID) -> set[int]:
         )
         return set()
 
-    now_iso = _utcnow().isoformat()
     out: set[int] = set()
     for r in rows:
-        snooze = r.get("snoozed_until")
-        # Active filter: NULL (permanent) OR snooze hasn't elapsed yet.
-        if snooze is None or snooze > now_iso:
-            jid = r.get("job_id")
-            if jid is not None:
-                out.add(int(jid))
+        jid = r.get("job_id")
+        if jid is not None:
+            out.add(int(jid))
     return out
 
 
@@ -611,26 +586,6 @@ def _build_job_actions(
                 "actions: dropped %d suspicious job(s) from /today "
                 "(use ?include_suspicious=true to surface)",
                 dropped,
-            )
-
-    # Stream B (2026-05-13): filter phantom-company rows so /today never
-    # surfaces fabricated names ("Adyen Careers", "SuperApp", "Merchant
-    # Acquiring …", "68 Vacancies Apr 2026"). The is_phantom flag was
-    # added by BUG-013; this consumes it. Migration 028 cleans the rows
-    # out completely — this filter remains as runtime defense against
-    # future phantom inserts that beat the scraper guards.
-    phantoms = _phantom_company_names(user_id)
-    if phantoms:
-        before = len(job_rows)
-        job_rows = [
-            r for r in job_rows
-            if (r.get("company") or "").strip().lower() not in phantoms
-        ]
-        dropped = before - len(job_rows)
-        if dropped:
-            logger.info(
-                "actions: dropped %d phantom-company job(s) from /today "
-                "(phantoms=%s)", dropped, sorted(phantoms),
             )
 
     job_ids = [int(r["id"]) for r in job_rows if r.get("id") is not None]
@@ -1481,6 +1436,105 @@ _VALID_REASONS = {
 }
 
 
+@router.get("/today/recommended")
+def get_today_recommended(
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Jobs an AI scorer has tagged for the user to apply to.
+
+    Reads `user_recommended_at`/`user_recommendation_*` columns on jobs.
+    Excludes:
+      - already-applied jobs
+      - jobs marked closed (`posting_closed_at IS NOT NULL`)
+
+    Output shape:
+      {
+        "ok": true,
+        "total": N,
+        "by_tier": {
+          "apply_now": [<job>, ...],  // score >= 85
+          "strong":    [<job>, ...],  // score 70-84
+          "stretch":   [<job>, ...]   // score < 70
+        },
+        "generated_at": "2026-05-27T20:00:00Z"
+      }
+
+    Each job carries: id, company, title, location, url, source,
+    recommendation_score, recommendation_reasoning, recommended_at,
+    discovered_at_days_old, applied (bool).
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    db = get_supabase()
+    user_id = str(user.id)
+
+    try:
+        resp = (
+            db.table("jobs")
+            .select(
+                "id, company, title, location, url, source, archetype, match_score,"
+                " user_recommendation_tier, user_recommendation_score,"
+                " user_recommendation_reasoning, user_recommended_at,"
+                " discovered_at, applied_at, posting_closed_at"
+            )
+            .eq("user_id", user_id)
+            .not_.is_("user_recommended_at", "null")
+            .is_("posting_closed_at", "null")
+            .is_("applied_at", "null")
+            .order("user_recommendation_score", desc=True)
+            .limit(100)
+            .execute()
+        )
+    except Exception as exc:
+        logger.exception("today/recommended: db fetch failed")
+        raise HTTPException(status_code=500, detail=f"db_error: {exc}")
+
+    rows = resp.data or []
+    now = _dt.now(_tz.utc)
+
+    by_tier: dict[str, list[dict[str, Any]]] = {
+        "apply_now": [],
+        "strong": [],
+        "stretch": [],
+    }
+    for r in rows:
+        # Derive age in days for the UI staleness pill
+        days_old: Optional[int] = None
+        if r.get("discovered_at"):
+            try:
+                disc = _dt.fromisoformat(str(r["discovered_at"]).replace("Z", "+00:00"))
+                if disc.tzinfo is None:
+                    disc = disc.replace(tzinfo=_tz.utc)
+                days_old = max(0, (now - disc).days)
+            except (ValueError, TypeError):
+                pass
+
+        tier = (r.get("user_recommendation_tier") or "stretch").lower()
+        if tier not in by_tier:
+            tier = "stretch"
+
+        by_tier[tier].append({
+            "id": r["id"],
+            "company": r.get("company") or "—",
+            "title": r.get("title") or "(untitled)",
+            "location": r.get("location") or "",
+            "url": r.get("url") or "",
+            "source": r.get("source") or "",
+            "archetype": r.get("archetype") or "",
+            "match_score": r.get("match_score"),
+            "recommendation_score": r.get("user_recommendation_score"),
+            "recommendation_reasoning": r.get("user_recommendation_reasoning") or "",
+            "recommended_at": r.get("user_recommended_at"),
+            "discovered_at_days_old": days_old,
+        })
+
+    return {
+        "ok": True,
+        "total": sum(len(v) for v in by_tier.values()),
+        "by_tier": by_tier,
+        "generated_at": now.isoformat(),
+    }
+
+
 @router.post("/today/dismiss/{job_id}")
 def dismiss_today_card(
     job_id: int,
@@ -1654,7 +1708,6 @@ def debug_today_counts(
       by_filter_step: count after each filter (cumulative)
       sample_jobs: first 5 high-score jobs with full row (including user_id)
       dismissals_table: status of job_card_dismissals table (table missing? row count?)
-      phantom_personas: list of company_name where is_phantom=true for current user
     """
     import os
     db = get_supabase()
@@ -1755,22 +1808,6 @@ def debug_today_counts(
         result["dismissals_table"] = {"exists": True, "row_count": d.count}
     except Exception as e:
         result["dismissals_table"] = {"exists": False, "error": str(e)[:200]}
-
-    # Phantom personas for current user
-    try:
-        phantoms = (
-            db.table("company_personas")
-            .select("company_name, is_phantom")
-            .eq("user_id", str(user.id))
-            .eq("is_phantom", True)
-            .limit(100)
-            .execute()
-            .data
-        ) or []
-        result["phantom_personas_for_user"] = [p.get("company_name") for p in phantoms]
-        result["phantom_personas_count"] = len(phantoms)
-    except Exception as e:
-        result["phantom_error"] = str(e)
 
     # surface_count column status
     try:

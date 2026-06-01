@@ -64,6 +64,20 @@ export async function fetchTodaySections(
   return res.json()
 }
 
+/**
+ * /actions/today/recommended — AI-curated apply-now list.
+ * Returns jobs scored against the user's resume + grouped by tier.
+ * Added 2026-05-27 to surface user_recommendation_* DB columns on /today.
+ */
+export async function fetchTodayRecommended(): Promise<import('./types/today').TodayRecommendedResponse> {
+  const res = await fetch(`${baseUrl}/actions/today/recommended`, {
+    headers,
+    next: { revalidate: 60 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch today recommended (${res.status})`)
+  return res.json()
+}
+
 export async function fetchJobs(params?: {
   status?: string
   min_score?: number

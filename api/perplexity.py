@@ -38,7 +38,7 @@ from agents import perplexity_search
 from agents.persona_news_check import check_company_news
 from api.context import get_current_user
 from api.users import User
-from db.client import get_supabase
+from db.client import aexecute, get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ async def strategic_posture(
     persona_updated = False
     db = get_supabase()
     try:
-        update_resp = (
+        update_resp = await aexecute(
             db.table("company_personas")
             .update({
                 "last_strategic_posture_md": result.get("content") or "",
@@ -122,7 +122,6 @@ async def strategic_posture(
             })
             .eq("user_id", str(user.id))
             .eq("company_name", company_name)
-            .execute()
         )
         persona_updated = bool(update_resp.data)
     except Exception:

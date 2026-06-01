@@ -14,9 +14,19 @@ import { AppShell } from '@/components/layout/AppShell'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { TodayActionSection } from '@/components/today/TodayActionSection'
-import { fetchTodaySections, fetchPostOfTheDay, type PostOfTheDay } from '@/lib/api'
+import { RecommendedSection } from '@/components/today/RecommendedSection'
+import {
+  fetchTodaySections,
+  fetchPostOfTheDay,
+  fetchTodayRecommended,
+  type PostOfTheDay,
+} from '@/lib/api'
 import { PostOfTheDayCard } from '@/components/linkedin/PostOfTheDayCard'
-import type { TodaySection, TodaySectionsResponse } from '@/lib/types/today'
+import type {
+  TodaySection,
+  TodaySectionsResponse,
+  TodayRecommendedResponse,
+} from '@/lib/types/today'
 
 export const dynamic = 'force-dynamic'
 
@@ -59,10 +69,26 @@ async function loadTodaySections(): Promise<SectionsOutcome> {
   }
 }
 
+async function loadRecommended(): Promise<{
+  data: TodayRecommendedResponse | null
+  errorMessage: string | null
+}> {
+  try {
+    const data = await fetchTodayRecommended()
+    return { data, errorMessage: null }
+  } catch (err) {
+    return {
+      data: null,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
 export default async function TodayPage() {
-  const [{ sections, total, errorMessage, ok }, post] = await Promise.all([
+  const [{ sections, total, errorMessage, ok }, post, recommended] = await Promise.all([
     loadTodaySections(),
     fetchPostOfTheDay().catch(() => null as PostOfTheDay | null),
+    loadRecommended(),
   ])
   const showError = !ok && errorMessage !== null
 
@@ -102,6 +128,15 @@ export default async function TodayPage() {
 
       {/* Pinned: today's LinkedIn post (preserves Stream D placement). */}
       <PostOfTheDayCard post={post} emptyCta="generate" />
+
+      {/* 2026-05-27: AI-curated apply-now list. Pinned above the action
+          sections because applying to a top match TODAY beats clearing
+          stale follow-ups. Auto-hides on quiet days (no recommendations
+          loaded). */}
+      <RecommendedSection
+        data={recommended.data}
+        errorMessage={recommended.errorMessage}
+      />
 
       {/* Stat strip — counts per kind, derived from sections. */}
       {strip.length > 0 && (

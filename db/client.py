@@ -5,8 +5,10 @@ Supabase client — singleton with vector search helpers.
 from __future__ import annotations
 import asyncio
 import json
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
+from fastapi.concurrency import run_in_threadpool
 from supabase import create_client, Client
 from openai import AsyncOpenAI
 from config.settings import get_settings
@@ -15,12 +17,127 @@ _supabase: Optional[Client] = None
 _openai: Optional[AsyncOpenAI] = None
 
 
+# ── P2-5: Async DB seam (additive — no existing caller changed) ────────────
+# supabase-py is synchronous, so every `.execute()` is a blocking socket call.
+# Inside an async FastAPI handler that blocks the whole event loop, stalling
+# every other in-flight request on that worker (SCALABILITY.md P0 #3). The
+# seam below lets async call sites offload that blocking work to FastAPI's
+# threadpool WITHOUT rewriting the sync helpers — the sync functions stay the
+# single canonical implementation (preserving the DB-1 `on_conflict` edits and
+# Phase-1 `user_id` edits), and each async twin is a thin wrapper that calls
+# its sync counterpart via `run_in_threadpool`.
+#
+# Today NOTHING calls these (handler conversion is P2-8…N), so single-user
+# prod behaviour is byte-for-byte unchanged.
+
+# Module-level semaphore bounding concurrent DB work in the threadpool. The
+# threadpool is shared by every `run_in_threadpool` caller (and defaults to
+# ~40 workers in Starlette/AnyIO); without a bound, a burst of slow DB calls
+# could occupy all of them and starve unrelated offloaded work. Sized from
+# DB_THREADPOOL_CONCURRENCY (default 20). Created lazily so importing this
+# module never requires a running event loop (Semaphore binds to the loop on
+# first acquire on modern asyncio).
+_db_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_db_semaphore() -> asyncio.Semaphore:
+    """Return the lazily-constructed DB threadpool semaphore (singleton)."""
+    global _db_semaphore
+    if _db_semaphore is None:
+        concurrency = get_settings().db_threadpool_concurrency
+        _db_semaphore = asyncio.Semaphore(concurrency)
+    return _db_semaphore
+
+
+async def aexecute(query_builder: Any) -> Any:
+    """Run a synchronous supabase-py query off the event loop.
+
+    Async seam for the synchronous supabase-py client. Given any supabase-py
+    query builder (the object you'd normally call ``.execute()`` on — e.g.
+    ``get_supabase().table("jobs").select("*").eq("id", 1)``), this runs its
+    blocking ``.execute()`` in FastAPI's threadpool instead of on the event
+    loop, and returns the same ``APIResponse`` the sync ``.execute()`` would.
+
+    Bounded by a module-level semaphore (``DB_THREADPOOL_CONCURRENCY``, default
+    20) so a burst of slow queries can't swamp the shared threadpool.
+
+    Usage (in a future async handler — NOT wired anywhere yet)::
+
+        resp = await aexecute(
+            get_supabase().table("jobs").select("*").eq("id", job_id)
+        )
+        row = resp.data
+
+    This is purely additive: existing sync callers keep calling ``.execute()``
+    directly and are completely unaffected.
+    """
+    async with _get_db_semaphore():
+        return await run_in_threadpool(query_builder.execute)
+
+
 def get_supabase() -> Client:
+    """The shared **service-role** client (singleton).
+
+    Connects with the service-role key, which **bypasses RLS**. Correct for
+    worker/cron/system code that legitimately operates across the data, and the
+    default everywhere today. End-user request paths that want RLS enforced
+    should use ``get_user_supabase(access_token)`` instead (Phase 1, P1-2).
+    """
     global _supabase
     if _supabase is None:
         s = get_settings()
         _supabase = create_client(s.supabase_url, s.supabase_service_key)
     return _supabase
+
+
+def _is_single_user_mode() -> bool:
+    return os.getenv("RIZWAN_SINGLE_USER_MODE", "1") == "1"
+
+
+def get_user_supabase(access_token: Optional[str] = None) -> Client:
+    """Return a Supabase client scoped to the end user's JWT (Phase 1, P1-2).
+
+    Builds an **anon-key** client and applies the user's access token via
+    ``client.postgrest.auth(token)`` so PostgREST sends it as the request's
+    ``Authorization`` bearer. That makes ``auth.uid()`` resolve inside Postgres,
+    so the RLS policies defined in migration 001 (``auth.uid() = user_id``)
+    actually apply — turning tenant isolation into a DB-enforced guarantee
+    rather than relying solely on application-level ``.eq("user_id")`` filters.
+
+    Fallbacks that preserve today's behavior byte-for-byte:
+
+    - **Single-user mode** (``RIZWAN_SINGLE_USER_MODE=1``, the default): always
+      return the service-role singleton. Nothing changes for self-use.
+    - **No token** (e.g. a service/cron caller, or the token wasn't threaded
+      through yet): return the service-role singleton. Callers that *require*
+      RLS must pass a token in multi-tenant mode.
+    - **No anon key configured**: fall back to the service-role singleton (RLS
+      can't be applied without an anon client; we don't want to hard-fail a
+      partially-configured deployment).
+
+    A fresh client is created per call when a token is applied — these are NOT
+    cached, because the postgrest auth header is per-user and caching would risk
+    cross-tenant bleed. Client construction is cheap (no network on init).
+
+    NOTE: this is intentionally NOT wired into the ~70 endpoints here — that
+    mechanical conversion is Phase 1 finding 2 (endpoint scoping). This provides
+    the building block plus the ``Depends`` shim below and a couple of reference
+    usages.
+    """
+    if _is_single_user_mode() or not access_token:
+        return get_supabase()
+
+    s = get_settings()
+    anon_key = s.supabase_anon_key
+    if not anon_key:
+        # Can't build an RLS-scoped client without the anon key; degrade to the
+        # service-role singleton rather than failing the request outright.
+        return get_supabase()
+
+    client = create_client(s.supabase_url, anon_key)
+    # Apply the user JWT so PostgREST forwards it and auth.uid() resolves.
+    client.postgrest.auth(access_token)
+    return client
 
 
 def get_openai() -> AsyncOpenAI:
@@ -47,10 +164,30 @@ async def upsert_company_knowledge(
     section: str,
     content: str,
     source_url: Optional[str] = None,
-    metadata: dict = None
+    metadata: dict = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Store a company intelligence chunk with its embedding."""
+    """Store a company intelligence chunk with its embedding.
+
+    Multi-tenancy DB-1 (2026-05-29): the uniqueness on company_knowledge is
+    now composite — (user_id, company_name, section) — so the on_conflict
+    arbiter must include user_id, and the row MUST carry user_id. Before this
+    change the writer never set user_id at all: at single-user scale every
+    row already existed so the upsert always took the UPDATE branch and the
+    NOT NULL user_id column was never exercised. Switching the conflict
+    target to the composite key turns that latent gap into a hard 23502 on
+    any first-insert for a new (user_id, company, section) tuple — so we add
+    user_id here in the same change. user_id defaults to the seed-user UUID
+    via env override, mirroring upsert_job / upsert_company; multi-tenant
+    callers can pass an explicit user_id.
+    """
     embedding = await embed(content)
+    if user_id is None:
+        import os
+        user_id = os.environ.get(
+            "RIZWAN_USER_ID",
+            "00000000-0000-0000-0000-000000000001",
+        )
     db = get_supabase()
 
     row = {
@@ -59,15 +196,16 @@ async def upsert_company_knowledge(
         "content": content,
         "embedding": embedding,
         "source_url": source_url,
-        "metadata": metadata or {}
+        "metadata": metadata or {},
+        "user_id": user_id,
     }
     if company_id:
         row["company_id"] = company_id
 
-    # Upsert: replace if same company + section
+    # Upsert: replace if same user + company + section (DB-1 composite key).
     result = db.table("company_knowledge").upsert(
         row,
-        on_conflict="company_name,section"
+        on_conflict="user_id,company_name,section"
     ).execute()
     return result.data[0] if result.data else {}
 
@@ -150,7 +288,8 @@ async def upsert_rizwan_profile(
             "embedding": embedding,
             "user_id": user_id,
         },
-        on_conflict="section",
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, section).
+        on_conflict="user_id,section",
     ).execute()
     return result.data[0] if result.data else {}
 
@@ -295,9 +434,22 @@ def upsert_job(job_data: dict, user_id: str | None = None) -> dict:
     filtered = {k: v for k, v in payload.items() if k in _JOBS_COLUMNS}
     result = db.table("jobs").upsert(
         filtered,
-        on_conflict="url"
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, url)
+        # [partial: WHERE url IS NOT NULL]. user_id is always set above.
+        on_conflict="user_id,url"
     ).execute()
     return result.data[0] if result.data else {}
+
+
+async def aupsert_job(job_data: dict, user_id: str | None = None) -> dict:
+    """Async twin of ``upsert_job`` (P2-5 seam).
+
+    Runs the canonical sync ``upsert_job`` off the event loop. Per the
+    non-negotiable de-collision rule in SCALABILITY_BUILD_PLAN.md §1, this
+    must CALL the sync writer (so the DB-1 ``on_conflict`` and Phase-1
+    ``user_id`` logic stay single-sourced), never copy its body.
+    """
+    return await run_in_threadpool(upsert_job, job_data, user_id)
 
 
 def get_job(job_id: int) -> Optional[dict]:
@@ -306,16 +458,35 @@ def get_job(job_id: int) -> Optional[dict]:
     return result.data
 
 
+async def aget_job(job_id: int) -> Optional[dict]:
+    """Async twin of ``get_job`` (P2-5 seam).
+
+    Thin wrapper that runs the canonical sync ``get_job`` off the event loop
+    via the threadpool. NOT a reimplementation — same behaviour, same return.
+    """
+    return await run_in_threadpool(get_job, job_id)
+
+
 def update_job(job_id: int, updates: dict) -> dict:
     db = get_supabase()
     result = db.table("jobs").update(updates).eq("id", job_id).execute()
     return result.data[0] if result.data else {}
 
 
+async def aupdate_job(job_id: int, updates: dict) -> dict:
+    """Async twin of ``update_job`` (P2-5 seam). Delegates to the sync fn."""
+    return await run_in_threadpool(update_job, job_id, updates)
+
+
 def get_company_by_name(name: str) -> Optional[dict]:
     db = get_supabase()
     result = db.table("companies").select("*").ilike("name", name).limit(1).execute()
     return result.data[0] if result.data else None
+
+
+async def aget_company_by_name(name: str) -> Optional[dict]:
+    """Async twin of ``get_company_by_name`` (P2-5 seam). Delegates to sync fn."""
+    return await run_in_threadpool(get_company_by_name, name)
 
 
 _COMPANIES_COLUMNS = {
@@ -362,9 +533,20 @@ def upsert_company(company_data: dict, user_id: str | None = None) -> dict:
     payload["user_id"] = user_id
     filtered = {k: v for k, v in payload.items() if k in _COMPANIES_COLUMNS}
     result = db.table("companies").upsert(
-        filtered, on_conflict="name"
+        # DB-1 (2026-05-29): uniqueness is now composite (user_id, name).
+        filtered, on_conflict="user_id,name"
     ).execute()
     return result.data[0] if result.data else {}
+
+
+async def aupsert_company(company_data: dict, user_id: str | None = None) -> dict:
+    """Async twin of ``upsert_company`` (P2-5 seam).
+
+    Delegates to the canonical sync ``upsert_company`` via the threadpool —
+    including its BUG-013 phantom-name guard and DB-1 composite ``on_conflict``
+    — so behaviour (and the ValueError on phantom names) is identical.
+    """
+    return await run_in_threadpool(upsert_company, company_data, user_id)
 
 
 # ── Supabase Storage helpers ──────────────────────────────────────────────
