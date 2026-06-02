@@ -958,6 +958,21 @@ async def score_role(
         letter_grade=breakdown["letter_grade"],
     )
 
+    # FRD-16: high-fit auto-prep journey. If this job's composite crosses the
+    # threshold (default 90), fire the journey that fans out resume + interview
+    # prep + network. Fire-and-forget + FAIL-OPEN — the trigger (and even its
+    # import) must never break scoring. The job is known-open here (load_open_job
+    # gated above); dedup + the heavy guardrails live in the journey worker.
+    try:
+        from api.journey import maybe_trigger_journey
+        maybe_trigger_journey(
+            user_id=user_id,
+            job_id=job_id,
+            composite=breakdown.get("composite"),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("FRD-16: journey trigger skipped (non-fatal): %r", exc)
+
     return breakdown
 
 

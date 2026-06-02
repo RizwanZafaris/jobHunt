@@ -406,6 +406,107 @@ def worker_run_g3(jobs_run_id: str) -> dict[str, Any]:
 
 
 @_inflight_release
+def worker_run_journey(jobs_run_id: str) -> dict[str, Any]:
+    """RQ job: FRD-16 high-fit auto-prep orchestrator for one job.
+
+    Loads payload {job_id}, then calls api.journey.create_journey_for_job,
+    which re-checks guardrails, creates a draft application, and fans out the
+    three prep legs (G2 resume, G3 interview prep, network people-finder).
+    The heavy work lives in those child runs; this job just orchestrates, so
+    it's fast and cheap.
+    """
+    from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
+
+    run = get_run(jobs_run_id)
+    if not run:
+        logger.error(f"worker_run_journey: jobs_runs row {jobs_run_id} not found; aborting")
+        return {"error": "row_not_found", "run_id": jobs_run_id}
+
+    mark_running(jobs_run_id)
+    payload = run.payload or {}
+    job_id = payload.get("job_id")
+    if job_id is None:
+        mark_failed(jobs_run_id, "payload.job_id missing", retry=False)
+        raise ValueError(f"worker_run_journey payload missing job_id: {payload!r}")
+
+    try:
+        from api.journey import create_journey_for_job
+        result = create_journey_for_job(user_id=str(run.user_id), job_id=int(job_id))
+        mark_succeeded(jobs_run_id, result)
+        return result
+    except Exception as exc:
+        attempt_n = (run.attempts or 0) + 1
+        retry = _is_retryable(exc) and attempt_n < MAX_ATTEMPTS
+        err = _truncate(
+            f"{type(exc).__name__}: {exc}\n\n"
+            f"attempt {attempt_n}/{MAX_ATTEMPTS} — retry={retry}\n\n"
+            f"{traceback.format_exc()}"
+        )
+        logger.exception(
+            f"worker_run_journey failed run_id={jobs_run_id} job_id={job_id} "
+            f"attempt={attempt_n} retry={retry}"
+        )
+        mark_failed(jobs_run_id, err, retry=retry)
+        raise
+
+
+@_inflight_release
+def worker_run_people(jobs_run_id: str) -> dict[str, Any]:
+    """RQ job: FRD-16 network leg — people-finder sweep for one company.
+
+    Loads payload {company_name, company_id?} and runs
+    PeopleFinderAgent.run_for_company in the worker (no HTTP timeout), so the
+    journey's network leg is durable + retried like the other legs.
+    """
+    from api.jobs_runs import get_run, mark_failed, mark_running, mark_succeeded
+
+    run = get_run(jobs_run_id)
+    if not run:
+        logger.error(f"worker_run_people: jobs_runs row {jobs_run_id} not found; aborting")
+        return {"error": "row_not_found", "run_id": jobs_run_id}
+
+    mark_running(jobs_run_id)
+    payload = run.payload or {}
+    company_name = payload.get("company_name")
+    if not company_name:
+        mark_failed(jobs_run_id, "payload.company_name missing", retry=False)
+        raise ValueError(f"worker_run_people payload missing company_name: {payload!r}")
+    company_id = payload.get("company_id")
+
+    try:
+        from agents.people_finder_agent import PeopleFinderAgent
+        sweep = _run_async(PeopleFinderAgent().run_for_company(
+            company_name=company_name,
+            user_id=str(run.user_id),
+            company_id=company_id,
+        ))
+        result = {
+            "company_name": company_name,
+            "queries_ran": getattr(sweep, "queries_ran", None),
+            "people_found": getattr(sweep, "people_found", None),
+            "people_inserted": getattr(sweep, "people_inserted", None),
+            "people_refreshed": getattr(sweep, "people_refreshed", None),
+            "errors": getattr(sweep, "errors", None),
+        }
+        mark_succeeded(jobs_run_id, result)
+        return result
+    except Exception as exc:
+        attempt_n = (run.attempts or 0) + 1
+        retry = _is_retryable(exc) and attempt_n < MAX_ATTEMPTS
+        err = _truncate(
+            f"{type(exc).__name__}: {exc}\n\n"
+            f"attempt {attempt_n}/{MAX_ATTEMPTS} — retry={retry}\n\n"
+            f"{traceback.format_exc()}"
+        )
+        logger.exception(
+            f"worker_run_people failed run_id={jobs_run_id} company={company_name} "
+            f"attempt={attempt_n} retry={retry}"
+        )
+        mark_failed(jobs_run_id, err, retry=retry)
+        raise
+
+
+@_inflight_release
 def worker_run_g9(jobs_run_id: str) -> dict[str, Any]:
     """RQ job: run the G9 STAR+R story extractor for one user.
 

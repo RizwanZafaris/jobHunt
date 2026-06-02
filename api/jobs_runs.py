@@ -39,7 +39,11 @@ logger = logging.getLogger(__name__)
 
 
 # ─── Constants ─────────────────────────────────────────────────────────────
-ALLOWED_KINDS = {"g1_discovery", "g2_resume", "g3_interview", "g4_linkedin_post"}
+ALLOWED_KINDS = {
+    "g1_discovery", "g2_resume", "g3_interview", "g4_linkedin_post",
+    # FRD-16 High-Fit Auto-Prep Journey: the orchestrator + its network leg.
+    "journey", "people_finder",
+}
 ALLOWED_STATUSES = {"queued", "running", "succeeded", "failed", "cancelled"}
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 ACTIVE_STATUSES = {"queued", "running"}
