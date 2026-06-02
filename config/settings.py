@@ -117,7 +117,14 @@ class Settings(BaseSettings):
     #   large scout batch crossing many jobs can't fan out unbounded.
     #   Set journey_enabled=False to disable the auto-trigger entirely.
     journey_enabled: bool = True
-    journey_min_score: int = 90
+    #   Calibration (2026-06-02): the live 6-dim scorer tops out ~75 for the
+    #   best payments-PM fits; the legacy `jobs.match_score` column is ~15-25
+    #   pts inflated (a stored "95" re-scores to 70), so 90 was unreachable and
+    #   the auto-trigger never fired. 72 captures the genuine top band (the
+    #   72-75 A/B fits) while excluding C-grade stretch roles. The journey
+    #   worker re-checks this against the FRESH fit_score_breakdown.composite,
+    #   so a stale match_score can't sneak a low-fit job through the backfill.
+    journey_min_score: int = 72
     journey_daily_cap: int = 8
 
     # ── G3 Interview Prep Graph (Phase 2) ─────────────────────────────────

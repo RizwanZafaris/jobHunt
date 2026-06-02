@@ -117,7 +117,30 @@ def create_journey_for_job(*, user_id: str, job_id: int) -> dict[str, Any]:
         return {"skipped": True, "reason": "posting_closed_or_invalid",
                 "job_id": job_id}
 
-    # 2. Dedup at the DB layer — the unique (user_id, job_id) index means a
+    _enabled, min_score, cap = _cfg()
+
+    # 2. Fresh-fit guard — only journey a job whose CURRENT composite is at or
+    #    above the threshold. We read the FRESH fit_score_breakdown.composite,
+    #    NOT the legacy `match_score` column (which is ~15-25 pts inflated —
+    #    calibration finding 2026-06-02). The trigger path always passes (it
+    #    just scored >= threshold); this is what stops the backfill, which
+    #    filters on stale match_score, from prepping a low-fit job. A job with
+    #    no fresh score is skipped (we can't verify the fit) rather than
+    #    spending ~$1.25 on an unverified match.
+    composite = None
+    bd = job.get("fit_score_breakdown")
+    if isinstance(bd, dict) and bd.get("composite") is not None:
+        try:
+            composite = int(bd["composite"])
+        except (TypeError, ValueError):
+            composite = None
+    if composite is None:
+        return {"skipped": True, "reason": "no_fresh_score", "job_id": job_id}
+    if composite < min_score:
+        return {"skipped": True, "reason": "below_threshold",
+                "composite": composite, "min_score": min_score, "job_id": job_id}
+
+    # 3. Dedup at the DB layer — the unique (user_id, job_id) index means a
     #    re-score can't double-prep. If a journey already exists, no-op.
     existing = (
         db.table("journeys").select("*").eq("user_id", uid).eq("job_id", job_id)
@@ -127,8 +150,7 @@ def create_journey_for_job(*, user_id: str, job_id: int) -> dict[str, Any]:
         return {"skipped": True, "reason": "already_journeyed",
                 "journey_id": existing[0]["id"], "job_id": job_id}
 
-    # 3. Daily cap — bound autonomous spend if a big scout batch crosses >=90.
-    _enabled, _min, cap = _cfg()
+    # 4. Daily cap — bound autonomous spend if a scout batch crosses the bar.
     if cap > 0:
         today = datetime.now(timezone.utc).date().isoformat()
         cnt = (
@@ -143,13 +165,6 @@ def create_journey_for_job(*, user_id: str, job_id: int) -> dict[str, Any]:
             )
             return {"skipped": True, "reason": "daily_cap", "used": used,
                     "cap": cap, "job_id": job_id}
-
-    composite = None
-    bd = job.get("fit_score_breakdown")
-    if isinstance(bd, dict):
-        composite = bd.get("composite")
-    if composite is None:
-        composite = job.get("match_score")
 
     company = job.get("company") or ""
     company_id = job.get("company_id")
