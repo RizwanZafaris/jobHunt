@@ -15,10 +15,12 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { TodayActionSection } from '@/components/today/TodayActionSection'
 import { RecommendedSection } from '@/components/today/RecommendedSection'
+import { HighFitJourneysSection } from '@/components/today/HighFitJourneysSection'
 import {
   fetchTodaySections,
   fetchPostOfTheDay,
   fetchTodayRecommended,
+  fetchTodayJourneys,
   type PostOfTheDay,
 } from '@/lib/api'
 import { PostOfTheDayCard } from '@/components/linkedin/PostOfTheDayCard'
@@ -26,6 +28,7 @@ import type {
   TodaySection,
   TodaySectionsResponse,
   TodayRecommendedResponse,
+  JourneysResponse,
 } from '@/lib/types/today'
 
 export const dynamic = 'force-dynamic'
@@ -84,12 +87,29 @@ async function loadRecommended(): Promise<{
   }
 }
 
+async function loadJourneys(): Promise<{
+  data: JourneysResponse | null
+  errorMessage: string | null
+}> {
+  try {
+    const data = await fetchTodayJourneys()
+    return { data, errorMessage: null }
+  } catch (err) {
+    return {
+      data: null,
+      errorMessage: err instanceof Error ? err.message : String(err),
+    }
+  }
+}
+
 export default async function TodayPage() {
-  const [{ sections, total, errorMessage, ok }, post, recommended] = await Promise.all([
-    loadTodaySections(),
-    fetchPostOfTheDay().catch(() => null as PostOfTheDay | null),
-    loadRecommended(),
-  ])
+  const [{ sections, total, errorMessage, ok }, post, recommended, journeys] =
+    await Promise.all([
+      loadTodaySections(),
+      fetchPostOfTheDay().catch(() => null as PostOfTheDay | null),
+      loadRecommended(),
+      loadJourneys(),
+    ])
   const showError = !ok && errorMessage !== null
 
   // Tiny stat strip — derived from the sections themselves.
@@ -128,6 +148,15 @@ export default async function TodayPage() {
 
       {/* Pinned: today's LinkedIn post (preserves Stream D placement). */}
       <PostOfTheDayCard post={post} emptyCta="generate" />
+
+      {/* FRD-16: high-fit (>=90) jobs the system auto-prepped (resume +
+          interview prep + intros). Pinned at the very top — a fully-prepped
+          top match is the single most actionable thing on the page. Auto-hides
+          when there are no journeys. */}
+      <HighFitJourneysSection
+        data={journeys.data}
+        errorMessage={journeys.errorMessage}
+      />
 
       {/* 2026-05-27: AI-curated apply-now list. Pinned above the action
           sections because applying to a top match TODAY beats clearing

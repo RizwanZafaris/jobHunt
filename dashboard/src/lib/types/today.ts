@@ -115,3 +115,41 @@ export interface TodayRecommendedResponse {
   by_tier: Record<RecommendationTier, RecommendedJob[]>
   generated_at: string
 }
+
+// ─── /journeys (FRD-16 High-Fit Auto-Prep Journey) ──────────────────────
+export type JourneyLegStatus =
+  | 'not_started'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'unknown'
+
+export interface JourneyLeg {
+  run_id: string | null
+  status: JourneyLegStatus
+  last_error?: string | null
+}
+
+export type JourneyStatus = 'running' | 'converged' | 'partial' | 'failed'
+
+export interface Journey {
+  journey_id: string
+  job_id: number
+  company: string | null
+  title: string | null
+  application_id: string | null
+  trigger_score: number | null
+  status: JourneyStatus
+  legs: {
+    resume: JourneyLeg
+    prep: JourneyLeg
+    network: JourneyLeg
+  }
+  created_at: string | null
+}
+
+export interface JourneysResponse {
+  journeys: Journey[]
+}

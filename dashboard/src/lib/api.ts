@@ -78,6 +78,16 @@ export async function fetchTodayRecommended(): Promise<import('./types/today').T
   return res.json()
 }
 
+// FRD-16 — high-fit auto-prep journeys for the /today "prepped for you" feed.
+export async function fetchTodayJourneys(): Promise<import('./types/today').JourneysResponse> {
+  const res = await fetch(`${baseUrl}/journeys`, {
+    headers,
+    next: { revalidate: 30 },
+  })
+  if (!res.ok) throw new Error(`Failed to fetch journeys (${res.status})`)
+  return res.json()
+}
+
 export async function fetchJobs(params?: {
   status?: string
   min_score?: number

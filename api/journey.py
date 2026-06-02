@@ -328,9 +328,12 @@ def get_journey(*, user_id: str, job_id: int) -> Optional[dict[str, Any]]:
         "prep": _leg_status(j.get("prep_run_id")),
         "network": _leg_status(j.get("network_run_id")),
     }
+    jb = _job_brief(db, user_id=str(user_id), job_ids=[j["job_id"]]).get(j["job_id"], {})
     return {
         "journey_id": j["id"],
         "job_id": j["job_id"],
+        "company": jb.get("company"),
+        "title": jb.get("title"),
         "application_id": j.get("application_id"),
         "trigger_score": j.get("trigger_score"),
         "status": _aggregate(list(legs.values())),
@@ -338,6 +341,22 @@ def get_journey(*, user_id: str, job_id: int) -> Optional[dict[str, Any]]:
         "created_at": j.get("created_at"),
         "note": j.get("note"),
     }
+
+
+def _job_brief(db, *, user_id: str, job_ids: list[int]) -> dict[int, dict[str, Any]]:
+    """Batch-load {job_id: {company, title}} for a tenant's jobs. Tenant-scoped
+    (the .eq('user_id') keeps the tenant-scoping guardrail happy)."""
+    if not job_ids:
+        return {}
+    try:
+        rows = (
+            db.table("jobs").select("id, company, title")
+            .in_("id", job_ids).eq("user_id", user_id).execute()
+        ).data or []
+        return {r["id"]: r for r in rows}
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("FRD-16: job_brief lookup failed: %r", exc)
+        return {}
 
 
 def list_journeys(*, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
@@ -351,6 +370,7 @@ def list_journeys(*, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
         .limit(min(max(limit, 1), 200))
         .execute()
     ).data or []
+    briefs = _job_brief(db, user_id=str(user_id), job_ids=[j["job_id"] for j in rows])
     out = []
     for j in rows:
         legs = {
@@ -358,8 +378,10 @@ def list_journeys(*, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
             "prep": _leg_status(j.get("prep_run_id")),
             "network": _leg_status(j.get("network_run_id")),
         }
+        jb = briefs.get(j["job_id"], {})
         out.append({
             "journey_id": j["id"], "job_id": j["job_id"],
+            "company": jb.get("company"), "title": jb.get("title"),
             "application_id": j.get("application_id"),
             "trigger_score": j.get("trigger_score"),
             "status": _aggregate(list(legs.values())),
