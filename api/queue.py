@@ -123,6 +123,11 @@ _KIND_QUEUE: dict[str, str] = {
     "g5_score": "batch",
     "legitimacy_check": "batch",
     "g1_discovery": "batch",
+    # FRD-16 — the journey orchestrator is lightweight (it fans out the
+    # heavy children, which ride their own interactive/batch classes);
+    # the network sweep is background discovery.
+    "journey": "batch",
+    "people_finder": "batch",
 }
 
 
@@ -784,6 +789,64 @@ def enqueue_g3_interview_prep(
         kind="g3_interview",
         payload=payload,
         worker_func="api.worker.worker_run_g3",
+    )
+
+
+def enqueue_journey(user_id: UUID | str, job_id: int) -> str:
+    """Enqueue a high-fit auto-prep JOURNEY for one job (FRD-16).
+
+    The journey is the orchestrator/saga. When it runs (worker_run_journey)
+    it re-checks guardrails, creates a draft application, and fans out the
+    three prep legs — G2 resume, G3 interview prep, network people-finder —
+    recording their run ids on the `journeys` row.
+
+    Fired automatically by the G5 scoring path when a job's composite score
+    crosses JOURNEY_MIN_SCORE (default 90). Idempotent two ways:
+      1. payload-level — the payload is just {job_id}, so a re-score collapses
+         to the same idempotency key while a run is active/succeeded;
+      2. DB-level — the journeys(user_id, job_id) UNIQUE index, which
+         worker_run_journey relies on so a re-score can never double-prep.
+    The worker reads the *current* composite from the job for trigger_score,
+    so it is deliberately NOT in the payload (would break dedup #1).
+
+    Returns the jobs_runs.id (UUID string).
+    """
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="journey",
+        payload={"job_id": int(job_id)},
+        worker_func="api.worker.worker_run_journey",
+        # Lightweight orchestration (create rows + enqueue children); the
+        # heavy work lives in the child runs. 5 min is plenty.
+        job_timeout=300,
+    )
+
+
+def enqueue_people_finder(
+    user_id: UUID | str,
+    company_name: str,
+    *,
+    company_id: Optional[str] = None,
+) -> str:
+    """Enqueue a network people-finder sweep for one company (FRD-16 leg).
+
+    Wraps `agents.people_finder_agent.PeopleFinderAgent.run_for_company` in
+    the durable queue so the journey's network leg runs in the worker (no
+    HTTP timeout) and is retried/surfaced like the other legs. `company_name`
+    is folded into the idempotency payload so two journeys at the same company
+    within the active window collapse to one sweep.
+
+    Returns the jobs_runs.id (UUID string).
+    """
+    payload: dict[str, Any] = {"company_name": str(company_name)}
+    if company_id is not None:
+        payload["company_id"] = str(company_id)
+    return _enqueue_or_dedup(
+        user_id=user_id,
+        kind="people_finder",
+        payload=payload,
+        worker_func="api.worker.worker_run_people",
+        job_timeout=300,
     )
 
 

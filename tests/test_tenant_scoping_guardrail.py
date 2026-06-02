@@ -181,6 +181,7 @@ ALLOWLIST = frozenset({
     ("jobs_runs.py", "mark_succeeded"),            # [worker/queue] state transition by id
     ("jobs_runs.py", "mark_failed"),               # [worker/queue] state transition by id
     ("jobs_runs.py", "mark_cancelled"),            # [worker/queue] state transition by id
+    ("jobs_runs.py", "reset_run"),                 # [worker/queue] reset a terminal run for retry, by id (id came from a user-scoped idempotency lookup) — PR #204
     ("jobs_runs.py", "find_orphans"),              # [worker/queue] reaper scan across tenants
     # ── api/orphan_reaper.py — cron orphan sweeper (cross-tenant by design) ──
     ("orphan_reaper.py", "_sweep_stuck_resume_builds"),  # [cron] reap stuck resume_builds across tenants

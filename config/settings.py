@@ -109,6 +109,17 @@ class Settings(BaseSettings):
     #   Override per-build via POST /jobs/{id}/generate-resume?force=true.
     g2_min_persona_quality: str = "medium"
 
+    # ── FRD-16: High-Fit Auto-Prep Journey ───────────────────────────────
+    #   When a job's G5 composite score crosses `journey_min_score`, the
+    #   scoring path auto-fires a "journey": draft application + resume (G2) +
+    #   interview prep (G3) + network sweep. Guardrails: dedup (one journey per
+    #   job, DB-enforced), skip closed/invalid postings, and a daily cap so a
+    #   large scout batch crossing many jobs can't fan out unbounded.
+    #   Set journey_enabled=False to disable the auto-trigger entirely.
+    journey_enabled: bool = True
+    journey_min_score: int = 90
+    journey_daily_cap: int = 8
+
     # ── G3 Interview Prep Graph (Phase 2) ─────────────────────────────────
     # Multi-LLM graph that builds a persona-aware interview prep pack per
     # application/round. 7 logical nodes / 9 actual functions across 5
