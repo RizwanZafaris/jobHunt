@@ -229,3 +229,46 @@ def test_create_one_leg_failure_is_isolated():
     assert out["network_run_id"] == "r-ppl"
     assert "resume" in out["leg_errors"]
     assert out["status"] == "running"  # other legs present → not dead
+
+
+# ── fresh-fit guard (2026-06-02 calibration) ────────────────────────────────
+def test_create_skips_when_fresh_composite_below_threshold():
+    """A job whose FRESH composite is below the threshold is skipped — the
+    stale match_score must not sneak a low-fit job through the backfill."""
+    job = _open_job()
+    job["fit_score_breakdown"] = {"composite": 60}  # fresh 60, stale match 95
+    fake = _FakeDB({"jobs": [_Resp([job])]})
+    with _patch_db(fake), patch.object(J, "_cfg", return_value=(True, 72, 8)):
+        out = J.create_journey_for_job(user_id=UID, job_id=13908)
+    assert out["skipped"] and out["reason"] == "below_threshold"
+    assert out["composite"] == 60
+
+
+def test_create_skips_when_no_fresh_score():
+    """No fresh fit_score_breakdown.composite → can't verify fit → skip
+    (don't spend on an unverified match)."""
+    job = _open_job()
+    job["fit_score_breakdown"] = None
+    fake = _FakeDB({"jobs": [_Resp([job])]})
+    with _patch_db(fake), patch.object(J, "_cfg", return_value=(True, 72, 8)):
+        out = J.create_journey_for_job(user_id=UID, job_id=13908)
+    assert out["skipped"] and out["reason"] == "no_fresh_score"
+
+
+def test_create_fires_when_fresh_composite_meets_threshold():
+    """Fresh composite >= threshold (72) proceeds to fan-out."""
+    job = _open_job()
+    job["fit_score_breakdown"] = {"composite": 75}  # e.g. Mastercard 456
+    fake = _FakeDB({
+        "jobs": [_Resp([job])],
+        "journeys": [_Resp([]), _Resp([], count=0),
+                     _Resp([{"id": "jrny-1"}]), _Resp([{}])],
+        "applications": [_Resp([]), _Resp([{"id": "app-1"}])],
+    })
+    p_g2, p_g3, p_ppl = _patch_enqueues()
+    with _patch_db(fake), patch.object(J, "_cfg", return_value=(True, 72, 8)), \
+            p_g2, p_g3, p_ppl:
+        out = J.create_journey_for_job(user_id=UID, job_id=13908)
+    assert out["journey_id"] == "jrny-1"
+    assert out["trigger_score"] == 75
+    assert out["status"] == "running"
