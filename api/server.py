@@ -178,6 +178,7 @@ from api.offers import router as offers_router  # noqa: E402  /offers/* (Tier 4 
 from api.analytics import router as analytics_router  # noqa: E402  /analytics/* (Audit Gap §4.3 pattern analytics)
 from api.job_rater import router as job_rater_router  # noqa: E402  /jobs/rate-url* (FRD-14 URL Job Rater)
 from api.journeys import router as journeys_router  # noqa: E402  /journeys/* (FRD-16 High-Fit Auto-Prep Journey)
+from api.linkedin_apply import router as linkedin_apply_router  # noqa: E402  /linkedin-apply/* (G10 Easy Apply)
 app.include_router(network_router)
 app.include_router(linkedin_router)
 app.include_router(actions_router)
@@ -194,6 +195,7 @@ app.include_router(profile_router)
 app.include_router(offers_router)
 app.include_router(analytics_router)
 app.include_router(job_rater_router)
+app.include_router(linkedin_apply_router)
 from api.traces import router as traces_router  # noqa: E402  Stream C
 app.include_router(traces_router)
 
