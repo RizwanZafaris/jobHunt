@@ -100,6 +100,71 @@ OPENAI_COMPATIBLE_BASE_URLS = {
     "openrouter": "https://openrouter.ai/api/v1",
 }
 
+# ─── Single-key mode: route every provider through OpenRouter ────────────────
+# Maps a native model id to its OpenRouter equivalent. When
+# LLM_FORCE_OPENROUTER=1, ask() rewrites provider+model through this table so
+# the whole system (G2 resume, G3 interview, G4 LinkedIn, G5 scoring, G7/G10
+# apply) runs on ONE OPENROUTER_API_KEY instead of four separate provider keys.
+#
+# Every target here already has a row in PRICING_PER_1M, so cost telemetry
+# stays accurate (OpenRouter's ~5% markup is priced in).
+OPENROUTER_MODEL_MAP: dict[str, str] = {
+    # Anthropic
+    "claude-opus-4-5-20251101":  "anthropic/claude-opus-4-5",
+    "claude-opus-4-5":           "anthropic/claude-opus-4-5",
+    "claude-sonnet-4-6":         "anthropic/claude-sonnet-4-6",
+    "claude-sonnet-4-5":         "anthropic/claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4-5",
+    "claude-haiku-4-5":          "anthropic/claude-haiku-4-5",
+    # OpenAI
+    "gpt-5":    "openai/gpt-5",
+    "gpt-4.1":  "openai/gpt-4.1",
+    "gpt-4o":   "openai/gpt-4o",
+    # Google
+    "gemini-2.5-pro":   "google/gemini-2.5-pro",
+    "gemini-2.5-flash": "google/gemini-2.5-flash",
+    # DeepSeek
+    "deepseek-chat":     "deepseek/deepseek-chat",
+    "deepseek-reasoner": "deepseek/deepseek-reasoner",
+    # Moonshot Kimi
+    "kimi-k2.6": "moonshot/kimi-k2.6",
+    "kimi-k2.5": "moonshot/kimi-k2.5",
+}
+
+# Models that must NEVER be rewritten to OpenRouter. OpenRouter serves chat
+# completions only — it has no embeddings endpoint — so the pgvector RAG layer
+# still needs a real OPENAI_API_KEY even in single-key mode.
+OPENROUTER_EXCLUDED_PREFIXES = ("text-embedding",)
+
+
+def _force_openrouter_enabled() -> bool:
+    """True when LLM_FORCE_OPENROUTER routes all chat calls via OpenRouter.
+
+    Off by default: existing multi-key deployments keep hitting providers
+    directly (lower latency, no aggregation markup). Turn on when you hold
+    only an OpenRouter key.
+    """
+    return os.environ.get("LLM_FORCE_OPENROUTER", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def to_openrouter_model(model: str) -> Optional[str]:
+    """Return the OpenRouter id for a native model id, or None if it can't
+    be routed (embeddings, or an id with no known mapping)."""
+    if model.startswith(OPENROUTER_EXCLUDED_PREFIXES):
+        return None
+    if "/" in model:
+        return model  # already an OpenRouter id
+    mapped = OPENROUTER_MODEL_MAP.get(model)
+    if mapped:
+        return mapped
+    # Prefix fallback for dated/suffixed variants (e.g. gemini-2.5-pro-001).
+    for native, or_id in OPENROUTER_MODEL_MAP.items():
+        if model.startswith(native):
+            return or_id
+    return None
+
 
 @dataclass
 class LLMResult:
@@ -316,6 +381,24 @@ class LLMRouter:
         # spend, so an over-budget tenant never reaches a provider.
         from agents.budget_gate import enforce_budget
         await enforce_budget(user_id, agent_name=agent_name)
+
+        # Single-key mode: rewrite provider+model through OpenRouter so the
+        # whole system runs on one OPENROUTER_API_KEY. Applied here (rather
+        # than per-node) so every graph inherits it with no call-site changes.
+        # Silently left alone when the model has no OpenRouter equivalent
+        # (embeddings) — those still need their native key.
+        if (
+            _force_openrouter_enabled()
+            and provider != "openrouter"
+            and self._keys.get("openrouter")
+        ):
+            routed = to_openrouter_model(model)
+            if routed:
+                logger.debug(
+                    "LLM_FORCE_OPENROUTER: %s/%s -> openrouter/%s",
+                    provider, model, routed,
+                )
+                provider, model = "openrouter", routed
 
         start = time.perf_counter()
         try:

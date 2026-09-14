@@ -259,6 +259,21 @@ async def prepare_application(
             async with httpx.AsyncClient(timeout=30) as client:
                 r = await client.get(docx_url)
                 r.raise_for_status()
+
+                # resume_agents/render.py degrades to b"" and only logs a
+                # warning when reportlab/python-docx are missing or a render
+                # throws mid-way. A 0-byte file still uploads to Storage and
+                # yields a valid-looking docx_url, so without this guard an
+                # empty attachment reaches a real employer. Refuse anything
+                # too small to be a real document.
+                if len(r.content) < 1024:
+                    raise RuntimeError(
+                        f"Resume artifact is {len(r.content)} bytes — almost "
+                        "certainly an empty render. Refusing to attach. "
+                        "Check that reportlab and python-docx are installed "
+                        "and re-run the G2 build."
+                    )
+
                 suffix = ".pdf" if ".pdf" in docx_url.lower() else ".docx"
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
                 tmp.write(r.content)
