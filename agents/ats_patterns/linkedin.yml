@@ -1,0 +1,112 @@
+# agents/ats_patterns/linkedin.yml
+# LinkedIn Easy Apply — selectors and safety rules for the G10 applier pipeline.
+#
+# LinkedIn renders Easy Apply as a multi-step modal inside linkedin.com.
+# The selectors below target the stable aria-label / data-* attributes that
+# LinkedIn's team hasn't changed across our tested builds. React-rendered
+# class names (e.g. jobs-easy-apply-modal__content) are used as fallbacks only.
+#
+# HITL invariant: submit_button is NEVER clicked programmatically; the fill
+# pipeline stops before this step and pauses for human approval.
+
+ats_type: linkedin
+
+# ── Selectors ───────────────────────────────────────────────────────────────
+selectors:
+  # The modal container (injected after clicking Easy Apply)
+  modal: ".jobs-easy-apply-modal"
+
+  # Scroll area inside the modal
+  form_root: ".jobs-easy-apply-content"
+
+  # Individual form sections (each step = one or more sections)
+  field_root: ".jobs-easy-apply-form-section__grouping, .fb-form-element, .artdeco-text-input--container"
+
+  # Label text node for a field
+  field_label: "label.artdeco-text-input--label, label"
+
+  # Easy Apply button on the job page (before the modal opens)
+  easy_apply_button: "button.jobs-apply-button[aria-label*='Easy Apply'], .jobs-s-apply button"
+
+  # In-modal navigation
+  next_button: "button[aria-label='Continue to next step'], button[aria-label='Review your application'], .artdeco-button--primary:not([aria-label*='Submit'])"
+  submit_button: "button[aria-label='Submit application']"
+
+  # Resume upload file input (Step 2)
+  resume_upload: "input[type='file'][name*='resume'], input[type='file'][aria-label*='resume'], input[type='file'][accept*='.pdf,.doc,.docx']"
+
+  # Progress bar (to detect current step number / total steps)
+  progress_bar: "progress.artdeco-completeness-meter-linear__progress-element"
+
+  # Generic required field selectors (text / textarea / select / radio)
+  field_text: "input[aria-required='true']:not([type='file']), input[required]:not([type='file'])"
+  field_textarea: "textarea[aria-required='true'], textarea[required]"
+  field_select: "select[required], fieldset.fb-text-selectable__form-element"
+  field_radio: "div.fb-form-element input[type='radio']"
+  field_checkbox: "div.fb-form-element input[type='checkbox']"
+
+# ── Classification hints (mirrors greenhouse.yml pattern) ───────────────────
+# These hint the answer_generator which profile fields to pull for each label.
+classification_hints:
+  basic_info:
+    - "first.?name"
+    - "last.?name"
+    - "email"
+    - "phone"
+    - "(?:mobile|cell).?(?:phone|number)"
+    - "city|location|where are you"
+    - "country"
+    - "postal|zip"
+    - "website|linkedin|url"
+    - "work authorization|authorized to work|sponsorship|visa"
+  years_of_experience:
+    - "years? of experience"
+    - "how many years"
+    - "(?:total|overall) experience"
+  salary:
+    - "salary"
+    - "compensation"
+    - "expected.*(?:pay|salary|wage)"
+    - "desired.*salary"
+  cover_letter:
+    - "cover.?letter"
+    - "why are you applying"
+    - "why this (role|position|company|job)"
+  why_this_company:
+    - "why .*(company|us|our|team)"
+    - "what.*(excites|interests|attract)"
+  behavioral:
+    - "tell us about a time"
+    - "describe a (situation|time|challenge)"
+    - "give (an|us) example"
+  skills_experience:
+    - "describe your experience with"
+    - "proficiency|skill level"
+    - "rate your"
+  dei:
+    - "diversity|equity|inclusion|belonging"
+    - "underrepresented"
+
+# ── Profile field map (profile fields → form category) ──────────────────────
+profile_field_map:
+  first_name: "profile.full_name"
+  last_name: "profile.full_name"
+  email: "profile.email"
+  phone: "profile.phone"
+  linkedin: "profile.linkedin_url"
+  location: "profile.location"
+  city: "profile.location"
+
+# ── Safety rules ────────────────────────────────────────────────────────────
+safety:
+  # The submit button is NEVER clicked; we detect it to STOP.
+  submit_never_click: true
+
+  # These URL patterns indicate the application was already submitted.
+  refuse_if_url_contains:
+    - "/application-submitted"
+    - "applied=true"
+
+  # Max steps in the Easy Apply wizard before we abort (guard against
+  # infinite loops or LinkedIn UI changes breaking the step detection).
+  max_steps: 10
