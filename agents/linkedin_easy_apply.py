@@ -111,14 +111,103 @@ class FillResult:
     error: Optional[str] = None
 
 
+# ─── Geographic targeting ────────────────────────────────────────────────────
+# Markets the candidate will NOT relocate to / does not want roles in.
+# Matched case-insensitively against jobs.location as whole words, so
+# "Lahore, Pakistan" is blocked but "Pakistan Desk, Dubai" is judged by the
+# allow-list below (Dubai wins).
+BLOCKED_LOCATION_TOKENS: tuple[str, ...] = (
+    "pakistan", "karachi", "lahore", "islamabad", "rawalpindi", "faisalabad",
+    "bangladesh", "dhaka", "chittagong",
+    "nepal", "kathmandu",
+)
+
+# Markets the candidate IS targeting. A job qualifies when its location
+# matches any of these. Ordered roughly by the user's stated preference.
+ALLOWED_LOCATION_TOKENS: tuple[str, ...] = (
+    # GCC
+    "uae", "united arab emirates", "dubai", "abu dhabi", "sharjah",
+    "saudi", "ksa", "riyadh", "jeddah", "dammam", "neom",
+    "qatar", "doha",
+    "kuwait", "bahrain", "manama", "oman", "muscat",
+    "gcc", "middle east", "mena",
+    # Singapore / APAC hub
+    "singapore",
+    # UK
+    "united kingdom", "uk", "london", "manchester", "edinburgh", "dublin",
+    # Europe
+    "europe", "emea", "netherlands", "amsterdam", "germany", "berlin",
+    "munich", "france", "paris", "spain", "madrid", "barcelona",
+    "ireland", "poland", "warsaw", "sweden", "stockholm", "denmark",
+    "copenhagen", "switzerland", "zurich", "geneva", "portugal", "lisbon",
+    "italy", "milan", "belgium", "brussels", "austria", "vienna",
+    "norway", "oslo", "finland", "helsinki", "czech", "prague",
+    # US
+    "united states", "usa", "u.s.", "new york", "san francisco", "seattle",
+    "austin", "boston", "chicago", "los angeles", "denver", "atlanta",
+    "miami", "dallas", "remote - us", "remote (us)",
+)
+
+# Role families the candidate targets: product + program management.
+ALLOWED_TITLE_TOKENS: tuple[str, ...] = (
+    "product manager", "product management", "product owner",
+    "product lead", "head of product", "director of product",
+    "chief product", "cpo", "vp product", "vp of product",
+    "group product manager", "principal product",
+    "program manager", "programme manager", "program management",
+    "technical program manager", "tpm", "head of program",
+    "director of program", "portfolio manager", "delivery manager",
+    "project manager", "pmo",
+)
+
+
+def _location_allowed(location: str) -> bool:
+    """True when the job location is in a target market and not in a
+    blocked one. Blocked tokens always win over allowed tokens.
+
+    An empty/unknown location returns True — remote-first postings often
+    leave location blank, and we'd rather surface them for review than
+    silently drop a good role.
+    """
+    loc = (location or "").lower()
+    if not loc.strip():
+        return True
+    for bad in BLOCKED_LOCATION_TOKENS:
+        if re.search(rf"\b{re.escape(bad)}\b", loc):
+            return False
+    if "remote" in loc and not any(
+        re.search(rf"\b{re.escape(b)}\b", loc) for b in BLOCKED_LOCATION_TOKENS
+    ):
+        return True
+    return any(re.search(rf"\b{re.escape(ok)}\b", loc) for ok in ALLOWED_LOCATION_TOKENS)
+
+
+def _title_allowed(title: str) -> bool:
+    """True when the job title is a product- or program-management role."""
+    t = (title or "").lower()
+    if not t.strip():
+        return False
+    return any(tok in t for tok in ALLOWED_TITLE_TOKENS)
+
+
 # ─── 1. Eligible job discovery ───────────────────────────────────────────────
-def get_eligible_jobs(user_id: UUID) -> list[EligibleJob]:
+def get_eligible_jobs(
+    user_id: UUID,
+    *,
+    apply_location_filter: bool = True,
+    apply_title_filter: bool = True,
+) -> list[EligibleJob]:
     """Query jobs that are ready for LinkedIn Easy Apply:
     - letter_grade = 'A'  (composite ≥ 85 from G5 scoring)
     - apply_url contains 'linkedin.com'
     - no existing application row (status != 'applied')
     - posting still open (posting_closed_at IS NULL)
     - not in linkedin_apply_queue with status IN ('paused','approved','submitted')
+    - location in target markets (GCC / Singapore / Europe / UK / USA),
+      excluding Pakistan, Bangladesh and Nepal
+    - title is a product- or program-management role
+
+    The two filters default ON. Pass False to inspect what they exclude.
     """
     db = get_supabase()
     uid = str(user_id)
@@ -195,6 +284,23 @@ def get_eligible_jobs(user_id: UUID) -> list[EligibleJob]:
         q = queued_map.get(jid)
         # Skip if already paused (waiting user action), approved, or submitted.
         if q and q["status"] in ("paused", "approved", "submitted"):
+            continue
+
+        # Geographic targeting: GCC / Singapore / Europe / UK / USA only.
+        # Pakistan, Bangladesh and Nepal are excluded outright.
+        if apply_location_filter and not _location_allowed(row.get("location", "")):
+            logger.debug(
+                "linkedin_easy_apply: job_id=%s filtered out on location=%r",
+                jid, row.get("location"),
+            )
+            continue
+
+        # Role targeting: product / program management families only.
+        if apply_title_filter and not _title_allowed(row.get("title", "")):
+            logger.debug(
+                "linkedin_easy_apply: job_id=%s filtered out on title=%r",
+                jid, row.get("title"),
+            )
             continue
 
         breakdown = row.get("fit_score_breakdown") or {}

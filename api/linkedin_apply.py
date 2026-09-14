@@ -554,6 +554,140 @@ async def _submit_via_playwright(
     raise RuntimeError("Submit button not reached — wizard may have changed structure.")
 
 
+# ─── POST /batch — apply to every eligible role in one call ─────────────────
+class BatchApplyRequest(BaseModel):
+    confirmed: bool = False       # must be True — this submits real applications
+    max_jobs: int = 25            # safety ceiling per run
+    dry_run: bool = False         # True = prepare only, never submit
+
+
+class BatchApplyItem(BaseModel):
+    job_id: int
+    title: str
+    company: str
+    location: str
+    composite: int
+    outcome: str                  # 'submitted' | 'prepared' | 'resume_building' | 'failed' | 'skipped'
+    detail: Optional[str] = None
+
+
+class BatchApplyReport(BaseModel):
+    total_eligible: int
+    attempted: int
+    submitted: int
+    prepared_only: int
+    resume_building: int
+    failed: int
+    total_cost_usd: float
+    items: list[BatchApplyItem]
+
+
+@router.post("/batch", response_model=BatchApplyReport)
+async def batch_apply(
+    body: BatchApplyRequest,
+    current_user: User = Depends(get_current_user),
+) -> BatchApplyReport:
+    """Prepare and (optionally) submit every eligible A-grade LinkedIn role.
+
+    Eligibility is the same filter set as GET /eligible:
+      - letter_grade='A' (composite >= 85)
+      - LinkedIn apply_url, posting open, not already applied
+      - location in GCC / Singapore / Europe / UK / USA
+        (Pakistan, Bangladesh, Nepal excluded)
+      - title is a product- or program-management role
+
+    `confirmed=true` is required to submit. With `dry_run=true` every job is
+    prepared and left at the Review step so you can inspect before approving.
+
+    Returns a per-job report of what actually happened.
+    """
+    from agents.linkedin_easy_apply import get_eligible_jobs, mark_submitted
+
+    if not body.confirmed and not body.dry_run:
+        raise HTTPException(
+            status_code=422,
+            detail="Set confirmed=true to submit applications, or dry_run=true to prepare only.",
+        )
+
+    user_id = UUID(current_user.id)
+    try:
+        eligible = get_eligible_jobs(user_id=user_id)
+    except Exception as exc:
+        logger.error("linkedin_apply.batch: eligibility query failed: %r", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    targets = eligible[: max(0, body.max_jobs)]
+    items: list[BatchApplyItem] = []
+    submitted = prepared = building = failed = 0
+    total_cost = 0.0
+
+    for job in targets:
+        base = {
+            "job_id": job.job_id,
+            "title": job.title,
+            "company": job.company,
+            "location": job.location,
+            "composite": job.composite,
+        }
+        try:
+            prep = await prepare_application(job.job_id, current_user=current_user)
+            total_cost += float(prep.cost_usd or 0.0)
+
+            if prep.status == "resume_building":
+                building += 1
+                items.append(BatchApplyItem(
+                    **base, outcome="resume_building",
+                    detail="G2 resume enqueued; re-run batch once it completes.",
+                ))
+                continue
+
+            if prep.status != "paused":
+                failed += 1
+                items.append(BatchApplyItem(
+                    **base, outcome="failed", detail=prep.message,
+                ))
+                continue
+
+            if body.dry_run:
+                prepared += 1
+                items.append(BatchApplyItem(
+                    **base, outcome="prepared",
+                    detail="Filled and paused at Review. Approve individually to submit.",
+                ))
+                continue
+
+            sub = await submit_application(
+                job.job_id,
+                SubmitRequest(confirmed=True),
+                current_user=current_user,
+            )
+            if sub.status == "submitted":
+                submitted += 1
+                items.append(BatchApplyItem(**base, outcome="submitted", detail=sub.message))
+            else:
+                failed += 1
+                items.append(BatchApplyItem(**base, outcome="failed", detail=sub.message))
+
+        except HTTPException as exc:
+            failed += 1
+            items.append(BatchApplyItem(**base, outcome="failed", detail=str(exc.detail)))
+        except Exception as exc:
+            logger.error("linkedin_apply.batch: job_id=%s failed: %r", job.job_id, exc)
+            failed += 1
+            items.append(BatchApplyItem(**base, outcome="failed", detail=str(exc)[:300]))
+
+    return BatchApplyReport(
+        total_eligible=len(eligible),
+        attempted=len(targets),
+        submitted=submitted,
+        prepared_only=prepared,
+        resume_building=building,
+        failed=failed,
+        total_cost_usd=round(total_cost, 4),
+        items=items,
+    )
+
+
 # ─── POST /skip ──────────────────────────────────────────────────────────────
 @router.post("/{job_id}/skip", response_model=dict)
 async def skip_job(
