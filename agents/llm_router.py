@@ -38,7 +38,10 @@ from typing import Any, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
-Provider = Literal["anthropic", "openai", "google", "deepseek", "moonshot", "openrouter"]
+Provider = Literal[
+    "anthropic", "openai", "google", "deepseek", "moonshot",
+    "openrouter", "omniroute",
+]
 
 # ─── Pricing table (USD per 1M tokens, input / output) ───────────────────────
 # Approximate as of 2026-Q2. Sources: provider pricing pages.
@@ -93,11 +96,20 @@ PRICING_PER_1M: dict[str, tuple[float, float]] = {
     # variants, which is correct (Moonshot supports response_format).
 }
 
-# OpenAI-compatible endpoints (DeepSeek + Kimi + OpenRouter)
+# OpenAI-compatible endpoints (DeepSeek + Kimi + OpenRouter + OmniRoute)
+#
+# OmniRoute (github.com/pitbaden/omniroute) is a self-hosted AI gateway that
+# fronts 290+ providers behind one OpenAI-compatible endpoint, with routing
+# strategies, auto-fallback on quota exhaustion, and prompt compression. It
+# runs locally (`npm i -g omniroute && omniroute`, or Docker on :20128), so the
+# base URL points at localhost by default and is overridable for a remote host.
 OPENAI_COMPATIBLE_BASE_URLS = {
     "deepseek": "https://api.deepseek.com/v1",
     "moonshot": "https://api.moonshot.ai/v1",
     "openrouter": "https://openrouter.ai/api/v1",
+    "omniroute": os.environ.get(
+        "OMNIROUTE_BASE_URL", "http://localhost:20128/v1"
+    ),
 }
 
 # ─── Single-key mode: route every provider through OpenRouter ────────────────
@@ -164,6 +176,66 @@ def to_openrouter_model(model: str) -> Optional[str]:
         if model.startswith(native):
             return or_id
     return None
+
+
+# ─── OmniRoute: self-hosted gateway across 290+ providers ────────────────────
+# OmniRoute uses "<provider-prefix>/<model-id>" ids, where the prefix depends on
+# which providers YOU enabled in your OmniRoute dashboard (cc/ for Claude Code,
+# glm/ for GLM, if/ for iFlow, gc/ for Gemini CLI, and so on). Because that set
+# is per-install, there is no reliable static map — supply your own via the
+# OMNIROUTE_MODEL_MAP env var as JSON:
+#
+#   OMNIROUTE_MODEL_MAP='{"claude-sonnet-4-6":"cc/claude-sonnet-4-6",
+#                         "gemini-2.5-pro":"gc/gemini-2.5-pro"}'
+#
+# Unmapped models pass through unchanged, so a model id already in OmniRoute
+# form works without any mapping at all.
+#
+# Cost note: OmniRoute ids are absent from PRICING_PER_1M, so cost_usd logs as
+# 0.0. For OmniRoute's 90+ free providers that is accurate; for paid ones,
+# read spend from the OmniRoute dashboard rather than agent_call_log.
+OMNIROUTE_EXCLUDED_PREFIXES = ("text-embedding",)
+
+
+def _force_omniroute_enabled() -> bool:
+    """True when LLM_FORCE_OMNIROUTE routes all chat calls via OmniRoute.
+
+    Takes precedence over LLM_FORCE_OPENROUTER when both are set — OmniRoute
+    can itself route onward to OpenRouter as one of its providers, so the
+    self-hosted gateway is the outer layer.
+    """
+    return os.environ.get("LLM_FORCE_OMNIROUTE", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _load_omniroute_map() -> dict[str, str]:
+    """Parse OMNIROUTE_MODEL_MAP (JSON). Returns {} on absence or bad JSON —
+    a malformed map must not take down every LLM call, and pass-through is a
+    safe default."""
+    raw = os.environ.get("OMNIROUTE_MODEL_MAP", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return {str(k): str(v) for k, v in parsed.items()}
+        logger.warning("OMNIROUTE_MODEL_MAP is not a JSON object — ignoring.")
+    except (ValueError, TypeError) as exc:
+        logger.warning("OMNIROUTE_MODEL_MAP is not valid JSON (%s) — ignoring.", exc)
+    return {}
+
+
+def to_omniroute_model(model: str) -> Optional[str]:
+    """Return the OmniRoute id for a model, or None when it can't be routed.
+
+    Embeddings are excluded (OmniRoute fronts chat completions). Anything
+    without an explicit mapping passes through unchanged, which is correct for
+    ids already written in OmniRoute form.
+    """
+    if model.startswith(OMNIROUTE_EXCLUDED_PREFIXES):
+        return None
+    return _load_omniroute_map().get(model, model)
 
 
 @dataclass
@@ -332,6 +404,11 @@ class LLMRouter:
             "moonshot": moonshot_key or os.environ.get("KIMI_API_KEY")
                         or os.environ.get("MOONSHOT_API_KEY"),
             "openrouter": openrouter_key or os.environ.get("OPENROUTER_API_KEY"),
+            # OmniRoute issues its own keys from the dashboard's Endpoints
+            # page. A local instance is often left unprotected, so fall back
+            # to a placeholder — the OpenAI SDK requires a non-empty key even
+            # when the server ignores it.
+            "omniroute": os.environ.get("OMNIROUTE_API_KEY") or "omniroute-local",
         }
         self._clients: dict[Provider, Any] = {}
         # Optional callback fired after every successful call.
@@ -382,14 +459,30 @@ class LLMRouter:
         from agents.budget_gate import enforce_budget
         await enforce_budget(user_id, agent_name=agent_name)
 
-        # Single-key mode: rewrite provider+model through OpenRouter so the
-        # whole system runs on one OPENROUTER_API_KEY. Applied here (rather
-        # than per-node) so every graph inherits it with no call-site changes.
-        # Silently left alone when the model has no OpenRouter equivalent
-        # (embeddings) — those still need their native key.
+        # Gateway modes: rewrite provider+model so the whole system runs
+        # through one endpoint. Applied here (rather than per-node) so every
+        # graph inherits it with no call-site changes. Embeddings are never
+        # rewritten — neither gateway serves them, so those keep their
+        # native key.
+        #
+        # OmniRoute is checked FIRST: it is self-hosted and can route onward
+        # to OpenRouter as one of its own providers, so it is the outer layer
+        # when both flags are set.
+        if (
+            _force_omniroute_enabled()
+            and provider != "omniroute"
+        ):
+            routed = to_omniroute_model(model)
+            if routed:
+                logger.debug(
+                    "LLM_FORCE_OMNIROUTE: %s/%s -> omniroute/%s",
+                    provider, model, routed,
+                )
+                provider, model = "omniroute", routed
+
         if (
             _force_openrouter_enabled()
-            and provider != "openrouter"
+            and provider not in ("openrouter", "omniroute")
             and self._keys.get("openrouter")
         ):
             routed = to_openrouter_model(model)
@@ -431,6 +524,15 @@ class LLMRouter:
                 result = await self._call_openrouter(
                     model, system, messages, max_tokens, temperature,
                     tools, json_response, **provider_kwargs,
+                )
+            elif provider == "omniroute":
+                # OmniRoute is OpenAI-compatible, so it reuses the shared
+                # chat-completions path. Its own routing strategies, retries
+                # and fallbacks happen server-side inside the gateway.
+                result = await self._call_openai_compatible(
+                    "omniroute", model, system, messages, max_tokens,
+                    temperature, tools, json_response,
+                    agent_name=agent_name, **provider_kwargs,
                 )
             else:
                 raise ValueError(f"Unknown provider: {provider}")
@@ -937,12 +1039,12 @@ class LLMRouter:
                 timeout=180.0,
                 max_retries=2,
             )
-        elif provider == "openrouter":
+        elif provider in ("openrouter", "omniroute"):
             from openai import AsyncOpenAI
-            # OpenRouter uses OpenAI-compatible chat completions. 180s timeout
-            # mirrors deepseek/moonshot — reasoning models through OR can take
-            # just as long. max_retries=2 because OR has its own internal
-            # provider-fallback; we don't need to be overly aggressive.
+            # Both are OpenAI-compatible gateways. 180s timeout mirrors
+            # deepseek/moonshot — reasoning models routed through a gateway
+            # can take just as long. max_retries=2 because each gateway runs
+            # its own provider-fallback; we don't need to be aggressive here.
             client = AsyncOpenAI(
                 api_key=key,
                 base_url=OPENAI_COMPATIBLE_BASE_URLS[provider],
