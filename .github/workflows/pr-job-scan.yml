@@ -34,6 +34,13 @@ jobs:
         with:
           python-version-file: '.python-version'
 
+      # The scanner itself has zero runtime deps by design, but its test
+      # suite needs pytest. Without this step the self-test below dies with
+      # "No module named pytest" before the scan ever runs, which is why this
+      # workflow has been red on main since June.
+      - name: Install scanner dev dependencies
+        run: pip install "./tools/pr_job_scan[dev]"
+
       - name: Self-test the scanner
         run: |
           cd tools/pr_job_scan
