@@ -288,6 +288,28 @@ def _estimate_cost(
             if model.startswith(known):
                 pricing = prices
                 break
+    if not pricing and "/" in model:
+        # Gateway id whose vendor prefix is not in the table — OmniRoute uses
+        # per-install prefixes (cc/, glm/, if/, gc/ …) that cannot be
+        # enumerated here. Fall back to the native model name so a call routed
+        # as "cc/claude-sonnet-4-6" still prices as claude-sonnet-4-6.
+        #
+        # Without this, every OmniRoute call logged cost_usd=0.0, which reads
+        # as "free" rather than "unknown" — and would blank the cost dashboard
+        # and the daily cost alert precisely when the scheduler is running
+        # unattended. A close estimate beats a confident zero.
+        #
+        # The number is approximate: OmniRoute may add a markup, and its free
+        # providers genuinely cost nothing, in which case this OVER-states.
+        # Treat agent_call_log as an upper bound under OmniRoute and reconcile
+        # against the OmniRoute dashboard for actual spend.
+        native = model.split("/", 1)[1]
+        pricing = PRICING_PER_1M.get(native)
+        if not pricing:
+            for known, prices in PRICING_PER_1M.items():
+                if native.startswith(known):
+                    pricing = prices
+                    break
     if not pricing:
         return 0.0
     # Coerce None / missing token counts to 0. Some providers (notably
