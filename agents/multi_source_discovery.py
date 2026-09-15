@@ -58,7 +58,18 @@ SUPPORTED_SITES = (
 # Default board set. LinkedIn is omitted on purpose: it is the one channel
 # where automated access carries account risk, and it is also the one the
 # operator can search by hand. Pass sites=[...] explicitly to include it.
-DEFAULT_SITES = ("indeed", "glassdoor", "google", "bayt")
+#
+# Verified against a live sweep on 2026-09-15:
+#   indeed     — works
+#   google     — works
+#   glassdoor  — HTTP 400 "location not parsed" on every call. Its parser
+#                rejects "City, Country" strings like "Dubai, UAE".
+#   bayt       — HTTP 403 Forbidden on every call. It also discards the
+#                location entirely and hits /en/international/, so even
+#                unblocked it would not give GCC-scoped results.
+# Both are still selectable via sites=[...] in case upstream fixes them, but
+# leaving them on by default just spends two minutes collecting errors.
+DEFAULT_SITES = ("indeed", "google")
 
 # Search locations matching the target markets in linkedin_easy_apply's
 # ALLOWED_LOCATION_TOKENS. Each is issued as a separate JobSpy query, since
@@ -96,6 +107,10 @@ class DiscoveryResult:
     duplicates: int = 0
     errors: list[str] = field(default_factory=list)
     by_site: dict[str, int] = field(default_factory=dict)
+    # The matching roles themselves. Always populated, whether or not they
+    # were persisted — a sweep takes ~90s of network time and that result
+    # must survive a database that is missing or misconfigured.
+    rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _normalise_row(raw: dict[str, Any], user_id: str) -> Optional[dict[str, Any]]:
@@ -172,11 +187,16 @@ def discover_jobs(
     results_per_search: int = 25,
     hours_old: int = 168,
     apply_filters: bool = True,
+    persist: bool = True,
 ) -> DiscoveryResult:
-    """Sweep the configured boards and insert new roles into `jobs`.
+    """Sweep the configured boards and return matching roles.
 
     Applies the same geo/role filters the apply pipeline uses, so a role that
     could never be applied to is never stored in the first place.
+
+    Matches are always returned on `result.rows`, whether or not they reach
+    the database. Pass `persist=False` to skip Supabase entirely — useful for
+    looking at what a search turns up before any credentials are configured.
 
     Scoring is NOT triggered here — that stays the caller's decision, because
     G5 costs roughly $0.15 per role and a wide sweep can return hundreds.
@@ -241,22 +261,47 @@ def discover_jobs(
                 result.by_site[site] = result.by_site.get(site, 0) + 1
                 collected.append(row)
 
-    if not collected:
-        return result
-
-    # Dedupe within this sweep, then against what is already stored.
+    # Dedupe within this sweep.
     by_url: dict[str, dict[str, Any]] = {}
     for row in collected:
         by_url.setdefault(row["apply_url"], row)
 
-    already = _existing_apply_urls(uid, list(by_url))
+    # Surface the matches BEFORE touching the database. A sweep is ~90s of
+    # network time; losing it because Supabase is unset or unreachable is
+    # the worst possible failure mode, and it is the one this hit on the
+    # first real run (get_settings() raised on four missing env vars after
+    # every board had already been searched).
+    result.rows = list(by_url.values())
+
+    if not collected:
+        return result
+
+    if not persist:
+        return result
+
+    # Everything past here is best-effort persistence. Failures are recorded
+    # on the result and never raised: the caller keeps its roles either way.
+    try:
+        already = _existing_apply_urls(uid, list(by_url))
+    except Exception as exc:
+        logger.warning("multi_source_discovery: dedupe lookup failed: %r", exc)
+        result.errors.append(
+            f"db_unavailable: {type(exc).__name__}: {exc}"[:200]
+        )
+        return result
+
     fresh = [r for url, r in by_url.items() if url not in already]
     result.duplicates = len(by_url) - len(fresh)
-
     if not fresh:
         return result
 
-    db = get_supabase()
+    try:
+        db = get_supabase()
+    except Exception as exc:
+        logger.warning("multi_source_discovery: supabase unavailable: %r", exc)
+        result.errors.append(f"db_unavailable: {type(exc).__name__}: {exc}"[:200])
+        return result
+
     CHUNK = 50
     for i in range(0, len(fresh), CHUNK):
         batch = fresh[i:i + CHUNK]
