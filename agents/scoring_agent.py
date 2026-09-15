@@ -115,8 +115,28 @@ RESCORE_STALENESS_DAYS = 7
 # Per the roadmap and existing g6_persona_critic pattern, dimensional
 # Sonnet calls hit Anthropic Sonnet 4.6. We keep this in one place so a
 # future swap to Sonnet 4.7 is one constant change.
-_LLM_PROVIDER = "anthropic"
-_LLM_MODEL = "claude-sonnet-4-6"
+#
+# Overridable because G5 became a recurring cost when hourly discovery
+# landed. Each role costs 4 LLM calls (role_fit, growth, culture,
+# trajectory); on Sonnet that is roughly $0.15, which at 15 roles/hour is
+# about $54/day. DeepSeek and Kimi are an order of magnitude cheaper per
+# token and are already trusted elsewhere in this codebase — they run as the
+# G2 ATS critics and the G3 mock critic.
+#
+# Default stays Sonnet so existing behaviour is unchanged. To cut the hourly
+# bill, set:
+#     G5_SCORING_PROVIDER=deepseek
+#     G5_SCORING_MODEL=deepseek-chat
+# or route through a gateway with LLM_FORCE_OPENROUTER / LLM_FORCE_OMNIROUTE,
+# which rewrites provider+model in llm_router regardless of what is set here.
+#
+# Worth knowing before switching: role_fit and culture do the most reasoning
+# of the four dimensions, and their rationales are what the persona critic
+# checks. A weaker model tends to produce vaguer rationales, which can trip
+# the critic's success_pattern check and cost culture 10 points. If scores
+# drift after a swap, compare rationale text before blaming the weights.
+_LLM_PROVIDER = os.environ.get("G5_SCORING_PROVIDER", "anthropic")
+_LLM_MODEL = os.environ.get("G5_SCORING_MODEL", "claude-sonnet-4-6")
 
 
 # ═════════════════════════════════════════════════════════════════════════

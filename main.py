@@ -26,6 +26,7 @@ from datetime import datetime
 from apscheduler.events import EVENT_JOB_MISSED
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 import pytz
 from rich.console import Console
 from dotenv import load_dotenv
@@ -104,6 +105,22 @@ async def run_g6_follow_up_cadence():
     """
     from agents.g6_io import run_g6_batch
     return await run_g6_batch()
+
+
+async def run_hourly_discovery_job():
+    """Unattended discover → score → gate → tailor cycle (hourly).
+
+    Keeps the apply queue stocked with fresh, validated, tailored roles so
+    the operator's only remaining action is approving a send. Never submits.
+
+    Hourly rather than daily because freshness carries the most weight in the
+    readiness gate, and it is the one input a schedule can actually move.
+    Disable with HOURLY_DISCOVERY_ENABLED=0.
+    """
+    from agents.hourly_discovery import run_hourly_discovery
+    result = await run_hourly_discovery()
+    logger.info("[hourly_discovery] %s", result.summary())
+    return result
 
 
 async def run_interview_prep(job_id: int):
@@ -264,6 +281,19 @@ def start_scheduler():
     )
     console.print(f"   G6 Follow-ups:     daily {s.g6_cadence_time} (active apps only)")
 
+    # Hourly rather than daily: freshness is the heaviest input to the
+    # readiness gate and the only one a schedule can move. misfire_grace_time
+    # is deliberately short — a missed sweep is better skipped than run late,
+    # because the next one is only an hour away and will catch the same roles.
+    scheduler.add_job(
+        lambda: asyncio.create_task(run_hourly_discovery_job()),
+        IntervalTrigger(hours=1),
+        id="hourly_discovery",
+        name="Hourly Discovery + Score + Gate",
+        misfire_grace_time=600,
+    )
+    console.print("   Discovery:         hourly (discover → score → gate → tailor)")
+
     scheduler.start()
     console.print("[green]Scheduler running. Waiting for next trigger...[/green]")
 
@@ -343,6 +373,12 @@ def start_scheduler_background() -> AsyncIOScheduler:
         lambda: asyncio.create_task(run_g6_follow_up_cadence()),
         CronTrigger(hour=g6_h, minute=g6_m, timezone=tz),
         id="g6_followup_cadence", name="G6 Daily Follow-up Cadence", misfire_grace_time=3600,
+    )
+    _bg_scheduler.add_job(
+        lambda: asyncio.create_task(run_hourly_discovery_job()),
+        IntervalTrigger(hours=1),
+        id="hourly_discovery", name="Hourly Discovery + Score + Gate",
+        misfire_grace_time=600,
     )
 
     _bg_scheduler.start()
