@@ -38,7 +38,7 @@ from pydantic import BaseModel
 
 from api.context import get_current_user
 from api.users import User
-from db.client import get_supabase
+from db.client import aexecute, get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -107,13 +107,13 @@ async def list_eligible_jobs(
     queue_rows = []
     if job_ids:
         queue_rows = (
-            db.table("linkedin_apply_queue")
-            .select("job_id, status")
-            .eq("user_id", current_user.id)
-            .in_("job_id", job_ids)
-            .execute()
-            .data
-        ) or []
+            await aexecute(
+                db.table("linkedin_apply_queue")
+                .select("job_id, status")
+                .eq("user_id", current_user.id)
+                .in_("job_id", job_ids)
+            )
+        ).data or []
     q_status_map = {r["job_id"]: r["status"] for r in queue_rows}
 
     return [
@@ -166,14 +166,17 @@ async def prepare_application(
 
     # 1. Load job from DB.
     job_rows = (
-        db.table("jobs")
-        .select("id, title, company, location, apply_url, letter_grade, fit_score_breakdown, match_score")
-        .eq("id", job_id)
-        .eq("user_id", current_user.id)
-        .limit(1)
-        .execute()
-        .data
-    ) or []
+        await aexecute(
+            db.table("jobs")
+            .select(
+                "id, title, company, location, apply_url, letter_grade, "
+                "fit_score_breakdown, match_score"
+            )
+            .eq("id", job_id)
+            .eq("user_id", current_user.id)
+            .limit(1)
+        )
+    ).data or []
     if not job_rows:
         raise HTTPException(status_code=404, detail="Job not found")
 
@@ -242,13 +245,13 @@ async def prepare_application(
     # Get resume DOCX path from Storage URL or skip (form will have a file input
     # the user can manually handle if needed).
     resume_rows = (
-        db.table("resume_builds")
-        .select("docx_url")
-        .eq("id", resume_build_id)
-        .limit(1)
-        .execute()
-        .data
-    ) or []
+        await aexecute(
+            db.table("resume_builds")
+            .select("docx_url")
+            .eq("id", resume_build_id)
+            .limit(1)
+        )
+    ).data or []
     resume_path: Optional[str] = None
     if resume_rows and resume_rows[0].get("docx_url"):
         # Download the DOCX to a temp file so Playwright can upload it.
@@ -408,14 +411,14 @@ async def submit_application(
 
     # Load job for apply_url.
     job_rows = (
-        db.table("jobs")
-        .select("id, title, company, location, apply_url")
-        .eq("id", job_id)
-        .eq("user_id", current_user.id)
-        .limit(1)
-        .execute()
-        .data
-    ) or []
+        await aexecute(
+            db.table("jobs")
+            .select("id, title, company, location, apply_url")
+            .eq("id", job_id)
+            .eq("user_id", current_user.id)
+            .limit(1)
+        )
+    ).data or []
     if not job_rows:
         raise HTTPException(status_code=404, detail="Job not found")
     job = job_rows[0]
