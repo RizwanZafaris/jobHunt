@@ -182,12 +182,56 @@ def _location_allowed(location: str) -> bool:
     return any(re.search(rf"\b{re.escape(ok)}\b", loc) for ok in ALLOWED_LOCATION_TOKENS)
 
 
+# Seniority words that, combined with a discipline word, make a title ours
+# regardless of word order. Added after a live Indeed sweep on 2026-09-16
+# showed the flat token list was word-order blind: it carried
+# "director of product" but not "product director", so it discarded
+# "Product Director" (Wise), "Program Director, Payments" (OCBC) and
+# "Director, Product Payments APAC" (Western Union) as non-product roles.
+# Enumerating every permutation is a losing game; pairing is not.
+_SENIORITY_WORDS = (
+    "director", "head", "vp", "vice president", "chief", "principal",
+    "group", "senior", "lead", "manager", "management", "officer",
+)
+_DISCIPLINE_WORDS = ("product", "program", "programme", "portfolio")
+
+# Titles that contain a discipline word but are NOT this candidate's roles.
+# Checked first, because "Product Marketing Manager" would otherwise pair
+# "product" + "manager" and slip through.
+_TITLE_EXCLUSIONS = (
+    "product marketing", "product design", "product designer",
+    "product engineer", "engineering", "software", "developer",
+    "data scientist", "sales", "account executive", "recruiter",
+    "product support", "customer success",
+)
+
+
 def _title_allowed(title: str) -> bool:
-    """True when the job title is a product- or program-management role."""
+    """True when the job title is a product- or program-management role.
+
+    Two passes: an explicit token list for canonical titles, then an
+    order-independent seniority+discipline pairing that catches the
+    permutations a flat list always misses.
+    """
     t = (title or "").lower()
     if not t.strip():
         return False
-    return any(tok in t for tok in ALLOWED_TITLE_TOKENS)
+
+    # Punctuation carries no meaning in a job title and breaks substring
+    # matching ("Director, Product Payments" vs "director product").
+    normalised = re.sub(r"[^a-z0-9]+", " ", t).strip()
+
+    if any(bad in normalised for bad in _TITLE_EXCLUSIONS):
+        return False
+
+    if any(tok in normalised for tok in ALLOWED_TITLE_TOKENS):
+        return True
+
+    # Order-independent pairing: "product director" and "director of
+    # product" both qualify, as does "Director, Product Payments APAC".
+    has_discipline = any(d in normalised for d in _DISCIPLINE_WORDS)
+    has_seniority = any(s in normalised for s in _SENIORITY_WORDS)
+    return has_discipline and has_seniority
 
 
 # ─── 1. Eligible job discovery ───────────────────────────────────────────────
